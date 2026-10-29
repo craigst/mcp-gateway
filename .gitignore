@@ -20,7 +20,7 @@ data/
 *.db-journal
 *.db-wal
 *.db-shm
-secrets/
+/secrets/
 *.pem
 *.key
 
