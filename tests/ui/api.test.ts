@@ -155,3 +155,319 @@ describe('ApiClient', () => {
     expect((fetchMock.mock.calls[2] as [string, RequestInit])[1].method).toBe('DELETE');
   });
 });
+
+describe('ApiClient v0.2 catalog, discovery, policy & Vault Warden', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const catalogSource = {
+    id: 'cat_ab12',
+    label: 'Internal MCP catalog',
+    kind: 'dsh-umbrella',
+    repoUrl: 'https://github.com/example/private-mcp-catalog',
+    ref: 'main',
+    subpath: null,
+    tokenSecretName: 'CATALOG_cat_ab12_TOKEN',
+    createdAt: '2026-10-29T17:00:00.000Z',
+    updatedAt: '2026-10-29T17:00:00.000Z',
+  };
+
+  const server = {
+    id: 'srv_brain',
+    name: 'brain',
+    runtime: 'node',
+    transport: 'stdio',
+    status: 'running',
+    command: 'node',
+    args: ['brain-mcp.js'],
+    url: null,
+    env: {},
+    manifest: null,
+    highPrivilegeTools: [],
+    delegationSupported: false,
+    sourceUrl: null,
+    workDir: null,
+    lastError: null,
+    pid: 12,
+    createdAt: '2026-10-29T17:00:00.000Z',
+    updatedAt: '2026-10-29T17:05:00.000Z',
+  };
+
+  const testResult = {
+    ok: true,
+    toolCount: 2,
+    tools: ['brain_whoami', 'brain_search'],
+    latencyMs: 42.1,
+    error: null,
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function lastCall(): [string, RequestInit] {
+    return fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string, RequestInit];
+  }
+
+  it('calls the documented catalog source and install endpoints with auth and bodies', async () => {
+    const client = new ApiClient('http://gateway.test');
+    client.setApiKey('mcp_master_v2');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ sources: [catalogSource] }));
+    expect(await client.listCatalogSources()).toHaveLength(1);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/catalog/sources');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ source: catalogSource }, 201));
+    await client.addCatalogSource({
+      label: 'Internal MCP catalog',
+      kind: 'dsh-umbrella',
+      repoUrl: 'https://github.com/example/private-mcp-catalog',
+      ref: 'main',
+      subpath: null,
+      token: 'ghp_secret',
+    });
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/catalog/sources');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toMatchObject({
+      label: 'Internal MCP catalog',
+      kind: 'dsh-umbrella',
+      token: 'ghp_secret',
+    });
+    const headers = lastCall()[1].headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer mcp_master_v2');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ deleted: true }));
+    expect(await client.deleteCatalogSource('cat_ab12')).toBe(true);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/catalog/sources/cat_ab12');
+    expect(lastCall()[1].method).toBe('DELETE');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ source: catalogSource, entries: [] }));
+    await client.listCatalogEntries('cat_ab12', true);
+    expect(lastCall()[0]).toBe(
+      'http://gateway.test/mcp/v1/admin/catalog/sources/cat_ab12/entries?refresh=1',
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({ server, test: testResult, buildLogTail: ['build ok'] }, 201),
+    );
+    const installed = await client.installCatalogEntry({
+      sourceId: 'cat_ab12',
+      entryId: 'brain-mcp',
+      name: 'brain',
+      env: { BRAIN_URL: 'http://brain.internal' },
+      start: true,
+      test: true,
+    });
+    expect(installed.test?.toolCount).toBe(2);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/catalog/install');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toMatchObject({
+      sourceId: 'cat_ab12',
+      entryId: 'brain-mcp',
+      env: { BRAIN_URL: 'http://brain.internal' },
+      start: true,
+      test: true,
+    });
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ server, test: null, buildLogTail: [] }, 201));
+    await client.importCatalogUrl({ url: 'https://github.com/example/mcp-server', start: false });
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/catalog/import-url');
+    expect(JSON.parse(String(lastCall()[1].body))).toMatchObject({
+      url: 'https://github.com/example/mcp-server',
+      start: false,
+    });
+  });
+
+  it('scans local harnesses and imports discovered servers', async () => {
+    const client = new ApiClient('http://gateway.test');
+    const sourceInfo = {
+      id: 'claude',
+      label: 'Claude Code',
+      configPath: '/home/example/.claude.json',
+      exists: true,
+      serverCount: 2,
+    };
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ sources: [sourceInfo] }));
+    expect(await client.listDiscoverySources()).toEqual([sourceInfo]);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/discovery/sources');
+
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({
+        sources: [sourceInfo],
+        entries: [
+          {
+            id: 'claude:brain',
+            harness: 'claude',
+            name: 'brain',
+            transport: 'stdio',
+            command: 'node',
+            args: ['/opt/brain-mcp.js'],
+            url: null,
+            envKeys: ['BRAIN_API_KEY'],
+            envFile: null,
+            headerKeys: [],
+            enabled: true,
+          },
+        ],
+        errors: [{ harness: 'opencode', error: 'config not found' }],
+      }),
+    );
+    const scan = await client.scanDiscovery(['claude']);
+    expect(scan.entries[0]?.name).toBe('brain');
+    expect(scan.errors[0]?.harness).toBe('opencode');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/discovery/scan');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ harnessIds: ['claude'] });
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ server }, 201));
+    const imported = await client.importDiscoveryEntry({
+      harness: 'claude',
+      name: 'brain',
+      transport: 'stdio',
+      command: 'node',
+      args: ['/opt/brain-mcp.js'],
+      env: { BRAIN_API_KEY: 'example-value' },
+    });
+    expect(imported.id).toBe('srv_brain');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/discovery/import');
+    expect(JSON.parse(String(lastCall()[1].body))).toMatchObject({
+      harness: 'claude',
+      name: 'brain',
+      env: { BRAIN_API_KEY: 'example-value' },
+    });
+  });
+
+  it('probes, patches policy and fetches the server tool list', async () => {
+    const client = new ApiClient('http://gateway.test');
+
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({
+        serverId: 'srv_vw',
+        approvalRequiredTools: ['vault_deliver_credential'],
+        highPrivilegeTools: ['vault_deliver_credential'],
+        tools: [
+          {
+            id: 'srv_vw:vault_deliver_credential',
+            name: 'vault_deliver_credential',
+            description: 'Deliver a credential as a file path',
+            highPrivilege: true,
+            approvalRequired: true,
+          },
+        ],
+        total: 1,
+      }),
+    );
+    const tools = await client.serverTools('srv_vw');
+    expect(tools.approvalRequiredTools).toEqual(['vault_deliver_credential']);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/servers/srv_vw/tools');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse(testResult));
+    expect(await client.testServer('srv_vw')).toEqual(testResult);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/servers/srv_vw/test');
+    expect(lastCall()[1].method).toBe('POST');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ server }));
+    await client.updateServerPolicy('srv_vw', {
+      highPrivilegeTools: ['vault_deliver_credential'],
+      approvalRequiredTools: ['vault_deliver_credential'],
+      envFile: '~/.config/vaultwarden/mcp.env',
+    });
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/servers/srv_vw/policy');
+    expect(lastCall()[1].method).toBe('PATCH');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({
+      highPrivilegeTools: ['vault_deliver_credential'],
+      approvalRequiredTools: ['vault_deliver_credential'],
+      envFile: '~/.config/vaultwarden/mcp.env',
+    });
+  });
+
+  it('loads the Vault Warden overview, applies protection and resolves a ticket with its result', async () => {
+    const client = new ApiClient('http://gateway.test');
+    const ticket = {
+      id: 'esc-1',
+      ticketId: 'esc-20261029-ab12',
+      keyId: 'key_agent',
+      toolId: 'srv_vw:vault_deliver_credential',
+      serverId: 'srv_vw',
+      reason: 'APPROVAL_REQUIRED',
+      requestPayload: null,
+      status: 'pending',
+      ticketType: 'tool_approval',
+      toolArguments: { item: 'deploy-key' },
+      createdAt: '2026-10-29T17:00:00.000Z',
+      resolvedAt: null,
+      resolvedBy: null,
+      note: null,
+    };
+
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({
+        installed: true,
+        serverId: 'srv_vw',
+        serverName: 'vaultwarden',
+        status: 'running',
+        tools: [
+          {
+            name: 'vault_deliver_credential',
+            description: 'Deliver a credential',
+            highPrivilege: true,
+            approvalRequired: true,
+          },
+        ],
+        defaults: {
+          approvalTools: ['vault_deliver_credential'],
+          highPrivilegeTools: ['vault_deliver_credential'],
+        },
+        pendingApprovals: [ticket],
+        accessLog: [],
+      }),
+    );
+    const overview = await client.getVaultWarden();
+    expect(overview.installed).toBe(true);
+    expect(overview.pendingApprovals).toHaveLength(1);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/vaultwarden');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ server }));
+    await client.protectVaultWarden('srv_vw');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/vaultwarden/protect');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ serverId: 'srv_vw' });
+
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({
+        escalation: { ...ticket, status: 'approved' },
+        result: { content: [{ type: 'text', text: '/run/gateway/secrets/delivery-abc123' }], isError: false },
+      }),
+    );
+    const resolved = await client.resolveEscalation('esc-20261029-ab12', 'approved');
+    expect(resolved.escalation.status).toBe('approved');
+    expect(resolved.result).toEqual({
+      content: [{ type: 'text', text: '/run/gateway/secrets/delivery-abc123' }],
+      isError: false,
+    });
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/escalations/esc-20261029-ab12/resolve');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ status: 'approved' });
+  });
+
+  it('normalises a sparse Vault Warden overview (not installed)', async () => {
+    const client = new ApiClient('http://gateway.test');
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({ installed: false, defaults: { approvalTools: ['vault_deliver_credential'] } }),
+    );
+
+    const overview = await client.getVaultWarden();
+    expect(overview).toMatchObject({
+      installed: false,
+      defaults: { approvalTools: ['vault_deliver_credential'], highPrivilegeTools: [] },
+      pendingApprovals: [],
+      accessLog: [],
+      tools: [],
+    });
+  });
+});

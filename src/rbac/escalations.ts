@@ -31,6 +31,10 @@ interface EscalationRow {
   reason: string;
   request_payload: string | null;
   status: string;
+  ticket_type: string | null;
+  tool_arguments: string | null;
+  result_json: string | null;
+  consumed_at: string | null;
   created_at: string;
   resolved_at: string | null;
   resolved_by: string | null;
@@ -49,6 +53,10 @@ function mapRow(row: EscalationRow): EscalationTicket {
     reason: row.reason,
     requestPayload: parseJson<unknown>(row.request_payload, null),
     status: row.status as EscalationStatus,
+    ticketType: row.ticket_type === 'tool_approval' ? 'tool_approval' : 'scope',
+    toolArguments: parseJson<unknown>(row.tool_arguments, null),
+    result: parseJson<unknown>(row.result_json, null),
+    consumedAt: row.consumed_at ?? null,
     createdAt: row.created_at,
     resolvedAt: row.resolved_at ?? null,
     resolvedBy: row.resolved_by ?? null,
@@ -82,6 +90,10 @@ export class SqliteEscalationService implements EscalationService {
       reason: input.reason,
       requestPayload: input.requestPayload ?? null,
       status: 'pending',
+      ticketType: 'scope',
+      toolArguments: null,
+      result: null,
+      consumedAt: null,
       createdAt: nowIso(),
       resolvedAt: null,
       resolvedBy: null,

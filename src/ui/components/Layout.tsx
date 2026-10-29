@@ -7,6 +7,7 @@ import { ConfirmDialog } from './ConfirmDialog.js';
 export type PageKey =
   | 'dashboard'
   | 'catalog'
+  | 'vaultwarden'
   | 'rbac'
   | 'vault'
   | 'audit'
@@ -22,7 +23,18 @@ export interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { key: 'dashboard', label: 'Dashboard', icon: '◔', description: 'Live telemetry, request rate and error budget.' },
-  { key: 'catalog', label: 'Catalog', icon: '▤', description: 'Register, import, start and stop MCP sub-servers.' },
+  {
+    key: 'catalog',
+    label: 'Catalog',
+    icon: '▤',
+    description: 'Browse private catalogs, install servers and import local harnesses.',
+  },
+  {
+    key: 'vaultwarden',
+    label: 'Vault Warden',
+    icon: '◈',
+    description: 'Approve agent credential requests and review vault access.',
+  },
   { key: 'rbac', label: 'RBAC', icon: '⬡', description: 'Scoped API keys and per-tool access policy.' },
   { key: 'vault', label: 'Vault', icon: '▣', description: 'Encrypted secrets injected into sub-server environments.' },
   { key: 'audit', label: 'Audit', icon: '≡', description: 'Forensic search across JSON-RPC calls and denials.' },
@@ -129,7 +141,7 @@ export function Layout({ current, onNavigate, children }: LayoutProps) {
           {NAV_ITEMS.map((item) => navButton(item, false))}
         </nav>
         <div className="space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
-          <p>v0.1.0 · MCP 2025-06-18</p>
+          <p>v0.2.0 · MCP 2025-06-18</p>
           <button
             type="button"
             onClick={openKeyModal}

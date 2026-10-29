@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "generic-stdio": {
+      "command": "/opt/example/bin/generic-mcp",
+      "args": ["--transport", "stdio"],
+      "env": {
+        "GENERIC_TOKEN": "generic-fixture-secret-value"
+      }
+    }
+  }
+}

@@ -1,21 +1,24 @@
 /**
- * Git import engine: clone an allowlisted repository, validate its manifest,
- * run a bounded build, then produce a `ServerRecord` for the supervisor.
+ * Git import engine: clone an allowlisted repository, resolve (or auto-detect)
+ * its manifest, run a bounded build, then produce a `ServerRecord` for the
+ * supervisor.
  *
  * Security invariants:
  *  - The clone URL must match a configured prefix (`gitImportAllowedPrefixes`);
  *    an empty allowlist disables imports entirely. This check happens before
  *    any filesystem or process work.
+ *  - Private clones authenticate through git's environment config (never a URL
+ *    with embedded credentials, never argv); captured output is scrubbed.
  *  - No shell is ever used: commands are tokenized and passed to
  *    `spawn(file, args, { shell: false })`.
  *  - Clones and builds have hard timeouts and captured output is truncated.
  *  - Vault secrets are injected into the build environment only; they are never
  *    logged or persisted.
  */
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 
 import type { GatewayConfig } from '../core/config.js';
 import { ErrorCodes, GatewayError, invalidParams } from '../core/errors.js';
@@ -29,20 +32,18 @@ import type {
   VaultService,
 } from '../core/ports.js';
 import type { RuntimeKind, ServerManifest, ServerRecord } from '../core/types.js';
-import { mapRuntime, parseManifestFile, splitCommand } from './manifest.js';
+import { detectManifest, type DetectedManifest } from './autodetect.js';
+import { assertSafeRef, cloneRepository, scrubSecrets } from './clone.js';
+import { mapRuntime, splitCommand } from './manifest.js';
 
-const CLONE_TIMEOUT_MS = 60_000;
 const BUILD_TIMEOUT_MS = 180_000;
 /** Max length of the captured output tail echoed in an error. */
 const ERROR_TAIL_BYTES = 2_048;
 /** Cap on captured build output kept in memory. */
 const MAX_CAPTURED_OUTPUT = 8_192;
+/** Number of build-log lines exposed to the catalog install response. */
+const MAX_BUILD_LOG_LINES = 50;
 const REPOSITORY_NAME_PATTERN = /^[a-z0-9][a-z0-9-_]{0,63}$/;
-
-const DEFAULT_BUILD_COMMANDS: Partial<Record<RuntimeKind, string>> = {
-  node: 'npm install --no-audit --no-fund',
-  python: 'uv sync',
-};
 
 export interface GitImportServiceDeps {
   config: GatewayConfig;
@@ -101,12 +102,30 @@ export function deriveServerName(url: string, requestedName?: string): string {
   return repoBase;
 }
 
+/** Validates/undoes a monorepo sub-directory reference before any clone work. */
+export function normalizeSubpath(subpath: string | null | undefined): string | null {
+  if (subpath === undefined || subpath === null) return null;
+  if (typeof subpath !== 'string') throw invalidParams('"subpath" must be a string');
+  const trimmed = subpath.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.includes('\0') || isAbsolute(trimmed)) {
+    throw invalidParams('Repository "subpath" must be a relative directory', { subpath: trimmed });
+  }
+  const segments = trimmed.split(/[\\/]+/);
+  if (segments.some((segment) => segment === '..' || segment === '.' || segment.length === 0)) {
+    throw invalidParams('Repository "subpath" must not contain "." or ".." segments', { subpath: trimmed });
+  }
+  return segments.join('/');
+}
+
 export class GitImportService implements GitImportServicePort {
   private readonly config: GatewayConfig;
   private readonly repository: CatalogRepository | undefined;
   private readonly vault: VaultService | undefined;
   private readonly persist: ((server: ServerRecord) => void) | undefined;
   private readonly logger: Logger;
+  /** Most recent build output, scrubbed and capped; exposed to the catalog API. */
+  private lastBuildLog: string[] = [];
 
   constructor(deps: GitImportServiceDeps) {
     this.config = deps.config;
@@ -116,10 +135,18 @@ export class GitImportService implements GitImportServicePort {
     this.logger = deps.logger ?? createLogger('git_engine', 'silent');
   }
 
+  /** Tail of the most recent build's combined stdout/stderr (secrets scrubbed). */
+  getLastBuildLogTail(): string[] {
+    return [...this.lastBuildLog];
+  }
+
   async importRepository(input: GitImportInput): Promise<ServerRecord> {
     const url = this.assertUrlAllowed(input);
     const name = deriveServerName(url, input.name);
     this.assertCommandOverrides(input);
+    const ref = assertSafeRef(input.ref);
+    const subpath = normalizeSubpath(input.subpath);
+    const extraEnv = this.assertExtraEnv(input.env);
 
     if (this.repository?.getServerByName(name) != null) {
       throw invalidParams(`A server named "${name}" is already registered`, { name });
@@ -130,21 +157,44 @@ export class GitImportService implements GitImportServicePort {
       throw invalidParams(`Import target already exists: ${targetDir}`, { targetDir });
     }
 
+    this.lastBuildLog = [];
     this.createTargetDir(targetDir);
     try {
-      this.logger.info('Cloning repository for import', { name, url, targetDir });
-      await this.clone(url, targetDir);
+      this.logger.info('Cloning repository for import', {
+        name,
+        url,
+        targetDir,
+        ref,
+        subpath,
+        private: typeof input.token === 'string' && input.token.length > 0,
+      });
+      await cloneRepository({ url, targetDir, ref, token: input.token ?? null });
 
-      const manifest = parseManifestFile(join(targetDir, 'mcp-manifest.json'));
-      const runtime = mapRuntime(manifest.runtime);
+      // A checked-in manifest wins; otherwise derive one from package.json /
+      // pyproject.toml+server.py. Detection failures reject before any build.
+      const detected = detectManifest(targetDir, subpath);
+      const runtime = mapRuntime(detected.manifest.runtime);
+      const workDir = subpath === null ? targetDir : join(targetDir, subpath);
 
-      const buildCommand =
-        input.buildCommand ?? manifest.build_command ?? DEFAULT_BUILD_COMMANDS[runtime];
-      if (buildCommand !== undefined && buildCommand !== null) {
-        await this.runBuild(buildCommand, targetDir, manifest);
+      const buildCommand = input.buildCommand ?? detected.buildCommand;
+      if (buildCommand !== undefined && buildCommand !== null && buildCommand.trim().length > 0) {
+        await this.runBuild(buildCommand, workDir, detected.manifest, {
+          token: input.token ?? null,
+          extraEnv,
+          requiredSecrets: detected.manifest.required_secrets ?? [],
+        });
       }
 
-      const record = this.buildRecord({ url, name, targetDir, manifest, runtime, input });
+      const record = this.buildRecord({
+        url,
+        name,
+        targetDir,
+        workDir,
+        detected,
+        runtime,
+        input,
+        extraEnv,
+      });
       this.persist?.(record);
       this.repository?.upsertServer(record);
       this.logger.info('Imported sub-server from git repository', {
@@ -152,12 +202,19 @@ export class GitImportService implements GitImportServicePort {
         name: record.name,
         runtime: record.runtime,
         sourceUrl: record.sourceUrl,
+        detectedFrom: detected.detectedFrom,
       });
       return record;
     } catch (error) {
       this.cleanupDir(targetDir);
-      if (error instanceof GatewayError) throw error;
-      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof GatewayError) {
+        // Ensure no secret material can ride along in an error (defensive).
+        throw scrubGatewayError(error, input);
+      }
+      const message = scrubSecrets(error instanceof Error ? error.message : String(error), [
+        input.token,
+        ...Object.values(extraEnv),
+      ]);
       throw new GatewayError(ErrorCodes.UPSTREAM_ERROR, `Git import failed: ${message}`, {
         cause: error,
         data: { status: 'UPSTREAM_ERROR', details: { url, name } },
@@ -207,48 +264,22 @@ export class GitImportService implements GitImportServicePort {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Clone
-  // -------------------------------------------------------------------------
-
-  private clone(url: string, targetDir: string): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      execFile(
-        'git',
-        ['clone', '--depth', '1', '--', url, targetDir],
-        {
-          timeout: CLONE_TIMEOUT_MS,
-          killSignal: 'SIGKILL',
-          maxBuffer: 10 * 1024 * 1024,
-          windowsHide: true,
-          // Never block on interactive credential prompts inside a service.
-          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-        },
-        (error, _stdout, stderr) => {
-          if (error === null) {
-            resolve();
-            return;
-          }
-          const timedOut = error.killed === true || error.signal === 'SIGKILL';
-          const outputTail = tail(stderr);
-          const detail =
-            outputTail.length > 0
-              ? `: ${outputTail}`
-              : error.message
-                ? `: ${error.message}`
-                : '';
-          const message = timedOut
-            ? `git clone timed out after ${CLONE_TIMEOUT_MS}ms`
-            : `git clone failed${error.code !== undefined ? ` (exit code ${String(error.code)})` : ''}${detail}`;
-          reject(
-            new GatewayError(ErrorCodes.UPSTREAM_ERROR, message, {
-              cause: error,
-              data: { status: 'UPSTREAM_ERROR', details: { url } },
-            }),
-          );
-        },
-      );
-    });
+  private assertExtraEnv(env: Record<string, string> | undefined): Record<string, string> {
+    if (env === undefined || env === null) return {};
+    if (typeof env !== 'object' || Array.isArray(env)) {
+      throw invalidParams('Import "env" must be an object of string values');
+    }
+    const result: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        throw invalidParams(`Invalid environment variable name "${key}"`, { name: key });
+      }
+      if (typeof value !== 'string') {
+        throw invalidParams(`Environment variable "${key}" must be a string`, { name: key });
+      }
+      result[key] = value;
+    }
+    return result;
   }
 
   // -------------------------------------------------------------------------
@@ -259,6 +290,7 @@ export class GitImportService implements GitImportServicePort {
     commandLine: string,
     cwd: string,
     manifest: ServerManifest,
+    options: { token: string | null; extraEnv: Record<string, string>; requiredSecrets: string[] },
   ): Promise<void> {
     const tokens = splitCommand(commandLine);
     const file = tokens[0];
@@ -267,27 +299,38 @@ export class GitImportService implements GitImportServicePort {
     }
     const args = tokens.slice(1);
 
-    const env: NodeJS.ProcessEnv = { ...process.env, ...(manifest.environment ?? {}) };
-    const requiredSecrets = manifest.required_secrets ?? [];
+    // Precedence: process env < manifest static env < catalog/import UI env.
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...(manifest.environment ?? {}),
+      ...options.extraEnv,
+    };
     // Missing named secrets throw INVALID_PARAMS (names only) before the build runs.
-    const resolvedSecrets = this.vault?.resolveSecrets(requiredSecrets) ?? {};
+    const resolvedSecrets = this.vault?.resolveSecrets(options.requiredSecrets) ?? {};
     for (const [key, value] of Object.entries(resolvedSecrets)) {
       env[key] = value;
     }
+    const scrubList: Array<string | null | undefined> = [
+      options.token,
+      ...Object.values(options.extraEnv),
+      ...Object.values(resolvedSecrets),
+    ];
 
     this.logger.info('Running import build', { cwd, command: file, args, timeoutMs: BUILD_TIMEOUT_MS });
     const result = await this.spawnProcess(file, args, cwd, env, BUILD_TIMEOUT_MS);
+    const combined = `${result.stdout}${result.stderr}`;
+    this.lastBuildLog = tailLines(scrubSecrets(combined, scrubList), MAX_BUILD_LOG_LINES);
 
     if (result.spawnError !== undefined) {
       throw new GatewayError(
         ErrorCodes.UPSTREAM_ERROR,
-        `Failed to start build command "${file}": ${result.spawnError.message}`,
+        `Failed to start build command "${file}": ${scrubSecrets(result.spawnError.message, scrubList)}`,
         { cause: result.spawnError, data: { status: 'UPSTREAM_ERROR' } },
       );
     }
 
     if (result.timedOut) {
-      const outputTail = tail(result.stderr || result.stdout);
+      const outputTail = tail(scrubSecrets(result.stderr || result.stdout, scrubList));
       throw new GatewayError(
         ErrorCodes.UPSTREAM_ERROR,
         `Build timed out after ${BUILD_TIMEOUT_MS}ms${outputTail.length > 0 ? `: ${outputTail}` : ''}`,
@@ -296,7 +339,7 @@ export class GitImportService implements GitImportServicePort {
     }
 
     if (result.exitCode !== 0) {
-      const outputTail = tail(result.stderr || result.stdout);
+      const outputTail = tail(scrubSecrets(result.stderr || result.stdout, scrubList));
       throw new GatewayError(
         ErrorCodes.UPSTREAM_ERROR,
         `Build failed (exit code ${String(result.exitCode)} for "${file}")${outputTail.length > 0 ? `: ${outputTail}` : ''}`,
@@ -378,12 +421,15 @@ export class GitImportService implements GitImportServicePort {
     url: string;
     name: string;
     targetDir: string;
-    manifest: ServerManifest;
+    workDir: string;
+    detected: DetectedManifest;
     runtime: RuntimeKind;
     input: GitImportInput;
+    extraEnv: Record<string, string>;
   }): ServerRecord {
-    const { url, name, targetDir, manifest, runtime, input } = args;
-    const startCommand = input.startCommand ?? manifest.start_command;
+    const { url, name, workDir, detected, runtime, input, extraEnv } = args;
+    const manifest = detected.manifest;
+    const startCommand = input.startCommand ?? detected.startCommand ?? manifest.start_command;
     if (startCommand === undefined || startCommand.trim().length === 0) {
       throw invalidParams('Manifest does not define a usable start command');
     }
@@ -404,12 +450,12 @@ export class GitImportService implements GitImportServicePort {
       command,
       args: startTokens.slice(1),
       url: null,
-      env: { ...(manifest.environment ?? {}) },
+      env: { ...(manifest.environment ?? {}), ...extraEnv },
       manifest,
       highPrivilegeTools: [...(capabilities.high_privilege_tools ?? [])],
       delegationSupported: capabilities.delegation_supported === true,
       sourceUrl: url,
-      workDir: targetDir,
+      workDir,
       lastError: null,
       pid: null,
       createdAt: now,
@@ -444,6 +490,34 @@ export class GitImportService implements GitImportServicePort {
       });
     }
   }
+}
+
+/** Splits captured output into at most `maxLines` non-empty trailing lines. */
+function tailLines(text: string, maxLines: number): string[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+  return lines.slice(Math.max(0, lines.length - maxLines));
+}
+
+/**
+ * Defensive deep-scrub of a GatewayError: token/secret values from the import
+ * request must never surface through an error message or its `data` payload.
+ */
+function scrubGatewayError(error: GatewayError, input: GitImportInput): GatewayError {
+  const secrets: Array<string | null | undefined> = [input.token, ...Object.values(input.env ?? {})];
+  const scrubbedMessage = scrubSecrets(error.message, secrets);
+  const data =
+    error.data === undefined
+      ? undefined
+      : (JSON.parse(scrubSecrets(JSON.stringify(error.data), secrets)) as GatewayError['data']);
+  if (scrubbedMessage === error.message && data === error.data) return error;
+  return new GatewayError(error.code, scrubbedMessage, {
+    data,
+    httpStatus: error.httpStatus,
+    cause: error.cause,
+  });
 }
 
 /** Alias matching the task's preferred class name. */

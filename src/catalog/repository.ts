@@ -29,11 +29,14 @@ interface ServerRow {
   args: string;
   url: string | null;
   env: string;
+  headers: string;
   manifest: string | null;
   high_privilege_tools: string;
   delegation_supported: number;
   source_url: string | null;
   work_dir: string | null;
+  env_file: string | null;
+  approval_required_tools: string;
   last_error: string | null;
   pid: number | null;
   created_at: string;
@@ -62,11 +65,14 @@ function mapServerRow(row: ServerRow): ServerRecord {
     args: parseJson<string[]>(row.args, []),
     url: row.url ?? null,
     env: parseJson<Record<string, string>>(row.env, {}),
+    headers: parseJson<Record<string, string>>(row.headers, {}),
     manifest: parseJson<ServerManifest | null>(row.manifest, null),
     highPrivilegeTools: parseJson<string[]>(row.high_privilege_tools, []),
     delegationSupported: intToBool(row.delegation_supported),
     sourceUrl: row.source_url ?? null,
     workDir: row.work_dir ?? null,
+    envFile: row.env_file ?? null,
+    approvalRequiredTools: parseJson<string[]>(row.approval_required_tools, []),
     lastError: row.last_error ?? null,
     pid: row.pid ?? null,
     createdAt: row.created_at,
@@ -101,10 +107,10 @@ export class SqliteCatalogRepository implements CatalogRepository {
       this.db
         .prepare(
           `INSERT INTO servers
-             (id, name, runtime, transport, status, command, args, url, env, manifest,
-              high_privilege_tools, delegation_supported, source_url, work_dir, last_error,
-              pid, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             (id, name, runtime, transport, status, command, args, url, env, headers, manifest,
+              high_privilege_tools, delegation_supported, source_url, work_dir, env_file,
+              approval_required_tools, last_error, pid, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
              runtime = excluded.runtime,
@@ -114,11 +120,14 @@ export class SqliteCatalogRepository implements CatalogRepository {
              args = excluded.args,
              url = excluded.url,
              env = excluded.env,
+             headers = excluded.headers,
              manifest = excluded.manifest,
              high_privilege_tools = excluded.high_privilege_tools,
              delegation_supported = excluded.delegation_supported,
              source_url = excluded.source_url,
              work_dir = excluded.work_dir,
+             env_file = excluded.env_file,
+             approval_required_tools = excluded.approval_required_tools,
              last_error = excluded.last_error,
              pid = excluded.pid,
              created_at = excluded.created_at,
@@ -134,11 +143,14 @@ export class SqliteCatalogRepository implements CatalogRepository {
           toJson(server.args ?? []),
           server.url ?? null,
           toJson(server.env ?? {}),
+          toJson(server.headers ?? {}),
           server.manifest === null ? null : toJson(server.manifest),
           toJson(server.highPrivilegeTools ?? []),
           boolToInt(server.delegationSupported === true),
           server.sourceUrl ?? null,
           server.workDir ?? null,
+          server.envFile ?? null,
+          toJson(server.approvalRequiredTools ?? []),
           server.lastError ?? null,
           server.pid ?? null,
           server.createdAt,

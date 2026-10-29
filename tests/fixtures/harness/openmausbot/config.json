@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "omb-http": {
+      "type": "http",
+      "url": "https://mcp.example.com/omb",
+      "headers": {
+        "Authorization": "Bearer omb-fixture-secret-header-token"
+      },
+      "env": {
+        "OMB_TOKEN": "omb-fixture-secret-env-value"
+      }
+    },
+    "omb-sse": {
+      "type": "sse",
+      "url": "https://mcp.example.com/omb/sse"
+    }
+  }
+}

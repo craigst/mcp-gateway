@@ -1,0 +1,118 @@
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { afterEach, describe, expect, it } from 'vitest';
+import { migrate, openDatabase, SCHEMA_VERSION } from '../../src/core/db.js';
+
+const tempDirs: string[] = [];
+
+function tempDbPath(): string {
+  const root = join(process.cwd(), '.test-data');
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(join(root, 'migration-'));
+  tempDirs.push(dir);
+  return join(dir, 'gateway.db');
+}
+
+function columnNames(db: DatabaseSync, table: string): string[] {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>;
+  return rows.map((row) => row.name);
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('schema migration', () => {
+  it('creates the v2 schema on a fresh database', () => {
+    const db = openDatabase(tempDbPath());
+    const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
+    expect(version.user_version).toBe(SCHEMA_VERSION);
+    expect(SCHEMA_VERSION).toBe(2);
+
+    expect(columnNames(db, 'servers')).toEqual(expect.arrayContaining(['env_file', 'approval_required_tools']));
+    expect(columnNames(db, 'escalations')).toEqual(
+      expect.arrayContaining(['ticket_type', 'tool_arguments', 'result_json', 'consumed_at']),
+    );
+    const catalogTable = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_sources'")
+      .get() as { name?: string } | undefined;
+    expect(catalogTable?.name).toBe('catalog_sources');
+    db.close();
+  });
+
+  it('upgrades an existing v1 database without losing data', () => {
+    const path = tempDbPath();
+    const db = new DatabaseSync(path);
+    // Minimal v1 shape for the two tables that gained columns.
+    db.exec(`
+      CREATE TABLE servers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        runtime TEXT NOT NULL,
+        transport TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'stopped',
+        command TEXT,
+        args TEXT NOT NULL DEFAULT '[]',
+        url TEXT,
+        env TEXT NOT NULL DEFAULT '{}',
+        manifest TEXT,
+        high_privilege_tools TEXT NOT NULL DEFAULT '[]',
+        delegation_supported INTEGER NOT NULL DEFAULT 0,
+        source_url TEXT,
+        work_dir TEXT,
+        last_error TEXT,
+        pid INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE escalations (
+        id TEXT PRIMARY KEY,
+        ticket_id TEXT NOT NULL UNIQUE,
+        key_id TEXT NOT NULL,
+        tool_id TEXT,
+        server_id TEXT,
+        reason TEXT NOT NULL,
+        request_payload TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        resolved_by TEXT,
+        note TEXT
+      );
+      PRAGMA user_version = 1;
+    `);
+    db.prepare(
+      `INSERT INTO servers (id,name,runtime,transport,status,created_at,updated_at)
+       VALUES ('srv_legacy','legacy','node','stdio','stopped','2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO escalations (id,ticket_id,key_id,reason,status,created_at)
+       VALUES ('esc_legacy','esc-20260101-abcd','key_legacy','HIGH_PRIVILEGE_RESTRICTION','pending','2026-01-01T00:00:00.000Z')`,
+    ).run();
+
+    migrate(db);
+
+    const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
+    expect(version.user_version).toBe(2);
+    expect(columnNames(db, 'servers')).toEqual(expect.arrayContaining(['env_file', 'approval_required_tools']));
+    expect(columnNames(db, 'escalations')).toEqual(
+      expect.arrayContaining(['ticket_type', 'tool_arguments', 'result_json', 'consumed_at']),
+    );
+
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get('srv_legacy') as Record<string, unknown>;
+    expect(server.name).toBe('legacy');
+    expect(server.approval_required_tools).toBe('[]');
+    const ticket = db.prepare('SELECT * FROM escalations WHERE id = ?').get('esc_legacy') as Record<string, unknown>;
+    expect(ticket.status).toBe('pending');
+    expect(ticket.ticket_type).toBe('scope');
+    db.close();
+  });
+
+  it('is idempotent when run twice', () => {
+    const db = openDatabase(tempDbPath());
+    expect(() => migrate(db)).not.toThrow();
+    expect(() => migrate(db)).not.toThrow();
+    db.close();
+  });
+});

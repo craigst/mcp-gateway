@@ -1,0 +1,21 @@
+{
+  "numStartups": 3,
+  "mcpServers": {
+    "brain": {
+      "command": "node",
+      "args": ["/opt/example/brain-mcp/index.js"],
+      "env": {
+        "BRAIN_API_KEY": "claude-fixture-secret-brain-key",
+        "BRAIN_URL": "https://brain.example.com"
+      }
+    },
+    "docs-remote": {
+      "type": "http",
+      "url": "https://mcp.example.com/docs",
+      "headers": {
+        "Authorization": "Bearer claude-fixture-secret-header-token",
+        "X-Example-Tenant": "example-tenant"
+      }
+    }
+  }
+}

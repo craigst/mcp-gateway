@@ -17,11 +17,18 @@ import type {
   AuditEntry,
   AuditStatus,
   AuthorizationDecision,
+  CatalogEntry,
+  CatalogInstallResult,
+  CatalogSource,
+  CatalogSourceKind,
   CreateKeyInput,
   DelegationResult,
   DelegationTarget,
   EscalationStatus,
   EscalationTicket,
+  HarnessImportInput,
+  HarnessScanResult,
+  HarnessSourceInfo,
   IssuedKey,
   JsonSchema,
   PermittedServerSummary,
@@ -227,6 +234,14 @@ export interface GitImportInput {
   /** Override auto-detected build/start commands (manifest normally supplies them). */
   buildCommand?: string;
   startCommand?: string;
+  /** Git ref (branch/tag) to check out; defaults to the remote default branch. */
+  ref?: string | null;
+  /** Sub-directory inside a monorepo that contains the manifest/package.json. */
+  subpath?: string | null;
+  /** Plaintext clone token for private repositories (never logged/persisted). */
+  token?: string | null;
+  /** Environment supplied by the catalog/import UI (merged into the build env). */
+  env?: Record<string, string>;
 }
 
 export interface GitImportService {
@@ -284,3 +299,85 @@ export interface MetricsSnapshot {
 
 // Backwards-compatible re-export (canonical definition lives in types.ts).
 export type { VaultSecretMetadata } from './types.js';
+
+
+// ---------------------------------------------------------------------------
+// v0.2 — plugin catalog, harness discovery and tool approval gating
+// ---------------------------------------------------------------------------
+
+export interface CatalogSourceInput {
+  label: string;
+  kind: CatalogSourceKind;
+  repoUrl: string;
+  ref?: string | null;
+  subpath?: string | null;
+  /** Plaintext token; when supplied it is written to the AES-256 vault. */
+  token?: string | null;
+}
+
+export interface CatalogInstallRequest {
+  sourceId: string;
+  entryId: string;
+  name?: string;
+  env?: Record<string, string>;
+  envFile?: string | null;
+  start?: boolean;
+  test?: boolean;
+}
+
+export interface CatalogImportUrlRequest {
+  url: string;
+  ref?: string | null;
+  subpath?: string | null;
+  name?: string;
+  env?: Record<string, string>;
+  envFile?: string | null;
+  start?: boolean;
+  test?: boolean;
+}
+
+export interface PluginCatalogService {
+  listSources(): CatalogSource[];
+  addSource(input: CatalogSourceInput): Promise<CatalogSource>;
+  removeSource(id: string): void;
+  listEntries(sourceId: string): Promise<CatalogEntry[]>;
+  install(input: CatalogInstallRequest): Promise<CatalogInstallResult>;
+  importUrl(input: CatalogImportUrlRequest): Promise<CatalogInstallResult>;
+}
+
+export interface HarnessDiscoveryService {
+  listSources(): HarnessSourceInfo[];
+  scan(harnessIds?: string[]): Promise<HarnessScanResult>;
+  importEntry(input: HarnessImportInput): Promise<ServerRecord>;
+}
+
+export type ApprovalTicketState = 'pending' | 'approved' | 'consumed' | 'denied' | 'expired' | 'invalid';
+
+export interface ApprovalResult {
+  state: ApprovalTicketState;
+  ticket: EscalationTicket | null;
+  /** Stored execution result (CallToolResult); never a raw secret value. */
+  result: unknown;
+}
+
+/**
+ * Approval gating for dangerous tools (e.g. Vaultwarden credential delivery).
+ * The gateway creates a ticket, a supervisor approves it in the UI (which
+ * executes once and stores the result), and the agent then retries with the
+ * ticket to collect the stored result.
+ */
+export interface ApprovalService {
+  requiresApproval(serverId: string, toolName: string): boolean;
+  createToolApproval(input: {
+    key: AuthenticatedKey;
+    serverId: string;
+    toolId: string;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    requestId: string;
+  }): EscalationTicket;
+  /** Atomically mark a ticket consumed and return its stored result. */
+  takeResult(ticketId: string, keyId: string, toolId: string): ApprovalResult;
+  approveAndExecute(ticketId: string, resolvedBy: string, note?: string | null): Promise<{ ticket: EscalationTicket; result: unknown }>;
+  deny(ticketId: string, resolvedBy: string, note?: string | null): EscalationTicket;
+}

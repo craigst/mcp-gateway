@@ -4,6 +4,7 @@ import { newId, nowIso } from '../core/ids.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { GatewayConfig } from '../core/config.js';
 import type {
+  ApprovalService,
   AuditService,
   CatalogService,
   DelegationService,
@@ -26,6 +27,7 @@ import type {
 } from '../core/types.js';
 import { KEY_TYPES } from '../core/types.js';
 import { readJsonBody } from '../gateway/server.js';
+import type { AdminSubRouter } from './types.js';
 
 const RUNTIMES: RuntimeKind[] = ['node', 'python', 'binary', 'remote-agent'];
 const TRANSPORTS: TransportKind[] = ['stdio', 'http', 'sse', 'websocket'];
@@ -41,6 +43,11 @@ export interface AdminDeps {
   git: GitImportService;
   audit: AuditService;
   delegation: DelegationService;
+  approvals?: ApprovalService;
+  /** Mounted admin sub-routers (v0.2). */
+  catalogApi?: AdminSubRouter;
+  discoveryApi?: AdminSubRouter;
+  vaultwardenApi?: AdminSubRouter;
   logger?: Logger;
 }
 
@@ -85,6 +92,12 @@ export class AdminApi {
         case 'escalations':
           await this.handleEscalations(req, res, rest, url);
           return true;
+        case 'catalog':
+          return (await this.deps.catalogApi?.handle(req, res, url)) ?? false;
+        case 'discovery':
+          return (await this.deps.discoveryApi?.handle(req, res, url)) ?? false;
+        case 'vaultwarden':
+          return (await this.deps.vaultwardenApi?.handle(req, res, url)) ?? false;
         default:
           return false;
       }
@@ -192,12 +205,85 @@ export class AdminApi {
       this.sendJson(res, 200, { deleted: true });
       return;
     }
+    if (rest.length === 2 && rest[1]! === 'tools' && method === 'GET') {
+      const server = this.deps.catalog.repository.getServer(rest[0]!);
+      if (!server) throw new GatewayError(ErrorCodes.TOOL_NOT_FOUND, 'Server not found', { httpStatus: 404 });
+      const tools = this.deps.catalog.repository.listToolsByServer(server.id);
+      this.sendJson(res, 200, {
+        serverId: server.id,
+        approvalRequiredTools: server.approvalRequiredTools ?? [],
+        highPrivilegeTools: server.highPrivilegeTools,
+        tools: tools.map((tool) => ({
+          id: tool.id,
+          name: tool.name,
+          description: tool.description,
+          highPrivilege: tool.highPrivilege,
+          approvalRequired: (server.approvalRequiredTools ?? []).includes(tool.name),
+          inputSchema: tool.inputSchema,
+        })),
+        total: tools.length,
+      });
+      return;
+    }
+    if (rest.length === 2 && rest[1]! === 'test' && method === 'POST') {
+      this.sendJson(res, 200, await this.testServer(rest[0]!));
+      return;
+    }
+    if (rest.length === 2 && rest[1]! === 'policy' && (method === 'PATCH' || method === 'POST')) {
+      const existing = this.deps.catalog.repository.getServer(rest[0]!);
+      if (!existing) throw new GatewayError(ErrorCodes.TOOL_NOT_FOUND, 'Server not found', { httpStatus: 404 });
+      const body = await readJsonBody(req, this.deps.config.requestBodyLimitBytes);
+      this.assertObject(body);
+      const updated = {
+        ...existing,
+        highPrivilegeTools: Array.isArray(body.highPrivilegeTools) ? body.highPrivilegeTools.map(String) : existing.highPrivilegeTools,
+        approvalRequiredTools: Array.isArray(body.approvalRequiredTools)
+          ? body.approvalRequiredTools.map(String)
+          : existing.approvalRequiredTools ?? [],
+        envFile: body.envFile === null ? null : typeof body.envFile === 'string' ? body.envFile : existing.envFile ?? null,
+        updatedAt: nowIso(),
+      };
+      this.deps.catalog.repository.upsertServer(updated);
+      this.sendJson(res, 200, { server: updated });
+      return;
+    }
     if (rest.length === 2 && rest[1]! === 'logs' && method === 'GET') {
       const url = new URL(req.url ?? '/', 'http://localhost');
       this.sendJson(res, 200, { lines: this.deps.supervisor.logs(rest[0]!, numberParam(url, 'limit', 200)) });
       return;
     }
     throw new GatewayError(ErrorCodes.METHOD_NOT_FOUND, 'Unknown server endpoint', { httpStatus: 404 });
+  }
+
+  private async testServer(serverId: string): Promise<{
+    ok: boolean;
+    toolCount: number;
+    tools: string[];
+    latencyMs: number;
+    error: string | null;
+  }> {
+    const started = performance.now();
+    try {
+      if (this.deps.supervisor.status(serverId) !== 'running') await this.deps.supervisor.start(serverId);
+      const client = this.deps.supervisor.client(serverId);
+      if (!client) throw new GatewayError(ErrorCodes.UPSTREAM_ERROR, 'Server did not start');
+      const tools = await client.listTools();
+      return {
+        ok: true,
+        toolCount: tools.length,
+        tools: tools.map((tool) => tool.name),
+        latencyMs: Number((performance.now() - started).toFixed(2)),
+        error: null,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        toolCount: 0,
+        tools: [],
+        latencyMs: Number((performance.now() - started).toFixed(2)),
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   private buildServerRecord(body: Record<string, unknown>): ServerRecord {
@@ -223,8 +309,13 @@ export class AdminApi {
       args: Array.isArray(body.args) ? body.args.map(String) : [],
       url,
       env: isRecord(body.env) ? (Object.fromEntries(Object.entries(body.env).map(([k, v]) => [k, String(v)])) as Record<string, string>) : {},
+      headers: isRecord(body.headers)
+        ? (Object.fromEntries(Object.entries(body.headers).map(([k, v]) => [k, String(v)])) as Record<string, string>)
+        : {},
       manifest: null,
       highPrivilegeTools: Array.isArray(body.highPrivilegeTools) ? body.highPrivilegeTools.map(String) : [],
+      approvalRequiredTools: Array.isArray(body.approvalRequiredTools) ? body.approvalRequiredTools.map(String) : [],
+      envFile: body.envFile === null ? null : body.envFile ? String(body.envFile) : null,
       delegationSupported: Boolean(body.delegationSupported),
       sourceUrl: null,
       workDir: body.workDir ? String(body.workDir) : null,
@@ -339,7 +430,21 @@ export class AdminApi {
       this.assertObject(body);
       const status = body.status;
       if (status !== 'approved' && status !== 'denied') throw invalidParams("status must be 'approved' or 'denied'");
-      const ticket = this.deps.escalations.resolve(rest[0]!, status, key.name, body.note ? String(body.note) : null);
+      const note = body.note ? String(body.note) : null;
+      const existing = this.deps.escalations.get(rest[0]!);
+
+      if (existing?.ticketType === 'tool_approval' && this.deps.approvals) {
+        if (status === 'approved') {
+          const executed = await this.deps.approvals.approveAndExecute(existing.ticketId, key.name, note);
+          this.sendJson(res, 200, { escalation: executed.ticket, result: executed.result });
+          return;
+        }
+        const denied = this.deps.approvals.deny(existing.ticketId, key.name, note);
+        this.sendJson(res, 200, { escalation: denied });
+        return;
+      }
+
+      const ticket = this.deps.escalations.resolve(rest[0]!, status, key.name, note);
       this.sendJson(res, 200, { escalation: ticket });
       return;
     }

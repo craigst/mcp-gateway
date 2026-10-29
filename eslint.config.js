@@ -8,7 +8,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['**/*.mjs'],
+    files: ['**/*.mjs', 'tests/fixtures/**/*.js'],
     languageOptions: {
       globals: {
         process: 'readonly',

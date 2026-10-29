@@ -1,0 +1,43 @@
+{
+  "mcp": [
+    {
+      "name": "brain-mcp",
+      "serverName": "brain",
+      "path": "servers/brain-mcp",
+      "entry": "server.js",
+      "tag": "v1.1.0",
+      "description": "Example brain MCP server",
+      "installCommand": "./scripts/dsh-wire.sh --deploy"
+    },
+    {
+      "name": "broken-mcp",
+      "serverName": "broken",
+      "path": "servers/broken-mcp",
+      "entry": "server.js",
+      "tag": "v0.1.0",
+      "description": "Vendored submodule without an MCP entry point"
+    },
+    {
+      "name": "no-entry-mcp",
+      "path": "servers/no-entry-mcp",
+      "tag": "v2.0.0",
+      "description": "Pinned entry missing its entry file"
+    },
+    {
+      "name": "url-only-mcp",
+      "serverName": "urlonly",
+      "entry": "cli.js",
+      "repoUrl": "https://github.com/example/url-only-mcp.git",
+      "tag": "v3.0.0",
+      "description": "Pinned entry that only defines an explicit repository URL"
+    }
+  ],
+  "bundles": [
+    {
+      "name": "dsh-runtime",
+      "path": "bundles/dsh-runtime",
+      "tag": "v0.9.0",
+      "description": "DSH runtime bundle (not an MCP server)"
+    }
+  ]
+}

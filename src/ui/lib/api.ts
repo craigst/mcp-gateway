@@ -8,13 +8,22 @@
 import type {
   AuditEntry,
   AuditStatus,
+  CatalogEntry,
+  CatalogInstallResult,
+  CatalogSource,
+  CatalogSourceKind,
   EscalationStatus,
   EscalationTicket,
+  HarnessImportInput,
+  HarnessScanResult,
+  HarnessSourceInfo,
+  InstallTestResult,
   KeySummary,
   KeyType,
   RuntimeKind,
   ServerGrant,
   ServerRecord,
+  ServerStatus,
   TransportKind,
   VaultSecretMetadata,
 } from '../../core/types.js';
@@ -183,6 +192,115 @@ export interface VaultListResponse {
 export type ResolveEscalationStatus = 'approved' | 'denied';
 
 // ---------------------------------------------------------------------------
+// v0.2 wire types — plugin catalog, harness discovery, Vault Warden
+// ---------------------------------------------------------------------------
+
+export interface AddCatalogSourceRequest {
+  label: string;
+  kind: CatalogSourceKind;
+  repoUrl: string;
+  ref?: string | null;
+  subpath?: string | null;
+  /** Plaintext clone token; the gateway stores it in the AES-256 vault and never returns it. */
+  token?: string | null;
+}
+
+export interface CatalogEntriesResult {
+  source: CatalogSource;
+  entries: CatalogEntry[];
+}
+
+export interface CatalogInstallRequest {
+  sourceId: string;
+  entryId: string;
+  name?: string;
+  env?: Record<string, string>;
+  envFile?: string | null;
+  start?: boolean;
+  test?: boolean;
+}
+
+export interface CatalogImportUrlRequest {
+  url: string;
+  ref?: string | null;
+  subpath?: string | null;
+  name?: string;
+  env?: Record<string, string>;
+  envFile?: string | null;
+  start?: boolean;
+  test?: boolean;
+}
+
+/** Body for `POST /admin/discovery/scan`; omitted/empty means every adapter. */
+export interface DiscoveryScanRequest {
+  harnessIds?: string[];
+}
+
+/** Tool row returned by `GET /admin/servers/:id/tools` (v0.2 policy view). */
+export interface AdminServerTool {
+  id: string;
+  name: string;
+  description: string;
+  highPrivilege: boolean;
+  approvalRequired: boolean;
+  inputSchema?: unknown;
+}
+
+export interface ServerToolsResult {
+  serverId: string;
+  approvalRequiredTools: string[];
+  highPrivilegeTools: string[];
+  tools: AdminServerTool[];
+  total: number;
+}
+
+export interface UpdateServerPolicyRequest {
+  highPrivilegeTools?: string[];
+  approvalRequiredTools?: string[];
+  envFile?: string | null;
+}
+
+/** Tool row returned by `GET /admin/vaultwarden`. */
+export interface VaultWardenTool {
+  name: string;
+  description: string;
+  highPrivilege: boolean;
+  approvalRequired: boolean;
+}
+
+export interface VaultWardenDefaults {
+  approvalTools: string[];
+  highPrivilegeTools: string[];
+}
+
+/**
+ * Vault Warden overview (`GET /admin/vaultwarden`).
+ * When the plugin is not installed the endpoint returns the same envelope with
+ * `installed: false`, empty `tools`/`pendingApprovals`/`accessLog` and defaults.
+ */
+export interface VaultWardenOverview {
+  installed: boolean;
+  serverId?: string | null;
+  serverName?: string | null;
+  status?: ServerStatus | null;
+  tools?: VaultWardenTool[];
+  defaults: VaultWardenDefaults;
+  pendingApprovals: EscalationTicket[];
+  accessLog: AuditEntry[];
+}
+
+export interface EscalationResolveResult {
+  escalation: EscalationTicket;
+  /** Stored one-shot tool result for an approved `tool_approval` ticket. */
+  result?: unknown;
+}
+
+export interface RequestOptions {
+  /** Caller-owned abort signal (combined with the client timeout). */
+  signal?: AbortSignal;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -232,6 +350,9 @@ function now(): number {
   return Date.now();
 }
 
+/** Clone + auto-manifest + build + register can exceed the default timeout. */
+const INSTALL_TIMEOUT_MS = 180_000;
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -270,8 +391,12 @@ export class ApiClient {
 
   // -- transport ------------------------------------------------------------
 
-  /** Perform an authenticated request and decode its JSON body. */
-  async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  /**
+   * Perform an authenticated request and decode its JSON body.
+   * `timeoutMs` overrides the client-wide timeout for long operations
+   * (clone + build + install can take minutes).
+   */
+  async request<T>(path: string, init: RequestInit = {}, timeoutMs: number = this.timeoutMs): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (init.headers) {
       if (typeof Headers !== 'undefined' && init.headers instanceof Headers) {
@@ -295,7 +420,7 @@ export class ApiClient {
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, this.timeoutMs);
+    }, timeoutMs);
     const externalListeners: Array<() => void> = [];
     if (init.signal) {
       const external = init.signal;
@@ -323,7 +448,7 @@ export class ApiClient {
         throw new ApiError({
           status: 0,
           code: 'TIMEOUT',
-          message: `Request ${path} timed out after ${this.timeoutMs}ms`,
+          message: `Request ${path} timed out after ${timeoutMs}ms`,
         });
       }
       if (error instanceof ApiError) throw error;
@@ -487,6 +612,148 @@ export class ApiClient {
     return response.server;
   }
 
+  async serverTools(id: string): Promise<ServerToolsResult> {
+    return this.request<ServerToolsResult>(`/mcp/v1/admin/servers/${encodeURIComponent(id)}/tools`);
+  }
+
+  /** Activation probe: starts the server if needed and lists its tools. */
+  testServer(id: string, options: RequestOptions = {}): Promise<InstallTestResult> {
+    return this.request<InstallTestResult>(
+      `/mcp/v1/admin/servers/${encodeURIComponent(id)}/test`,
+      {
+        method: 'POST',
+        body: JSON.stringify({}),
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+      60_000,
+    );
+  }
+
+  /** Save tool policy (high-privilege / approval-required) plus an env file path. */
+  async updateServerPolicy(id: string, patch: UpdateServerPolicyRequest): Promise<ServerRecord> {
+    const response = await this.request<{ server: ServerRecord }>(
+      `/mcp/v1/admin/servers/${encodeURIComponent(id)}/policy`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    );
+    return response.server;
+  }
+
+  // -- v0.2 plugin catalog --------------------------------------------------
+
+  async listCatalogSources(): Promise<CatalogSource[]> {
+    const response = await this.request<{ sources?: CatalogSource[] }>('/mcp/v1/admin/catalog/sources');
+    return response.sources ?? [];
+  }
+
+  async addCatalogSource(input: AddCatalogSourceRequest): Promise<CatalogSource> {
+    const response = await this.request<{ source: CatalogSource }>('/mcp/v1/admin/catalog/sources', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return response.source;
+  }
+
+  async deleteCatalogSource(id: string): Promise<boolean> {
+    const response = await this.request<{ deleted?: boolean }>(
+      `/mcp/v1/admin/catalog/sources/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    );
+    return response.deleted ?? false;
+  }
+
+  async listCatalogEntries(sourceId: string, refresh = false): Promise<CatalogEntriesResult> {
+    const query = buildQuery({ refresh: refresh ? 1 : undefined });
+    return this.request<CatalogEntriesResult>(
+      `/mcp/v1/admin/catalog/sources/${encodeURIComponent(sourceId)}/entries${query}`,
+    );
+  }
+
+  installCatalogEntry(
+    input: CatalogInstallRequest,
+    options: RequestOptions = {},
+  ): Promise<CatalogInstallResult> {
+    return this.request<CatalogInstallResult>(
+      '/mcp/v1/admin/catalog/install',
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+      INSTALL_TIMEOUT_MS,
+    );
+  }
+
+  importCatalogUrl(
+    input: CatalogImportUrlRequest,
+    options: RequestOptions = {},
+  ): Promise<CatalogInstallResult> {
+    return this.request<CatalogInstallResult>(
+      '/mcp/v1/admin/catalog/import-url',
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+      INSTALL_TIMEOUT_MS,
+    );
+  }
+
+  // -- v0.2 local harness discovery ----------------------------------------
+
+  async listDiscoverySources(): Promise<HarnessSourceInfo[]> {
+    const response = await this.request<{ sources?: HarnessSourceInfo[] }>('/mcp/v1/admin/discovery/sources');
+    return response.sources ?? [];
+  }
+
+  async scanDiscovery(harnessIds?: string[]): Promise<HarnessScanResult> {
+    const body: DiscoveryScanRequest =
+      harnessIds !== undefined && harnessIds.length > 0 ? { harnessIds } : {};
+    const response = await this.request<Partial<HarnessScanResult>>(
+      '/mcp/v1/admin/discovery/scan',
+      { method: 'POST', body: JSON.stringify(body) },
+      60_000,
+    );
+    return {
+      sources: response.sources ?? [],
+      entries: response.entries ?? [],
+      errors: response.errors ?? [],
+    };
+  }
+
+  async importDiscoveryEntry(input: HarnessImportInput): Promise<ServerRecord> {
+    const response = await this.request<{ server: ServerRecord }>('/mcp/v1/admin/discovery/import', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return response.server;
+  }
+
+  // -- v0.2 Vault Warden ----------------------------------------------------
+
+  async getVaultWarden(): Promise<VaultWardenOverview> {
+    const response = await this.request<Partial<VaultWardenOverview>>('/mcp/v1/admin/vaultwarden');
+    return {
+      ...response,
+      installed: response.installed === true,
+      defaults: {
+        approvalTools: response.defaults?.approvalTools ?? [],
+        highPrivilegeTools: response.defaults?.highPrivilegeTools ?? [],
+      },
+      pendingApprovals: response.pendingApprovals ?? [],
+      accessLog: response.accessLog ?? [],
+      tools: response.tools ?? [],
+    };
+  }
+
+  /** Apply the default Vault Warden protection sets to its sub-server. */
+  async protectVaultWarden(serverId: string): Promise<ServerRecord> {
+    const response = await this.request<{ server: ServerRecord }>('/mcp/v1/admin/vaultwarden/protect', {
+      method: 'POST',
+      body: JSON.stringify({ serverId }),
+    });
+    return response.server;
+  }
+
   // -- vault ----------------------------------------------------------------
 
   listVaultSecrets(): Promise<VaultListResponse> {
@@ -541,16 +808,21 @@ export class ApiClient {
     return response.escalations ?? [];
   }
 
+  /**
+   * Approve/deny an escalation ticket. For `tool_approval` tickets an approval
+   * executes the stored call once and returns its stored result alongside the
+   * updated ticket.
+   */
   async resolveEscalation(
     ticket: string,
     status: ResolveEscalationStatus,
     note?: string,
-  ): Promise<EscalationTicket> {
-    const response = await this.request<{ escalation: EscalationTicket }>(
+  ): Promise<EscalationResolveResult> {
+    const response = await this.request<EscalationResolveResult>(
       `/mcp/v1/admin/escalations/${encodeURIComponent(ticket)}/resolve`,
       { method: 'POST', body: JSON.stringify(note ? { status, note } : { status }) },
     );
-    return response.escalation;
+    return response;
   }
 }
 

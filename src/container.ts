@@ -29,6 +29,12 @@ import { SqliteAuditService } from './gateway/audit.js';
 import { JsonRpcRouter } from './gateway/router.js';
 import { GatewayHttpServer, type GatewayAddress } from './gateway/server.js';
 import { AdminApi } from './admin/router.js';
+import { SqliteApprovalService } from './approvals/service.js';
+import { VaultwardenApi } from './admin/vaultwarden-api.js';
+import { DefaultHarnessDiscoveryService } from './discovery/service.js';
+import { DiscoveryApi } from './admin/discovery-api.js';
+import { GitPluginCatalog } from './catalog_sources/index.js';
+import { CatalogApi } from './admin/catalog-api.js';
 
 export interface GatewayServices {
   keys: KeyService;
@@ -111,6 +117,15 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
   });
 
   const supervisor = new DefaultSupervisor({ repository, config, vault, logger });
+
+  // v0.2: approval gating for dangerous tools + Vault Warden + harness discovery.
+  const approvals = new SqliteApprovalService({ db, repository, supervisor, logger });
+  const vaultwardenApi = new VaultwardenApi({ config, keys, catalog, audit, db, logger });
+  const discovery = new DefaultHarnessDiscoveryService({ repository, logger });
+  const discoveryApi = new DiscoveryApi({ config, keys, discovery, logger });
+  const pluginCatalog = new GitPluginCatalog({ db, config, repository, vault, supervisor, git, logger });
+  const catalogApi = new CatalogApi({ config, keys, catalog: pluginCatalog, logger });
+
   const router = new JsonRpcRouter({
     config,
     keys,
@@ -120,6 +135,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     supervisor,
     delegation,
     audit,
+    approvals,
     logger,
   });
   const admin = new AdminApi({
@@ -133,6 +149,10 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     git,
     audit,
     delegation,
+    approvals,
+    vaultwardenApi,
+    discoveryApi,
+    catalogApi,
     logger,
   });
   const server = new GatewayHttpServer({ config, router, admin, keys, supervisor, audit, logger });

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.example.com/config.json",
+  "mcp": {
+    "local-tools": {
+      "type": "local",
+      "command": ["npx", "-y", "@example/local-mcp-server"],
+      "environment": {
+        "LOCAL_API_KEY": "opencode-fixture-secret-local-key"
+      },
+      "enabled": true
+    },
+    "remote-tools": {
+      "type": "remote",
+      "url": "https://mcp.example.com/opencode",
+      "headers": {
+        "Authorization": "Bearer opencode-fixture-secret-header-token"
+      },
+      "enabled": false
+    }
+  }
+}

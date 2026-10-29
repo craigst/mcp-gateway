@@ -177,7 +177,7 @@ Legend: ✅ = done when its automated tests pass and CI is green.
 ### Cross-cutting (Lead)
 - `README.md`, `docs/ARCHITECTURE.md`, `docs/API.md`, `docs/MANIFEST.md`, `SECURITY.md`, `CONTRIBUTING.md`, `.env.example`.
 - CI workflow: typecheck → lint → unit/integration tests → UI build → Docker build.
-- Release hygiene: MIT license, `v0.1.0` tag.
+- Release hygiene: MIT license, `v0.2.0` tag.
 
 ---
 
@@ -212,7 +212,7 @@ Legend: ✅ = done when its automated tests pass and CI is green.
 | M4 | Delegation + observer (+ tests) | Teammate C | M0 (interfaces) |
 | M5 | Web UI console | Teammate D | M0, admin API surface |
 | M6 | Admin API + integration/E2E tests | Lead | M1, M2, M3, M4 |
-| M7 | Docker image, CI, docs, release v0.1.0 | Lead | M1–M6 |
+| M7 | Docker image, CI, docs, release v0.2.0 | Lead | M1–M6 |
 
 Parallelism rule: each workstream owns disjoint directories; `src/core/` contracts are changed only by the Lead.
 Cross-module imports go through the agreed interfaces; integration wiring is the Lead's job.
@@ -245,3 +245,20 @@ Cross-module imports go through the agreed interfaces; integration wiring is the
 | `MCP_GIT_IMPORT_ALLOWED_PREFIXES` | off | Comma-separated clone URL allowlist. |
 | `MCP_UI_DIST` | `ui/dist` | Compiled console bundle. |
 | `MCP_LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error`/`silent`. |
+
+---
+
+## v0.2 upgrade (shipped)
+
+Major upgrade delivering private-catalog import and approval-gated credential access.
+
+| Area | Delivered |
+|---|---|
+| Plugin catalog | DB-backed `catalog_sources`; providers for DSH-style umbrella repos (`.gitmodules` + `pinned.json` `mcp[]`/`bundles[]`), single GitHub repos, and arbitrary catalog JSON; install pipeline clone → auto-manifest → bounded build → register → optional start/test; per-source tokens stored in the AES-256 vault. |
+| Auto-manifest | Node (`bin`/`main`/conventional entry, dependency-aware build) and Python (`pyproject` + `uv`) detection when `mcp-manifest.json` is absent; unsupported entries flagged before cloning. Private clone auth via git env headers (`x-access-token`), never argv/URL/logs. |
+| Harness discovery | Read-only adapters for Claude Code, opencode, OpenMausBot and generic JSON configs; returns env/header **names only**; one-click import preserving command/args/transport, optional `envFile`, runtime mapping. |
+| Approval gating | `approvalRequiredTools` per server; gated calls return `-32004` with a ticket; supervisor approval executes the stored call once and the agent retrieves the result with `_meta.escalation_ticket` (one-shot). |
+| Vault Warden | Vaultwarden-specific defaults, `GET /admin/vaultwarden` (tools, protection, pending requests, access log), `POST /admin/vaultwarden/protect`, dedicated UI page. Adds `headers` support for remote MCP transports. |
+| Schema | Version 2 migration: `servers.headers/env_file/approval_required_tools`, escalation ticket type/args/result/consumed, `catalog_sources`; automatic upgrade from v1. |
+| UI | Tabbed catalog workspace (Installed / Discover / Sources / Import), server policy drawer with per-tool protection, install dialog with env + probe result, Vault Warden approvals, toasts/skeletons, deep-linkable routes. |
+| Tests | 480 tests / 40 files (unit, integration, live stdio E2E, approval + discovery flows, jsdom UI); real-world validation against a private umbrella catalog and local harness configs. |

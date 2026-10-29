@@ -220,11 +220,17 @@ export interface ServerRecord {
   args: string[];
   url: string | null;
   env: Record<string, string>;
+  /** HTTP auth headers for remote transports (values only in DB/local, never exposed by discovery). */
+  headers?: Record<string, string>;
   manifest: ServerManifest | null;
   highPrivilegeTools: string[];
   delegationSupported: boolean;
   sourceUrl: string | null;
   workDir: string | null;
+  /** Optional env file (KEY=VALUE lines) read at start; values are never persisted. */
+  envFile?: string | null;
+  /** Tools that require an approved escalation ticket before execution. */
+  approvalRequiredTools?: string[];
   lastError: string | null;
   pid: number | null;
   createdAt: string;
@@ -318,6 +324,9 @@ export interface AuditEntry {
 
 export type EscalationStatus = 'pending' | 'approved' | 'denied' | 'expired';
 
+/** `scope` = transient privilege escalation; `tool_approval` = gated tool execution. */
+export type EscalationTicketType = 'scope' | 'tool_approval';
+
 export interface EscalationTicket {
   id: string;
   ticketId: string;
@@ -327,6 +336,12 @@ export interface EscalationTicket {
   reason: string;
   requestPayload: unknown;
   status: EscalationStatus;
+  ticketType?: EscalationTicketType;
+  /** Arguments captured for a gated tool call (executed only after approval). */
+  toolArguments?: unknown;
+  /** Result of the approved execution (may be a delivery path; never a secret value). */
+  result?: unknown;
+  consumedAt?: string | null;
   createdAt: string;
   resolvedAt: string | null;
   resolvedBy: string | null;
@@ -355,4 +370,107 @@ export interface RequestContext {
   /** Resolved per-request metadata from HTTP headers. */
   headers: Record<string, string>;
   clientIp: string | null;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.2 — plugin catalog (GitHub / private repos)
+// ---------------------------------------------------------------------------
+
+export type CatalogSourceKind = 'dsh-umbrella' | 'github-repo' | 'catalog-json';
+
+export interface CatalogSource {
+  id: string;
+  label: string;
+  kind: CatalogSourceKind;
+  /** Repository URL (https) or raw catalog JSON URL for `catalog-json`. */
+  repoUrl: string;
+  ref: string | null;
+  subpath: string | null;
+  /** Name of the AES-256 vault secret holding the API/clone token. */
+  tokenSecretName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CatalogEntry {
+  id: string;
+  sourceId: string;
+  name: string;
+  repoUrl: string;
+  ref: string | null;
+  /** Entry file inside the repository (e.g. `brain-mcp.js`). */
+  entry: string | null;
+  kind: 'mcp' | 'bundle';
+  serverName: string | null;
+  description: string | null;
+  installCommand: string | null;
+  supported: boolean;
+  unsupportedReason: string | null;
+  installedServerId: string | null;
+}
+
+export interface InstallTestResult {
+  ok: boolean;
+  toolCount: number;
+  tools: string[];
+  latencyMs: number;
+  error: string | null;
+}
+
+export interface CatalogInstallResult {
+  server: ServerRecord;
+  test: InstallTestResult | null;
+  buildLogTail: string[];
+}
+
+// ---------------------------------------------------------------------------
+// v0.2 — local harness discovery (Claude / opencode / OpenMausBot / generic)
+// ---------------------------------------------------------------------------
+
+export interface HarnessSourceInfo {
+  id: string;
+  label: string;
+  configPath: string;
+  exists: boolean;
+  serverCount: number;
+}
+
+export type HarnessTransport = 'stdio' | 'http' | 'sse' | 'websocket';
+
+export interface HarnessEntry {
+  id: string;
+  harness: string;
+  name: string;
+  transport: HarnessTransport;
+  command: string | null;
+  args: string[];
+  url: string | null;
+  /** Env variable NAMES only — values are never returned by discovery. */
+  envKeys: string[];
+  /** Optional env file the harness loads (values stay on disk). */
+  envFile: string | null;
+  /** Header NAMES only for remote transports. */
+  headerKeys: string[];
+  enabled: boolean;
+}
+
+export interface HarnessScanResult {
+  sources: HarnessSourceInfo[];
+  entries: HarnessEntry[];
+  errors: Array<{ harness: string; error: string }>;
+}
+
+export interface HarnessImportInput {
+  harness: string;
+  name: string;
+  transport?: HarnessTransport;
+  command?: string | null;
+  args?: string[];
+  url?: string | null;
+  env?: Record<string, string>;
+  envFile?: string | null;
+  headers?: Record<string, string>;
+  highPrivilegeTools?: string[];
+  approvalRequiredTools?: string[];
 }

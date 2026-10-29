@@ -18,7 +18,7 @@ export function openDatabase(dbPath: string): DatabaseSync {
   return db;
 }
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export function migrate(db: DatabaseSync): void {
   db.exec(`
@@ -55,11 +55,14 @@ export function migrate(db: DatabaseSync): void {
       args TEXT NOT NULL DEFAULT '[]',
       url TEXT,
       env TEXT NOT NULL DEFAULT '{}',
+      headers TEXT NOT NULL DEFAULT '{}',
       manifest TEXT,
       high_privilege_tools TEXT NOT NULL DEFAULT '[]',
       delegation_supported INTEGER NOT NULL DEFAULT 0,
       source_url TEXT,
       work_dir TEXT,
+      env_file TEXT,
+      approval_required_tools TEXT NOT NULL DEFAULT '[]',
       last_error TEXT,
       pid INTEGER,
       created_at TEXT NOT NULL,
@@ -118,6 +121,10 @@ export function migrate(db: DatabaseSync): void {
       reason TEXT NOT NULL,
       request_payload TEXT,
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','denied','expired')),
+      ticket_type TEXT NOT NULL DEFAULT 'scope',
+      tool_arguments TEXT,
+      result_json TEXT,
+      consumed_at TEXT,
       created_at TEXT NOT NULL,
       resolved_at TEXT,
       resolved_by TEXT,
@@ -138,13 +145,42 @@ export function migrate(db: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_delegation_trace ON delegation_traces(trace_id);
+
+    CREATE TABLE IF NOT EXISTS catalog_sources (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('dsh-umbrella','github-repo','catalog-json')),
+      repo_url TEXT NOT NULL,
+      ref TEXT,
+      subpath TEXT,
+      token_secret_name TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   const row = db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined;
   const current = Number(row?.user_version ?? 0);
+  if (current < 2) {
+    // v1 -> v2: tool approval gating, env-file support, plugin catalog sources.
+    ensureColumn(db, 'servers', 'headers', "TEXT NOT NULL DEFAULT '{}'");
+    ensureColumn(db, 'servers', 'env_file', 'TEXT');
+    ensureColumn(db, 'servers', 'approval_required_tools', "TEXT NOT NULL DEFAULT '[]'");
+    ensureColumn(db, 'escalations', 'ticket_type', "TEXT NOT NULL DEFAULT 'scope'");
+    ensureColumn(db, 'escalations', 'tool_arguments', 'TEXT');
+    ensureColumn(db, 'escalations', 'result_json', 'TEXT');
+    ensureColumn(db, 'escalations', 'consumed_at', 'TEXT');
+  }
   if (current < SCHEMA_VERSION) {
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
+}
+
+/** Adds a column when a pre-existing database predates the current schema. */
+function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>;
+  if (columns.some((entry) => entry.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 export function parseJson<T>(raw: string | null | undefined, fallback: T): T {

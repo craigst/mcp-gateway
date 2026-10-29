@@ -49,3 +49,45 @@ export function InlineNotice({ children }: { children: ReactNode }) {
     </p>
   );
 }
+
+export type NoticeTone = 'success' | 'error' | 'info' | 'warning';
+
+const NOTICE_CLASS: Record<NoticeTone, string> = {
+  success: 'border-emerald-900/60 bg-emerald-950/30 text-emerald-200',
+  error: 'border-rose-900/60 bg-rose-950/30 text-rose-200',
+  info: 'border-sky-900/60 bg-sky-950/30 text-sky-200',
+  warning: 'border-amber-900/50 bg-amber-950/30 text-amber-200',
+};
+
+export interface NoticeProps {
+  tone?: NoticeTone;
+  title?: ReactNode;
+  children?: ReactNode;
+  onDismiss?: () => void;
+  className?: string;
+}
+
+/** Inline success / error / info banner with an optional dismiss button. */
+export function Notice({ tone = 'info', title, children, onDismiss, className }: NoticeProps) {
+  return (
+    <div
+      role={tone === 'error' ? 'alert' : 'status'}
+      className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-2 text-xs ${NOTICE_CLASS[tone]}${className ? ` ${className}` : ''}`}
+    >
+      <div className="min-w-0 space-y-0.5">
+        {title !== undefined && <p className="font-semibold">{title}</p>}
+        {children !== undefined && <div className="opacity-90">{children}</div>}
+      </div>
+      {onDismiss !== undefined && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss message"
+          className="shrink-0 text-[11px] opacity-70 transition-opacity hover:opacity-100"
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  );
+}

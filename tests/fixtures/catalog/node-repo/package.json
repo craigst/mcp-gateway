@@ -1,0 +1,8 @@
+{
+  "name": "example-node-mcp",
+  "version": "1.0.0",
+  "description": "Generic Node MCP server fixture without mcp-manifest.json",
+  "main": "server.js",
+  "dependencies": {},
+  "license": "MIT"
+}

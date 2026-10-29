@@ -3,6 +3,7 @@ import { newRequestId } from '../core/ids.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { GatewayConfig } from '../core/config.js';
 import type {
+  ApprovalService,
   AuditService,
   CatalogService,
   DelegationService,
@@ -29,11 +30,13 @@ export interface RouterDeps {
   supervisor: Supervisor;
   delegation: DelegationService;
   audit: AuditService;
+  /** Optional tool-approval gating (v0.2). */
+  approvals?: ApprovalService;
   logger?: Logger;
 }
 
 const PROTOCOL_VERSION = '2025-06-18';
-const GATEWAY_VERSION = '0.1.0';
+const GATEWAY_VERSION = '0.2.0';
 
 /**
  * JSON-RPC method dispatch. Authorization, audit recording and escalation
@@ -130,6 +133,54 @@ export class JsonRpcRouter {
           const decision = this.deps.policy.evaluateCall(key, tool, args);
           if (!decision.allowed) {
             throw await this.deny(ctx, tool, decision);
+          }
+
+          const approvals = this.deps.approvals;
+          if (approvals?.requiresApproval(tool.serverId, tool.name)) {
+            const meta = asObject(params._meta ?? {});
+            const supplied = typeof meta.escalation_ticket === 'string' ? meta.escalation_ticket : ctx.headers['x-mcp-escalation-ticket'];
+            if (!supplied) {
+              const ticket = approvals.createToolApproval({
+                key,
+                serverId: tool.serverId,
+                toolId: tool.id,
+                toolName: tool.name,
+                arguments: args,
+                requestId: ctx.requestId,
+              });
+              throw new GatewayError(
+                ErrorCodes.ESCALATION_REQUIRED,
+                `Approval required: '${tool.name}' needs a supervisor ticket before execution.`,
+                {
+                  data: {
+                    status: 'ESCALATION_REQUIRED',
+                    reason: 'APPROVAL_REQUIRED',
+                    ticket_id: ticket.ticketId,
+                    escalation_supported: true,
+                    tool_id: tool.id,
+                    server_id: tool.serverId,
+                  },
+                },
+              );
+            }
+            const approval = approvals.takeResult(supplied, key.id, tool.id);
+            if (approval.state === 'approved' && approval.result !== undefined && approval.result !== null) {
+              return approval.result;
+            }
+            throw new GatewayError(
+              ErrorCodes.ESCALATION_REQUIRED,
+              `Approval ticket '${supplied}' is ${approval.state}.`,
+              {
+                data: {
+                  status: 'ESCALATION_REQUIRED',
+                  reason: 'APPROVAL_PENDING',
+                  ticket_id: supplied,
+                  escalation_supported: true,
+                  tool_id: tool.id,
+                  server_id: tool.serverId,
+                },
+              },
+            );
           }
 
           if (this.deps.supervisor.status(tool.serverId) !== 'running') {

@@ -1,0 +1,16 @@
+[submodule "brain-mcp"]
+	path = servers/brain-mcp
+	url = https://github.com/example/brain-mcp.git
+	branch = main
+
+[submodule "broken-mcp"]
+	path = servers/broken-mcp
+	url = https://github.com/example/broken-mcp.git
+
+[submodule "no-entry-mcp"]
+	path = servers/no-entry-mcp
+	url = https://github.com/example/no-entry-mcp.git
+
+[submodule "dsh-runtime"]
+	path = bundles/dsh-runtime
+	url = https://github.com/example/dsh-runtime.git

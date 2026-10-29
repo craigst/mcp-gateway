@@ -44,3 +44,7 @@ logs/
 
 # test scratch data
 .test-data/
+
+# local/private catalog + import configs (never commit)
+catalog.local.json
+*.local.json

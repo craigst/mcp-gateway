@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { GatewayError, ErrorCodes } from '../core/errors.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { GatewayConfig } from '../core/config.js';
@@ -94,7 +95,8 @@ export class DefaultSupervisor implements Supervisor {
   private async createClient(record: ServerRecord, onLog: (line: SubServerLogLine) => void): Promise<McpClient> {
     if (record.transport === 'stdio') {
       if (!record.command) throw new GatewayError(ErrorCodes.INVALID_PARAMS, `Server '${record.name}' has no command`);
-      const env = { ...record.env };
+      const env = { ...(record.envFile ? readEnvFile(record.envFile) : {}), ...record.env };
+      if (record.envFile) this.pushLog(record.id, 'system', `loaded env file ${record.envFile}`);
       const requiredSecrets = record.manifest?.required_secrets ?? [];
       if (requiredSecrets.length > 0 && this.options.vault) {
         Object.assign(env, this.options.vault.resolveSecrets(requiredSecrets));
@@ -115,6 +117,7 @@ export class DefaultSupervisor implements Supervisor {
     const client = new HttpMcpClient({
       serverId: record.id,
       url: record.url,
+      headers: record.headers ?? {},
       requestTimeoutMs: this.options.config.defaultToolTimeoutMs,
     });
     return client;
@@ -219,4 +222,33 @@ export class DefaultSupervisor implements Supervisor {
       }
     }
   }
+}
+
+
+/**
+ * Parses a simple `KEY=VALUE` env file (comments and blank lines ignored,
+ * optional `export ` prefix and single/double quotes supported). Values are
+ * returned only to the spawned child process and are never logged.
+ */
+export function readEnvFile(path: string): Record<string, string> {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (error) {
+    throw new GatewayError(ErrorCodes.INVALID_PARAMS, `Unable to read env file: ${path}`, { cause: error });
+  }
+  const env: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(trimmed);
+    if (!match) continue;
+    const key = match[1] as string;
+    let value = (match[2] as string).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    env[key] = value;
+  }
+  return env;
 }
