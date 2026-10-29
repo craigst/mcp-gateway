@@ -15,8 +15,6 @@
  *  - Vault secrets are injected into the build environment only; they are never
  *    logged or persisted.
  */
-import { spawn } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 
@@ -33,16 +31,10 @@ import type {
 } from '../core/ports.js';
 import type { RuntimeKind, ServerManifest, ServerRecord } from '../core/types.js';
 import { detectManifest, type DetectedManifest } from './autodetect.js';
-import { assertSafeRef, cloneRepository, scrubSecrets } from './clone.js';
+import { BUILD_TIMEOUT_MS, runBuildCommand } from './build.js';
+import { assertAllowedCloneUrl, assertSafeRef, cloneRepository, scrubSecrets } from './clone.js';
 import { mapRuntime, splitCommand } from './manifest.js';
 
-const BUILD_TIMEOUT_MS = 180_000;
-/** Max length of the captured output tail echoed in an error. */
-const ERROR_TAIL_BYTES = 2_048;
-/** Cap on captured build output kept in memory. */
-const MAX_CAPTURED_OUTPUT = 8_192;
-/** Number of build-log lines exposed to the catalog install response. */
-const MAX_BUILD_LOG_LINES = 50;
 const REPOSITORY_NAME_PATTERN = /^[a-z0-9][a-z0-9-_]{0,63}$/;
 
 export interface GitImportServiceDeps {
@@ -54,28 +46,6 @@ export interface GitImportServiceDeps {
   /** Optional persistence hook (e.g. supervisor registration). */
   persist?: (server: ServerRecord) => void;
   logger?: Logger;
-}
-
-interface ProcessResult {
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-  spawnError?: Error;
-}
-
-function tail(text: string, maxBytes = ERROR_TAIL_BYTES): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= maxBytes) return trimmed;
-  return trimmed.slice(trimmed.length - maxBytes);
-}
-
-function appendCapped(existing: string, chunk: string): string {
-  const combined = existing + chunk;
-  return combined.length <= MAX_CAPTURED_OUTPUT
-    ? combined
-    : combined.slice(combined.length - MAX_CAPTURED_OUTPUT);
 }
 
 /** Derive a filesystem/DB-safe server name from user input or the repo basename. */
@@ -227,32 +197,7 @@ export class GitImportService implements GitImportServicePort {
   // -------------------------------------------------------------------------
 
   private assertUrlAllowed(input: GitImportInput): string {
-    const url = typeof input.url === 'string' ? input.url.trim() : '';
-    if (url.length === 0) {
-      throw invalidParams('Git import requires a non-empty "url"');
-    }
-
-    const allowedPrefixes = this.config.gitImportAllowedPrefixes;
-    if (allowedPrefixes.length === 0) {
-      // SECURITY: disabled before any filesystem/process work.
-      throw new GatewayError(ErrorCodes.ACCESS_DENIED, 'Git import is disabled', {
-        data: { status: 'FORBIDDEN', reason: 'GIT_IMPORT_DISABLED' },
-        httpStatus: 403,
-      });
-    }
-
-    const allowed = allowedPrefixes.some((prefix) => prefix.length > 0 && url.startsWith(prefix));
-    if (!allowed) {
-      throw new GatewayError(
-        ErrorCodes.ACCESS_DENIED,
-        'Clone URL is not in the allowed import prefixes',
-        {
-          data: { status: 'FORBIDDEN', reason: 'GIT_IMPORT_URL_NOT_ALLOWED', details: { url } },
-          httpStatus: 403,
-        },
-      );
-    }
-    return url;
+    return assertAllowedCloneUrl(input.url, this.config.gitImportAllowedPrefixes);
   }
 
   private assertCommandOverrides(input: GitImportInput): void {
@@ -292,125 +237,30 @@ export class GitImportService implements GitImportServicePort {
     manifest: ServerManifest,
     options: { token: string | null; extraEnv: Record<string, string>; requiredSecrets: string[] },
   ): Promise<void> {
-    const tokens = splitCommand(commandLine);
-    const file = tokens[0];
-    if (file === undefined) {
-      throw invalidParams('Build command is empty');
-    }
-    const args = tokens.slice(1);
-
     // Precedence: process env < manifest static env < catalog/import UI env.
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
+    const env: Record<string, string> = {
       ...(manifest.environment ?? {}),
       ...options.extraEnv,
     };
     // Missing named secrets throw INVALID_PARAMS (names only) before the build runs.
     const resolvedSecrets = this.vault?.resolveSecrets(options.requiredSecrets) ?? {};
-    for (const [key, value] of Object.entries(resolvedSecrets)) {
-      env[key] = value;
-    }
+    Object.assign(env, resolvedSecrets);
     const scrubList: Array<string | null | undefined> = [
       options.token,
       ...Object.values(options.extraEnv),
       ...Object.values(resolvedSecrets),
     ];
 
-    this.logger.info('Running import build', { cwd, command: file, args, timeoutMs: BUILD_TIMEOUT_MS });
-    const result = await this.spawnProcess(file, args, cwd, env, BUILD_TIMEOUT_MS);
-    const combined = `${result.stdout}${result.stderr}`;
-    this.lastBuildLog = tailLines(scrubSecrets(combined, scrubList), MAX_BUILD_LOG_LINES);
-
-    if (result.spawnError !== undefined) {
-      throw new GatewayError(
-        ErrorCodes.UPSTREAM_ERROR,
-        `Failed to start build command "${file}": ${scrubSecrets(result.spawnError.message, scrubList)}`,
-        { cause: result.spawnError, data: { status: 'UPSTREAM_ERROR' } },
-      );
-    }
-
-    if (result.timedOut) {
-      const outputTail = tail(scrubSecrets(result.stderr || result.stdout, scrubList));
-      throw new GatewayError(
-        ErrorCodes.UPSTREAM_ERROR,
-        `Build timed out after ${BUILD_TIMEOUT_MS}ms${outputTail.length > 0 ? `: ${outputTail}` : ''}`,
-        { data: { status: 'UPSTREAM_ERROR', details: { timedOut: true } } },
-      );
-    }
-
-    if (result.exitCode !== 0) {
-      const outputTail = tail(scrubSecrets(result.stderr || result.stdout, scrubList));
-      throw new GatewayError(
-        ErrorCodes.UPSTREAM_ERROR,
-        `Build failed (exit code ${String(result.exitCode)} for "${file}")${outputTail.length > 0 ? `: ${outputTail}` : ''}`,
-        { data: { status: 'UPSTREAM_ERROR', details: { exitCode: result.exitCode } } },
-      );
-    }
-
-    this.logger.debug('Import build completed', { cwd, exitCode: result.exitCode });
-  }
-
-  private spawnProcess(
-    file: string,
-    args: string[],
-    cwd: string,
-    env: NodeJS.ProcessEnv,
-    timeoutMs: number,
-  ): Promise<ProcessResult> {
-    return new Promise<ProcessResult>((resolve) => {
-      let child: ChildProcess;
-      try {
-        child = spawn(file, args, {
-          cwd,
-          env,
-          shell: false,
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-      } catch (error) {
-        resolve({
-          exitCode: null,
-          signal: null,
-          stdout: '',
-          stderr: '',
-          timedOut: false,
-          spawnError: error instanceof Error ? error : new Error(String(error)),
-        });
-        return;
-      }
-
-      let stdout = '';
-      let stderr = '';
-      let timedOut = false;
-      let settled = false;
-
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill('SIGKILL');
-      }, timeoutMs);
-
-      const finish = (result: ProcessResult): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(result);
-      };
-
-      child.stdout?.setEncoding('utf8');
-      child.stderr?.setEncoding('utf8');
-      child.stdout?.on('data', (chunk: string) => {
-        stdout = appendCapped(stdout, chunk);
-      });
-      child.stderr?.on('data', (chunk: string) => {
-        stderr = appendCapped(stderr, chunk);
-      });
-      child.on('error', (error) => {
-        finish({ exitCode: null, signal: null, stdout, stderr, timedOut, spawnError: error });
-      });
-      child.on('close', (code, signal) => {
-        finish({ exitCode: code, signal, stdout, stderr, timedOut });
-      });
+    this.logger.info('Running import build', { cwd, commandLine, timeoutMs: BUILD_TIMEOUT_MS });
+    const result = await runBuildCommand({
+      commandLine,
+      cwd,
+      env,
+      timeoutMs: BUILD_TIMEOUT_MS,
+      secrets: scrubList,
     });
+    this.lastBuildLog = result.logTail;
+    this.logger.debug('Import build completed', { cwd, exitCode: result.exitCode });
   }
 
   // -------------------------------------------------------------------------
@@ -490,15 +340,6 @@ export class GitImportService implements GitImportServicePort {
       });
     }
   }
-}
-
-/** Splits captured output into at most `maxLines` non-empty trailing lines. */
-function tailLines(text: string, maxLines: number): string[] {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter((line) => line.length > 0);
-  return lines.slice(Math.max(0, lines.length - maxLines));
 }
 
 /**

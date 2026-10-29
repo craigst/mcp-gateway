@@ -7,15 +7,25 @@ import { Drawer } from '../../components/Drawer.js';
 import { Badge, badgeToneForStatus } from '../../components/Badge.js';
 import { ErrorState, Notice } from '../../components/States.js';
 import { SkeletonBlock } from '../../components/Skeleton.js';
-import { CheckboxField, Field, GhostButton, PrimaryButton, SecondaryButton, TextInput } from '../../components/Form.js';
+import { CheckboxField, GhostButton, PrimaryButton, SecondaryButton, Select } from '../../components/Form.js';
 import { LiveLogPanel } from '../../components/LiveLogPanel.js';
 import { useToast } from '../../components/Toasts.js';
-import type { InstallTestResult, ServerRecord } from '../../../core/types.js';
+import { UpdateDialog } from './UpdateDialog.js';
+import type {
+  ConfigProfileApplyResult,
+  ConfigProfileSummary,
+  InstallTestResult,
+  ServerRecord,
+  ServerSourceInfo,
+  UpdateCheckResult,
+} from '../../../core/types.js';
 
 export interface ServerDrawerProps {
   server: ServerRecord;
   onClose: () => void;
   onSaved: (server: ServerRecord) => void;
+  /** Called after an update or profile change so the parent list can refresh. */
+  onUpdated: () => void;
 }
 
 function InfoRow({ label, children }: { label: string; children: ReactNode }) {
@@ -39,26 +49,38 @@ function truncateMiddle(value: string, max = 52): string {
  * high-privilege and approval-required toggles, env file, activation probe
  * and logs.
  */
-export function ServerDrawer({ server, onClose, onSaved }: ServerDrawerProps) {
+export function ServerDrawer({ server, onClose, onSaved, onUpdated }: ServerDrawerProps) {
   const toast = useToast();
   const toolsState = useAsyncData(() => api.serverTools(server.id), [server.id]);
   const logsState = useAsyncData(() => api.serverLogs(server.id, 200), [server.id]);
 
+  const updatesState = useAsyncData<ServerSourceInfo | null>(async () => {
+    const sources = await api.listServerUpdates();
+    return sources.find((source) => source.serverId === server.id) ?? null;
+  }, [server.id]);
+  const profilesState = useAsyncData(() => api.listConfigProfiles(), []);
+
   const [highPrivilegeTools, setHighPrivilegeTools] = useState<string[]>([]);
   const [approvalRequiredTools, setApprovalRequiredTools] = useState<string[]>([]);
-  const [envFile, setEnvFile] = useState(server.envFile ?? '');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<InstallTestResult | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<UpdateCheckResult | null>(null);
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const [selectedProfileId, setSelectedProfileId] = useState('');
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [applyResults, setApplyResults] = useState<ConfigProfileApplyResult[] | null>(null);
+  const [migrating, setMigrating] = useState(false);
 
   useEffect(() => {
     if (toolsState.status !== 'ready') return;
     setHighPrivilegeTools(toolsState.data.highPrivilegeTools);
     setApprovalRequiredTools(toolsState.data.approvalRequiredTools);
-    setEnvFile(server.envFile ?? '');
-  }, [toolsState.status, toolsState.data, server.envFile]);
+  }, [toolsState.status, toolsState.data]);
 
   const toggle = (list: string[], setList: (next: string[]) => void, name: string): void => {
     setList(list.includes(name) ? list.filter((entry) => entry !== name) : [...list, name]);
@@ -71,7 +93,6 @@ export function ServerDrawer({ server, onClose, onSaved }: ServerDrawerProps) {
       const updated = await api.updateServerPolicy(server.id, {
         highPrivilegeTools,
         approvalRequiredTools,
-        envFile: envFile.trim() === '' ? null : envFile.trim(),
       });
       toast('success', `Policy saved for “${updated.name}”.`);
       onSaved(updated);
@@ -92,6 +113,108 @@ export function ServerDrawer({ server, onClose, onSaved }: ServerDrawerProps) {
       setTestError(formatApiError(error));
     } finally {
       setTesting(false);
+    }
+  };
+
+  const source = updatesState.status === 'ready' ? updatesState.data : null;
+  const profiles: ConfigProfileSummary[] = profilesState.status === 'ready' ? profilesState.data : [];
+  const attachedIds = server.configProfileIds ?? profiles
+    .filter((profile) => profile.attachedServerIds.includes(server.id))
+    .map((profile) => profile.id);
+  const attachedProfiles = profiles.filter((profile) => attachedIds.includes(profile.id));
+  const updateAvailable =
+    checkResult !== null ? checkResult.updateAvailable : source?.updateAvailable === true;
+
+  useEffect(() => {
+    if (profilesState.status !== 'ready') return;
+    if (selectedProfileId !== '' && profiles.some((profile) => profile.id === selectedProfileId)) return;
+    const next = profiles.find((profile) => attachedIds.includes(profile.id)) ?? profiles[0];
+    setSelectedProfileId(next?.id ?? '');
+  }, [profilesState.status, profilesState.data, selectedProfileId]);
+
+  const checkNow = async (): Promise<void> => {
+    setChecking(true);
+    setProfileError(null);
+    try {
+      const result = await api.checkServerUpdate(server.id);
+      setCheckResult(result);
+      if (result.error !== null) {
+        toast('error', `Update check failed: ${result.error}`);
+      } else if (result.updateAvailable) {
+        toast('info', `Update available: v${result.fromVersion ?? '?'} → v${result.toVersion ?? '?'}`);
+      } else {
+        toast('success', 'This server is up to date.');
+      }
+      updatesState.reload();
+      onUpdated();
+    } catch (error) {
+      setProfileError(formatApiError(error));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const applyProfile = async (options: { restart: boolean; test: boolean }): Promise<void> => {
+    if (selectedProfileId === '') {
+      setProfileError('Choose a configuration profile first.');
+      return;
+    }
+    setProfileBusy(true);
+    setProfileError(null);
+    try {
+      const results = await api.applyConfigProfile(selectedProfileId, {
+        serverIds: [server.id],
+        restart: options.restart,
+        test: options.test,
+      });
+      setApplyResults(results);
+      const first = results[0];
+      if (first?.error !== null && first?.error !== undefined) {
+        setProfileError(first.error);
+      } else {
+        const name = profiles.find((profile) => profile.id === selectedProfileId)?.name ?? 'Profile';
+        toast('success', `“${name}” applied to “${server.name}”.`);
+      }
+      profilesState.reload();
+      onUpdated();
+    } catch (error) {
+      setProfileError(formatApiError(error));
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const detachProfile = async (profile: ConfigProfileSummary): Promise<void> => {
+    setProfileBusy(true);
+    setProfileError(null);
+    try {
+      await api.detachConfigProfile(profile.id, server.id);
+      toast('success', `Detached “${profile.name}” from “${server.name}”.`);
+      profilesState.reload();
+      onUpdated();
+    } catch (error) {
+      setProfileError(formatApiError(error));
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const migrateEnvFile = async (): Promise<void> => {
+    setMigrating(true);
+    setProfileError(null);
+    try {
+      const profile = await api.migrateEnvFile(server.id);
+      toast(
+        'success',
+        `Migrated legacy env file into encrypted profile “${profile.name}” and attached it.`,
+      );
+      profilesState.reload();
+      onSaved(server);
+      onUpdated();
+    } catch (error) {
+      setProfileError(formatApiError(error));
+    } finally {
+      setMigrating(false);
     }
   };
 
@@ -163,6 +286,106 @@ export function ServerDrawer({ server, onClose, onSaved }: ServerDrawerProps) {
 
         <section>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Source &amp; updates</h3>
+            <div className="flex flex-wrap items-center gap-1">
+              <GhostButton onClick={() => void checkNow()} disabled={checking}>
+                {checking ? 'Checking…' : 'Check now'}
+              </GhostButton>
+              <PrimaryButton
+                onClick={() => setUpdateOpen(true)}
+                disabled={!updateAvailable || checking}
+                className="px-2 py-1 text-[11px]"
+              >
+                Update now
+              </PrimaryButton>
+            </div>
+          </div>
+          {updatesState.status === 'loading' && (
+            <div role="status" aria-label="Loading update status" className="space-y-2">
+              <SkeletonBlock className="h-3 w-2/3" />
+              <SkeletonBlock className="h-3 w-1/2" />
+            </div>
+          )}
+          {updatesState.status === 'error' && (
+            <ErrorState message={updatesState.error} onRetry={updatesState.reload} />
+          )}
+          {updatesState.status === 'ready' &&
+            (source === null ? (
+              <p className="rounded-xl border border-dashed border-slate-800 px-3 py-3 text-[11px] text-slate-500">
+                This server has no tracked upstream repository (locally registered or imported from a harness
+                entry). Install it from a catalog or Git URL to enable update checks.
+              </p>
+            ) : (
+              <dl className="grid gap-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4 sm:grid-cols-2">
+                <InfoRow label="Repository">
+                  {source.repoUrl === null ? (
+                    '—'
+                  ) : (
+                    <span className="break-all font-mono text-[11px]" title={source.repoUrl}>
+                      {truncateMiddle(source.repoUrl, 64)}
+                    </span>
+                  )}
+                </InfoRow>
+                <InfoRow label="Requested ref">{source.requestedRef ?? '—'}</InfoRow>
+                <InfoRow label="Installed version">
+                  {source.installedVersion === null ? '—' : `v${source.installedVersion}`}
+                </InfoRow>
+                <InfoRow label="Installed commit">
+                  <span className="font-mono text-[11px]">{source.installedCommit ?? '—'}</span>
+                </InfoRow>
+                <InfoRow label="Latest version">
+                  {source.latestVersion === null ? '—' : `v${source.latestVersion}`}
+                  {source.latestRef !== null ? ` (${source.latestRef})` : ''}
+                </InfoRow>
+                <InfoRow label="Latest commit">
+                  <span className="font-mono text-[11px]">{source.latestCommit ?? '—'}</span>
+                </InfoRow>
+                <InfoRow label="Last checked">
+                  {source.checkedAt === null ? 'never' : formatTimestamp(source.checkedAt)}
+                </InfoRow>
+                <InfoRow label="Status">
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    {source.checkError !== null ? (
+                      <Badge tone="danger">error</Badge>
+                    ) : source.updateAvailable ? (
+                      <Badge tone="warning">update available</Badge>
+                    ) : (
+                      <Badge tone="success">up to date</Badge>
+                    )}
+                    {source.changelogUrl !== null && /^https?:\/\//.test(source.changelogUrl) && (
+                      <a
+                        href={source.changelogUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[11px] font-semibold text-sky-300 underline-offset-2 hover:underline"
+                      >
+                        Changelog ↗
+                      </a>
+                    )}
+                  </span>
+                </InfoRow>
+                {source.checkError !== null && (
+                  <div className="sm:col-span-2">
+                    <InfoRow label="Check error">
+                      <span className="text-rose-300">{source.checkError}</span>
+                    </InfoRow>
+                  </div>
+                )}
+              </dl>
+            ))}
+          {checkResult !== null && (
+            <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-[11px] text-slate-400">
+              Latest check: <span className="font-mono text-slate-300">{checkResult.status}</span>
+              {' · '}v{checkResult.fromVersion ?? '—'} → v{checkResult.toVersion ?? '—'}
+              {' · '}commits {checkResult.fromCommit?.slice(0, 7) ?? '—'} →{' '}
+              {checkResult.toCommit?.slice(0, 7) ?? '—'}
+              {checkResult.error !== null ? ` · ${checkResult.error}` : ''}
+            </div>
+          )}
+        </section>
+
+        <section>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
               Tools &amp; approval policy
             </h3>
@@ -218,19 +441,146 @@ export function ServerDrawer({ server, onClose, onSaved }: ServerDrawerProps) {
                 </ul>
               ))}
           </div>
-          <div className="mt-3">
-            <Field
-              label="Env file"
-              hint="Optional KEY=VALUE file read at start (for example ~/.config/example/mcp.env). Values stay on disk and are never persisted."
-            >
-              <TextInput
-                value={envFile}
-                onChange={(event) => setEnvFile(event.target.value)}
-                placeholder="~/.config/example/mcp.env"
-                spellCheck={false}
-              />
-            </Field>
+          <p className="mt-3 text-[11px] text-slate-500">
+            Environment values, credentials and headers are managed by encrypted configuration profiles — open the
+            <span className="mx-1 font-semibold text-slate-300">Configurations</span>
+            page to attach reusable profiles instead of env files.
+          </p>
+        </section>
+
+        <section>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Configuration profiles
+            </h3>
+            <GhostButton onClick={profilesState.reload}>Refresh</GhostButton>
           </div>
+
+          {server.envFile !== null && server.envFile !== undefined && (
+            <Notice tone="warning" title="Legacy env file detected">
+              <p>
+                This server still reads <code className="font-mono">{server.envFile}</code>. Migrate it into an
+                encrypted profile so the values live in the gateway vault and can be reused.
+              </p>
+              <button
+                type="button"
+                onClick={() => void migrateEnvFile()}
+                disabled={migrating}
+                className="mt-2 rounded-lg border border-amber-700 px-2.5 py-1 text-[11px] font-semibold text-amber-100 transition-colors hover:bg-amber-900/40 disabled:opacity-50"
+              >
+                {migrating ? 'Migrating…' : 'Migrate to encrypted profile'}
+              </button>
+            </Notice>
+          )}
+
+          {profilesState.status === 'loading' && (
+            <div role="status" aria-label="Loading configuration profiles" className="space-y-2">
+              <SkeletonBlock className="h-6 w-1/2" />
+              <SkeletonBlock className="h-8 w-full" />
+            </div>
+          )}
+          {profilesState.status === 'error' && (
+            <ErrorState message={profilesState.error} onRetry={profilesState.reload} />
+          )}
+          {profilesState.status === 'ready' && (
+            <div className="space-y-3">
+              {attachedProfiles.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-slate-800 px-3 py-3 text-[11px] text-slate-500">
+                  No encrypted configuration profiles attached. Attach one below to inject shared values without an
+                  env file.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {attachedProfiles.map((profile) => (
+                    <span
+                      key={profile.id}
+                      className="inline-flex items-center gap-1 rounded-full border border-indigo-800 bg-indigo-950/70 py-0.5 pl-2 pr-1 text-[11px] text-indigo-200"
+                    >
+                      {profile.name}
+                      <button
+                        type="button"
+                        aria-label={`Detach ${profile.name}`}
+                        onClick={() => void detachProfile(profile)}
+                        disabled={profileBusy}
+                        className="rounded-full px-1 text-indigo-300 transition-colors hover:bg-indigo-900/60 hover:text-indigo-100 disabled:opacity-50"
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {profiles.length === 0 ? (
+                <p className="text-[11px] text-slate-500">
+                  No profiles exist yet — create one on the Configurations page.
+                </p>
+              ) : (
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="block min-w-0 flex-1">
+                    <span className="mb-1 block text-xs font-medium text-slate-300">Profile</span>
+                    <Select
+                      value={selectedProfileId}
+                      onChange={(event) => setSelectedProfileId(event.target.value)}
+                    >
+                      {profiles.map((profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.name}
+                          {attachedIds.includes(profile.id) ? ' (attached)' : ''}
+                        </option>
+                      ))}
+                    </Select>
+                  </label>
+                  <GhostButton
+                    onClick={() => void applyProfile({ restart: false, test: false })}
+                    disabled={profileBusy || selectedProfileId === ''}
+                  >
+                    Attach
+                  </GhostButton>
+                  <PrimaryButton
+                    onClick={() => void applyProfile({ restart: true, test: true })}
+                    disabled={profileBusy || selectedProfileId === ''}
+                    className="px-3 py-1.5 text-xs"
+                  >
+                    {profileBusy ? 'Applying…' : 'Apply & test'}
+                  </PrimaryButton>
+                </div>
+              )}
+
+              {profileError !== null && (
+                <Notice tone="error" title="Configuration profile action failed" onDismiss={() => setProfileError(null)}>
+                  {profileError}
+                </Notice>
+              )}
+
+              {applyResults !== null && applyResults.length > 0 && (
+                <ul className="space-y-1.5">
+                  {applyResults.map((result) => (
+                    <li
+                      key={result.serverId}
+                      className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-[11px]"
+                    >
+                      <span className="font-medium text-slate-200">{result.serverName}</span>{' '}
+                      <Badge tone={result.applied ? 'success' : 'danger'}>
+                        {result.applied ? 'attached' : 'failed'}
+                      </Badge>{' '}
+                      {result.restarted && <Badge tone="info">restarted</Badge>}{' '}
+                      {result.test !== null && (
+                        <Badge tone={result.test.ok ? 'success' : 'danger'}>
+                          {result.test.ok
+                            ? `${result.test.toolCount} tools · ${formatDuration(result.test.latencyMs)}`
+                            : 'probe failed'}
+                        </Badge>
+                      )}
+                      {result.error !== null && (
+                        <span className="block text-rose-300">{result.error}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </section>
 
         <section>
@@ -287,6 +637,19 @@ export function ServerDrawer({ server, onClose, onSaved }: ServerDrawerProps) {
           <LiveLogPanel serverId={server.id} maxLines={300} />
         </section>
       </div>
+
+      {updateOpen && (
+        <UpdateDialog
+          server={server}
+          source={source}
+          onClose={() => setUpdateOpen(false)}
+          onUpdated={() => {
+            updatesState.reload();
+            setCheckResult(null);
+            onUpdated();
+          }}
+        />
+      )}
     </Drawer>
   );
 }

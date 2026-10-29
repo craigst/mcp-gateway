@@ -22,6 +22,14 @@ const { apiMock } = vi.hoisted(() => ({
     listDiscoverySources: vi.fn(),
     scanDiscovery: vi.fn(),
     importDiscoveryEntry: vi.fn(),
+    listServerUpdates: vi.fn(),
+    checkUpdates: vi.fn(),
+    checkServerUpdate: vi.fn(),
+    updateServer: vi.fn(),
+    listConfigProfiles: vi.fn(),
+    migrateEnvFile: vi.fn(),
+    detachConfigProfile: vi.fn(),
+    applyConfigProfile: vi.fn(),
   },
 }));
 
@@ -190,6 +198,14 @@ beforeEach(() => {
   apiMock.listDiscoverySources.mockResolvedValue([]);
   apiMock.scanDiscovery.mockResolvedValue({ sources: [], entries: [], errors: [] });
   apiMock.importDiscoveryEntry.mockResolvedValue(brainServer);
+  apiMock.listServerUpdates.mockResolvedValue([]);
+  apiMock.checkUpdates.mockResolvedValue([]);
+  apiMock.checkServerUpdate.mockRejectedValue(new Error('not configured'));
+  apiMock.updateServer.mockRejectedValue(new Error('not configured'));
+  apiMock.listConfigProfiles.mockResolvedValue([]);
+  apiMock.migrateEnvFile.mockRejectedValue(new Error('not configured'));
+  apiMock.detachConfigProfile.mockResolvedValue(true);
+  apiMock.applyConfigProfile.mockResolvedValue([]);
 });
 
 afterEach(() => {

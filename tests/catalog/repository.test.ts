@@ -38,6 +38,7 @@ function makeServer(overrides: Partial<ServerRecord> = {}): ServerRecord {
     workDir: '/tmp/repos/echo',
     envFile: null,
     approvalRequiredTools: [],
+    configProfileIds: [],
     lastError: null,
     pid: null,
     createdAt: '2026-01-01T00:00:00.000Z',

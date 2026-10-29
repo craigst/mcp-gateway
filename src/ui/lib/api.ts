@@ -13,6 +13,9 @@ import type {
   CatalogInstallResult,
   CatalogSource,
   CatalogSourceKind,
+  ConfigProfileApplyResult,
+  ConfigProfileInput,
+  ConfigProfileSummary,
   EscalationStatus,
   EscalationTicket,
   HarnessImportInput,
@@ -24,8 +27,11 @@ import type {
   RuntimeKind,
   ServerGrant,
   ServerRecord,
+  ServerSourceInfo,
   ServerStatus,
+  ServerUpdateResult,
   TransportKind,
+  UpdateCheckResult,
   VaultSecretMetadata,
 } from '../../core/types.js';
 import type { DelegationTrace, MetricsSnapshot, SubServerLogLine } from '../../core/ports.js';
@@ -297,6 +303,24 @@ export interface UpdateServerPolicyRequest {
   highPrivilegeTools?: string[];
   approvalRequiredTools?: string[];
   envFile?: string | null;
+  /** Configuration profiles applied to this server (merged into env/headers at start). */
+  configProfileIds?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// v0.4 request types — update tracking & configuration profiles
+// ---------------------------------------------------------------------------
+
+export interface UpdateServerRequest {
+  ref?: string | null;
+  restart?: boolean;
+  test?: boolean;
+}
+
+export interface ApplyConfigProfileRequest {
+  serverIds: string[];
+  restart?: boolean;
+  test?: boolean;
 }
 
 /** Tool row returned by `GET /admin/vaultwarden`. */
@@ -836,6 +860,122 @@ export class ApiClient {
       body: JSON.stringify({ serverId }),
     });
     return response.server;
+  }
+
+  // -- v0.4 update tracking -------------------------------------------------
+
+  /** Every server with a tracked upstream repository plus its last known state. */
+  async listServerUpdates(): Promise<ServerSourceInfo[]> {
+    const response = await this.request<{ sources?: ServerSourceInfo[] }>('/mcp/v1/admin/updates');
+    return response.sources ?? [];
+  }
+
+  /** Re-read upstream refs/commits for one or every tracked server. */
+  async checkUpdates(serverIds?: string[]): Promise<UpdateCheckResult[]> {
+    const body = serverIds !== undefined && serverIds.length > 0 ? { serverIds } : {};
+    const response = await this.request<{ results?: UpdateCheckResult[] }>(
+      '/mcp/v1/admin/updates/check',
+      { method: 'POST', body: JSON.stringify(body) },
+      120_000,
+    );
+    return response.results ?? [];
+  }
+
+  async checkServerUpdate(serverId: string): Promise<UpdateCheckResult> {
+    const response = await this.request<{ update: UpdateCheckResult }>(
+      `/mcp/v1/admin/updates/servers/${encodeURIComponent(serverId)}/check`,
+      { method: 'POST', body: JSON.stringify({}) },
+      120_000,
+    );
+    return response.update;
+  }
+
+  /** Rebuild a tracked server from its upstream, optionally restarting/testing it. */
+  async updateServer(serverId: string, input: UpdateServerRequest = {}): Promise<ServerUpdateResult> {
+    const response = await this.request<{ result: ServerUpdateResult }>(
+      `/mcp/v1/admin/updates/servers/${encodeURIComponent(serverId)}/update`,
+      { method: 'POST', body: JSON.stringify(input) },
+      INSTALL_TIMEOUT_MS,
+    );
+    return response.result;
+  }
+
+  // -- v0.4 configuration profiles -----------------------------------------
+
+  async listConfigProfiles(): Promise<ConfigProfileSummary[]> {
+    const response = await this.request<{ profiles?: ConfigProfileSummary[] }>(
+      '/mcp/v1/admin/config-profiles',
+    );
+    return response.profiles ?? [];
+  }
+
+  async createConfigProfile(input: ConfigProfileInput): Promise<ConfigProfileSummary> {
+    const response = await this.request<{ profile: ConfigProfileSummary }>(
+      '/mcp/v1/admin/config-profiles',
+      { method: 'POST', body: JSON.stringify(input) },
+    );
+    return response.profile;
+  }
+
+  async getConfigProfile(id: string): Promise<ConfigProfileSummary> {
+    const response = await this.request<{ profile: ConfigProfileSummary }>(
+      `/mcp/v1/admin/config-profiles/${encodeURIComponent(id)}`,
+    );
+    return response.profile;
+  }
+
+  async updateConfigProfile(id: string, input: ConfigProfileInput): Promise<ConfigProfileSummary> {
+    const response = await this.request<{ profile: ConfigProfileSummary }>(
+      `/mcp/v1/admin/config-profiles/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: JSON.stringify(input) },
+    );
+    return response.profile;
+  }
+
+  async deleteConfigProfile(id: string): Promise<boolean> {
+    const response = await this.request<{ deleted?: boolean }>(
+      `/mcp/v1/admin/config-profiles/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    );
+    return response.deleted ?? false;
+  }
+
+  /** Attach a profile to servers (union), optionally restarting and probing them. */
+  async applyConfigProfile(
+    id: string,
+    input: ApplyConfigProfileRequest,
+  ): Promise<ConfigProfileApplyResult[]> {
+    const response = await this.request<{ results?: ConfigProfileApplyResult[] }>(
+      `/mcp/v1/admin/config-profiles/${encodeURIComponent(id)}/apply`,
+      { method: 'POST', body: JSON.stringify(input) },
+      120_000,
+    );
+    return response.results ?? [];
+  }
+
+  async detachConfigProfile(id: string, serverId: string): Promise<boolean> {
+    const response = await this.request<{ detached?: boolean }>(
+      `/mcp/v1/admin/config-profiles/${encodeURIComponent(id)}/servers/${encodeURIComponent(serverId)}`,
+      { method: 'DELETE' },
+    );
+    return response.detached ?? false;
+  }
+
+  /**
+   * Migrate a legacy server env file into a new encrypted profile attached to
+   * that server (the gateway reads the file once, encrypts every value, then
+   * clears `server.envFile`). Values never return to the browser.
+   */
+  async migrateEnvFile(serverId: string, name?: string): Promise<ConfigProfileSummary> {
+    const response = await this.request<{ profile: ConfigProfileSummary }>(
+      '/mcp/v1/admin/config-profiles/migrate-env-file',
+      {
+        method: 'POST',
+        body: JSON.stringify(name === undefined ? { serverId } : { serverId, name }),
+      },
+      60_000,
+    );
+    return response.profile;
   }
 
   // -- vault ----------------------------------------------------------------

@@ -210,3 +210,96 @@ can render an install call-to-action (import `vaultwarden-mcp` from the catalog/
 
 `/` dashboard · `/catalog` (tabs: Installed · Discover · Sources · Import) ·
 `/vaultwarden` · `/rbac` · `/vault` · `/audit` · `/delegation` · `/playground`.
+
+---
+
+## 7. v0.4 — update manager
+
+Installed servers keep their upstream metadata in `server_sources` (repo, requested ref/commit,
+installed version/commit, latest known version/commit, update flag, changelog URL).
+
+```jsonc
+GET  /mcp/v1/admin/updates
+→ { "sources": [{
+      "serverId": "srv_…", "sourceKind": "catalog", "catalogSourceId": "cat_…",
+      "catalogEntryId": "brain-mcp", "repoUrl": "https://github.com/example/brain-mcp",
+      "requestedRef": "v1.1.0", "installedVersion": "1.1.0", "installedCommit": "a1b2c3…",
+      "latestVersion": "1.2.0", "latestCommit": "d4e5f6…", "latestRef": "v1.2.0",
+      "updateAvailable": true, "checkedAt": "2026-10-29T19:00:00.000Z",
+      "checkError": null,
+      "changelogUrl": "https://github.com/example/brain-mcp/compare/a1b2c3…d4e5f6…" }] }
+
+POST /mcp/v1/admin/updates/check            { "serverIds": ["srv_…"] }   // omit for all
+→ { "results": [{ "serverId": "srv_…", "serverName": "brain", "status": "update-available",
+                  "updateAvailable": true, "fromVersion": "1.1.0", "toVersion": "1.2.0",
+                  "fromCommit": "a1b2c3…", "toCommit": "d4e5f6…", "latestRef": "v1.2.0",
+                  "checkedAt": "…", "error": null }] }
+
+POST /mcp/v1/admin/updates/servers/:id/check
+→ { "update": UpdateCheckResult }
+
+POST /mcp/v1/admin/updates/backfill
+→ { "recorded": 6, "skipped": 0, "errors": [] }   // records sources for pre-v0.4 servers
+                                                   // (catalog markers / name / repo URL match)
+
+POST /mcp/v1/admin/updates/servers/:id/update   { "ref": "v1.2.0", "restart": true, "test": true }
+→ { "result": {
+      "server": ServerRecord,
+      "before": { "version": "1.1.0", "commit": "a1b2c3…" },
+      "after":  { "version": "1.2.0", "commit": "d4e5f6…" },
+      "test":   { "ok": true, "toolCount": 12, "tools": ["…"], "latencyMs": 3.1, "error": null },
+      "changed": true } }
+```
+
+Update behaviour: staged clone/build into a fresh directory; the live server and its
+config (env, envFile, headers, protection lists, attached profiles) are untouched until the
+build succeeds, then the directory is swapped, the server restarted and probe-tested. A failed
+build leaves the running server exactly as it was. Private repos use the catalog source's
+vault token (or `GITHUB_TOKEN`/`GH_TOKEN`).
+
+## 8. v0.4 — configuration profiles (gateway-managed, encrypted)
+
+No env files. Every configuration and credential value lives in the gateway's **AES-256-GCM
+vault**; a profile is a named, reusable reference set that can be attached to many MCP servers.
+A value is either profile-owned (`encrypted`, stored as `PROFILE_<id>_ENV_<KEY>`) or a reference
+to an existing named secret from the Vault page (`vault-ref`). The API never returns values —
+only keys and where they live.
+
+```jsonc
+GET /mcp/v1/admin/config-profiles
+→ { "profiles": [{ "id": "cfg_…", "name": "Internal services", "description": "…",
+                   "entries": [
+                     {"key":"N8N_BASE_URL","source":"encrypted","ref":null},
+                     {"key":"N8N_API_KEY","source":"vault-ref","ref":"N8N_API_KEY"} ],
+                   "headers": [],
+                   "attachedServerIds": ["srv_…"] }] }
+
+POST /mcp/v1/admin/config-profiles
+{ "name": "Internal services",
+  "entries": [
+    { "key": "N8N_BASE_URL", "value": "http://10.0.0.5:5678" },   // encrypted now, never returned
+    { "key": "N8N_API_KEY",  "secretRef": "N8N_API_KEY" }          // reuse a Vault-page secret
+  ],
+  "headers": [] }
+→ 201 { "profile": ConfigProfileSummary }
+
+PUT    /mcp/v1/admin/config-profiles/:id      → { "profile": … }
+DELETE /mcp/v1/admin/config-profiles/:id      → { "deleted": true }
+
+POST /mcp/v1/admin/config-profiles/:id/apply
+{ "serverIds": ["srv_…"], "restart": true, "test": true }
+→ { "results": [{ "serverId": "srv_…", "serverName": "n8n", "applied": true,
+                  "restarted": true, "test": { "ok": true, "toolCount": 36, … }, "error": null }] }
+
+DELETE /mcp/v1/admin/config-profiles/:id/servers/:serverId → { "detached": true }
+
+POST /mcp/v1/admin/config-profiles/migrate-env-file
+{ "serverId": "srv_…", "name": "Migrated n8n config" }
+→ { "profile": ConfigProfileSummary }     // reads the legacy env file once, encrypts every value,
+                                          // attaches the profile, then clears server.envFile
+```
+
+At process start the gateway resolves the attached profiles from the vault and injects the
+values into the sub-process environment/headers. Merge precedence: attached profiles (in order) <
+server-specific env/headers. Secrets are decrypted only in the gateway process, never written to
+SQLite, logs, or API responses.

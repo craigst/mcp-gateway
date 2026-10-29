@@ -12,7 +12,7 @@
  * URL (`git remote -v`), or persisted records. Any captured stderr / error text
  * is passed through `scrubSecrets` before it can reach a log or API response.
  */
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 
 import { ErrorCodes, GatewayError, invalidParams } from '../core/errors.js';
 
@@ -172,4 +172,59 @@ function tail(text: string, maxBytes = ERROR_TAIL_BYTES): string {
   const trimmed = text.trim();
   if (trimmed.length <= maxBytes) return trimmed;
   return trimmed.slice(trimmed.length - maxBytes);
+}
+
+/**
+ * Enforces the operator's clone allowlist for a repository URL.
+ *
+ * Used by the import engine, catalog sources and the update path so every code
+ * path that clones a URL applies exactly the same rule (empty allowlist =
+ * imports disabled).
+ */
+export function assertAllowedCloneUrl(url: string, allowedPrefixes: string[]): string {
+  const trimmed = typeof url === 'string' ? url.trim() : '';
+  if (trimmed.length === 0) {
+    throw invalidParams('Git import requires a non-empty "url"');
+  }
+  if (allowedPrefixes.length === 0) {
+    // SECURITY: disabled before any filesystem/process work.
+    throw new GatewayError(ErrorCodes.ACCESS_DENIED, 'Git import is disabled', {
+      data: { status: 'FORBIDDEN', reason: 'GIT_IMPORT_DISABLED' },
+      httpStatus: 403,
+    });
+  }
+  const allowed = allowedPrefixes.some((prefix) => prefix.length > 0 && trimmed.startsWith(prefix));
+  if (!allowed) {
+    throw new GatewayError(
+      ErrorCodes.ACCESS_DENIED,
+      'Clone URL is not in the allowed import prefixes',
+      {
+        data: { status: 'FORBIDDEN', reason: 'GIT_IMPORT_URL_NOT_ALLOWED', details: { url: trimmed } },
+        httpStatus: 403,
+      },
+    );
+  }
+  return trimmed;
+}
+
+/**
+ * Resolves the checked-out commit for a working directory (`git rev-parse HEAD`).
+ *
+ * Returns null when the directory is missing, not a git repository, or git is
+ * unavailable — callers treat "unknown commit" as "update state unknown".
+ */
+export function resolveGitHead(repoDir: string | null | undefined, timeoutMs = 10_000): string | null {
+  if (typeof repoDir !== 'string' || repoDir.length === 0) return null;
+  try {
+    const output = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: timeoutMs,
+      windowsHide: true,
+    });
+    const sha = output.trim();
+    return /^[0-9a-f]{7,64}$/i.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
 }

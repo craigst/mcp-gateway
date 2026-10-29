@@ -18,7 +18,7 @@ export function openDatabase(dbPath: string): DatabaseSync {
   return db;
 }
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export function migrate(db: DatabaseSync): void {
   db.exec(`
@@ -146,6 +146,36 @@ export function migrate(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_delegation_trace ON delegation_traces(trace_id);
 
+    CREATE TABLE IF NOT EXISTS server_sources (
+      server_id TEXT PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+      source_kind TEXT NOT NULL DEFAULT 'git',
+      catalog_source_id TEXT,
+      catalog_entry_id TEXT,
+      repo_url TEXT NOT NULL,
+      requested_ref TEXT,
+      installed_commit TEXT,
+      installed_version TEXT,
+      latest_commit TEXT,
+      latest_version TEXT,
+      latest_ref TEXT,
+      update_available INTEGER NOT NULL DEFAULT 0,
+      checked_at TEXT,
+      check_error TEXT,
+      changelog_url TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS config_profiles (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      env_json TEXT NOT NULL DEFAULT '{}',
+      secret_keys_json TEXT NOT NULL DEFAULT '[]',
+      headers_json TEXT NOT NULL DEFAULT '{}',
+      env_file TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS ui_users (
       username TEXT PRIMARY KEY,
       password_hash TEXT NOT NULL,
@@ -181,16 +211,18 @@ export function migrate(db: DatabaseSync): void {
 
   const row = db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined;
   const current = Number(row?.user_version ?? 0);
-  if (current < 2) {
-    // v1 -> v2: tool approval gating, env-file support, plugin catalog sources.
-    ensureColumn(db, 'servers', 'headers', "TEXT NOT NULL DEFAULT '{}'");
-    ensureColumn(db, 'servers', 'env_file', 'TEXT');
-    ensureColumn(db, 'servers', 'approval_required_tools', "TEXT NOT NULL DEFAULT '[]'");
-    ensureColumn(db, 'escalations', 'ticket_type', "TEXT NOT NULL DEFAULT 'scope'");
-    ensureColumn(db, 'escalations', 'tool_arguments', 'TEXT');
-    ensureColumn(db, 'escalations', 'result_json', 'TEXT');
-    ensureColumn(db, 'escalations', 'consumed_at', 'TEXT');
-  }
+  // Column additions are idempotent and run on every open: a database that was
+  // stamped with a newer user_version by an earlier binary but is missing a
+  // column still heals itself.
+  ensureColumn(db, 'servers', 'headers', "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'servers', 'env_file', 'TEXT');
+  ensureColumn(db, 'servers', 'approval_required_tools', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'servers', 'config_profile_ids', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'escalations', 'ticket_type', "TEXT NOT NULL DEFAULT 'scope'");
+  ensureColumn(db, 'escalations', 'tool_arguments', 'TEXT');
+  ensureColumn(db, 'escalations', 'result_json', 'TEXT');
+  ensureColumn(db, 'escalations', 'consumed_at', 'TEXT');
+  void current;
   if (current < SCHEMA_VERSION) {
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }

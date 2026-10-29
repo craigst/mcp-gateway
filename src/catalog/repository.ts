@@ -37,6 +37,7 @@ interface ServerRow {
   work_dir: string | null;
   env_file: string | null;
   approval_required_tools: string;
+  config_profile_ids: string;
   last_error: string | null;
   pid: number | null;
   created_at: string;
@@ -73,6 +74,7 @@ function mapServerRow(row: ServerRow): ServerRecord {
     workDir: row.work_dir ?? null,
     envFile: row.env_file ?? null,
     approvalRequiredTools: parseJson<string[]>(row.approval_required_tools, []),
+    configProfileIds: parseJson<string[]>(row.config_profile_ids, []),
     lastError: row.last_error ?? null,
     pid: row.pid ?? null,
     createdAt: row.created_at,
@@ -109,8 +111,8 @@ export class SqliteCatalogRepository implements CatalogRepository {
           `INSERT INTO servers
              (id, name, runtime, transport, status, command, args, url, env, headers, manifest,
               high_privilege_tools, delegation_supported, source_url, work_dir, env_file,
-              approval_required_tools, last_error, pid, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              approval_required_tools, config_profile_ids, last_error, pid, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
              runtime = excluded.runtime,
@@ -128,6 +130,7 @@ export class SqliteCatalogRepository implements CatalogRepository {
              work_dir = excluded.work_dir,
              env_file = excluded.env_file,
              approval_required_tools = excluded.approval_required_tools,
+             config_profile_ids = excluded.config_profile_ids,
              last_error = excluded.last_error,
              pid = excluded.pid,
              created_at = excluded.created_at,
@@ -151,6 +154,7 @@ export class SqliteCatalogRepository implements CatalogRepository {
           server.workDir ?? null,
           server.envFile ?? null,
           toJson(server.approvalRequiredTools ?? []),
+          toJson(server.configProfileIds ?? []),
           server.lastError ?? null,
           server.pid ?? null,
           server.createdAt,

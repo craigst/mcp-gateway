@@ -276,3 +276,15 @@ Major upgrade delivering private-catalog import and approval-gated credential ac
 | Ops | `MCP_AUTOSTART=all\|names` starts sub-servers after boot; persistent rootless podman deployment via systemd user quadlet (`docs/DSH.md`, README). |
 | DSH | `@deepseek-ai/dsh-mcp-client` connects over Streamable HTTP; gateway tools surface as `mcp__gateway__*` (verified with 179 tools against a live service). |
 | Tests | 581 tests / 49 files (78 new auth tests, 62 UI tests, session integration + master-key route coverage). |
+
+
+---
+
+## v0.4 upgrade (shipped)
+
+| Area | Delivered |
+|---|---|
+| Update manager | `server_sources` tracking per installed server (repo, requested ref, installed/latest version+commit, changelog); update checks via `git ls-remote` with catalog vault tokens; semver-tag and branch tracking; per-server **staged** update (clone→build→swap→restart→probe) with automatic rollback; backfill for servers installed before v0.4; UI columns/badges, Check all, update dialog, Source panel in the drawer. |
+| Encrypted configuration profiles | No env files. Profiles store env/header values in the AES-256-GCM vault — either profile-owned encrypted values or references to named Vault secrets. Attach one profile to many servers, merge at process start, apply & test (restart + tools/list); edit keeps unchanged values when blank; one-click migration of legacy env files into encrypted profiles, then the env-file reference is cleared. |
+| Schema | Version 4: `server_sources`, `config_profiles`, `servers.config_profile_ids`; idempotent/self-healing column migrations. |
+| Tests | 687 tests / 65 files, including a full HTTP v0.4 flow (install → upstream commit → check → update → probe; profile apply/keep/edit/migrate). |

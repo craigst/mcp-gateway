@@ -31,6 +31,8 @@ If not, the tool is invisible — not merely denied.
 | 🛒 | **MCP catalog marketplace** | Connect public or **private** GitHub catalogs (`.gitmodules` + `pinned.json` umbrellas, single repos, or any catalog JSON), browse entries and one-click install/test. |
 | 🔎 | **Harness import** | Read-only discovery of MCP servers already configured in Claude Code, opencode and OpenMausBot; one-click import with env-file references. |
 | 🗝️ | **Vault Warden approvals** | Approval-gated credential delivery: agents request a secret, a human approves, the gateway executes once and returns a file path — values never enter the model context. |
+| 🔄 | **Update manager** | Per-server upstream tracking (tag/commit): "update available" badges, check-all, and one-click staged updates (clone → build → swap → restart → probe) with automatic rollback on a failed build. |
+| ⚙️ | **Encrypted configuration profiles** | Save credentials/endpoints (IPs, ports, API keys, headers) once **in the AES-256 vault**, reference named secrets, and apply one profile to many MCP servers. No env files — values are decrypted only into the sub-process environment. |
 | 🖥️ | **Web UI console** | Dashboard, catalog manager, RBAC grid, vault, audit explorer, delegation observer, live log stream, JSON-RPC playground. |
 | 🔑 | **Built-in console login** | Username/password sessions (scrypt, HttpOnly SameSite=Strict cookie, CSRF protection). API keys are for AI/external clients only. |
 | 📊 | **Audit everything** | Every discovery/execution/denial recorded with latency, key, tool, delegation depth and payload (truncated). |
@@ -38,18 +40,22 @@ If not, the tool is invisible — not merely denied.
 
 ## Console
 
-![Gateway dashboard — live telemetry, sub-server status and signed-in operator](docs/screenshots/v03/dashboard.png)
+![Installed servers with version and update awareness](docs/screenshots/v04/installed.png)
 
 <details>
-<summary>More screenshots (login · catalog import · discover · Vault Warden)</summary>
+<summary>More screenshots (configurations · update dialog · login · dashboard · catalog · Vault Warden)</summary>
 
-| Sign-in page | Catalog import |
+| Encrypted configurations | Update confirmation |
 |---|---|
-| ![Login](docs/screenshots/v03/login.png) | ![Catalog import](docs/screenshots/v03/catalog-import.png) |
+| ![Configurations](docs/screenshots/v04/configurations.png) | ![Update dialog](docs/screenshots/v04/update-dialog.png) |
 
-| Catalog discover | Vault Warden |
+| Sign-in page | Dashboard |
 |---|---|
-| ![Catalog discover](docs/screenshots/v03/catalog-discover.png) | ![Vault Warden](docs/screenshots/v03/vaultwarden.png) |
+| ![Login](docs/screenshots/v03/login.png) | ![Dashboard](docs/screenshots/v04/dashboard.png) |
+
+| Catalog import | Vault Warden |
+|---|---|
+| ![Catalog import](docs/screenshots/v03/catalog-import.png) | ![Vault Warden](docs/screenshots/v03/vaultwarden.png) |
 
 </details>
 
@@ -214,6 +220,31 @@ every tool the key may see appears as `mcp__gateway__<tool>`:
 Restart DSH after adding the row (MCP rows are read at profile load). Full guide:
 [`docs/DSH.md`](./docs/DSH.md).
 
+## Updates & encrypted configuration
+
+### Manage upstream updates per server
+
+Every server installed from a Git/catalog source records its repo, ref and installed
+commit. **Catalog → Installed** shows a Version column and an Update badge:
+- tag-tracked servers compare against the newest semver tag in the repo;
+- branch-tracked servers compare the latest commit;
+- **Check all** re-reads every upstream through the catalog's vault token;
+- **Update** runs a staged update for that one server: clone into a temp directory,
+  build, stop, swap, restart and probe-test. A failed build leaves the running server and
+  its configuration untouched (automatic rollback).
+
+### Encrypted configuration profiles (no env files)
+
+Save endpoints, IPs, ports, API keys and headers once, encrypted in the gateway's
+**AES-256-GCM vault**, then apply a profile to as many MCP servers as you like:
+- profile values are either **profile-owned encrypted secrets** or **references to named
+  secrets** from the Vault page;
+- values are never stored in SQLite in plaintext and never returned by the API;
+- attach/detach profiles from a server's **Details** drawer, then **Apply & test** (restart
+  + MCP `tools/list` probe) to verify the connection;
+- legacy env-file configs can be migrated with one click — the gateway reads the file once,
+  encrypts every value into a profile, attaches it and clears the env-file reference.
+
 ## Use it from an agent
 
 ```bash
@@ -278,7 +309,7 @@ npm run lint           # eslint
 npm run build          # server + UI bundle
 ```
 
-The suite is **581 tests across 49 files**: unit suites per module, an integration suite that
+The suite is **687 tests across 65 files**: unit suites per module, an integration suite that
 boots a real gateway on an ephemeral port and spawns fixture MCP servers, and an end-to-end
 scenario covering vault → git import → catalog → execution → delegation → depth guard → escalation,
 plus jsdom UI tests. CI also builds the Docker image and smoke-tests `/health` inside the container.
@@ -301,7 +332,8 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 |---|---|---|
 | v0.1.0 | Core engine, JSON-RPC ingress, RBAC/zero-trust catalog, UI, delegation, vault + git import | ✅ shipped |
 | v0.2.0 | Private GitHub catalogs, harness discovery/import, auto-manifest detection, approval-gated Vault Warden, UI marketplace | ✅ shipped |
-| **v0.3.0** | **Built-in username/password Web UI login, session-authenticated console + WebSocket logs, master-key rotation, persistent podman/systemd deployment** | ✅ **current** |
+| v0.3.0 | Built-in username/password Web UI login, session-authenticated console + WebSocket logs, master-key rotation, persistent podman/systemd deployment | ✅ shipped |
+| **v0.4.0** | **Upstream update manager (checks + staged per-server updates) and encrypted configuration profiles replacing env files** | ✅ **current** |
 
 ## License
 

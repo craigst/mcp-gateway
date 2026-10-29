@@ -53,6 +53,8 @@ export interface AdminDeps {
   catalogApi?: AdminSubRouter;
   discoveryApi?: AdminSubRouter;
   vaultwardenApi?: AdminSubRouter;
+  updatesApi?: AdminSubRouter;
+  configProfilesApi?: AdminSubRouter;
   logger?: Logger;
 }
 
@@ -103,6 +105,10 @@ export class AdminApi {
           return (await this.deps.discoveryApi?.handle(req, res, url)) ?? false;
         case 'vaultwarden':
           return (await this.deps.vaultwardenApi?.handle(req, res, url)) ?? false;
+        case 'updates':
+          return (await this.deps.updatesApi?.handle(req, res, url)) ?? false;
+        case 'config-profiles':
+          return (await this.deps.configProfilesApi?.handle(req, res, url)) ?? false;
         default:
           return false;
       }
@@ -264,6 +270,9 @@ export class AdminApi {
           ? body.approvalRequiredTools.map(String)
           : existing.approvalRequiredTools ?? [],
         envFile: body.envFile === null ? null : typeof body.envFile === 'string' ? body.envFile : existing.envFile ?? null,
+        configProfileIds: Array.isArray(body.configProfileIds)
+          ? body.configProfileIds.map(String)
+          : existing.configProfileIds ?? [],
         updatedAt: nowIso(),
       };
       this.deps.catalog.repository.upsertServer(updated);

@@ -7,6 +7,7 @@ import { ToastProvider } from './components/Toasts.js';
 import { LoginPage } from './pages/Login.js';
 import { DashboardPage } from './pages/Dashboard.js';
 import { CatalogPage } from './pages/Catalog.js';
+import { ConfigurationsPage } from './pages/Configurations.js';
 import type { CatalogTab } from './pages/Catalog.js';
 import { VaultWardenPage } from './pages/VaultWarden.js';
 import { RbacPage } from './pages/Rbac.js';
@@ -18,6 +19,7 @@ import { PlaygroundPage } from './pages/Playground.js';
 const PAGE_KEYS: readonly string[] = [
   'dashboard',
   'catalog',
+  'configurations',
   'vaultwarden',
   'rbac',
   'vault',
@@ -63,6 +65,8 @@ function renderPage(page: PageKey, context: RenderContext) {
   switch (page) {
     case 'catalog':
       return <CatalogPage initialTab={context.catalogTab} onTabChange={context.onCatalogTabChange} />;
+    case 'configurations':
+      return <ConfigurationsPage onNavigate={context.onNavigate} />;
     case 'vaultwarden':
       return <VaultWardenPage onNavigate={context.onNavigate} />;
     case 'rbac':

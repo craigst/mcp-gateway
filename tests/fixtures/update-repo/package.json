@@ -1,0 +1,8 @@
+{
+  "name": "update-fixture",
+  "version": "1.0.0",
+  "description": "Generic MCP server used by update-tracking tests",
+  "main": "server.js",
+  "dependencies": {},
+  "license": "MIT"
+}

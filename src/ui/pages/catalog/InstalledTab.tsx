@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, formatApiError } from '../../lib/api.js';
+import { useAsyncData } from '../../lib/hooks.js';
 import { Card } from '../../components/Card.js';
 import { Badge, badgeToneForStatus } from '../../components/Badge.js';
 import { Table } from '../../components/Table.js';
@@ -11,6 +12,7 @@ import { DangerButton, GhostButton, PrimaryButton, SecondaryButton } from '../..
 import { useToast } from '../../components/Toasts.js';
 import { RegisterServerCard } from './RegisterServerCard.js';
 import { ServerDrawer } from './ServerDrawer.js';
+import { UpdateDialog } from './UpdateDialog.js';
 import {
   callServerAction,
   describeTestResult,
@@ -18,7 +20,24 @@ import {
   type ServerAction,
   type ServersState,
 } from './shared.js';
-import type { InstallTestResult, ServerRecord } from '../../../core/types.js';
+import type {
+  InstallTestResult,
+  ServerRecord,
+  ServerSourceInfo,
+  UpdateCheckResult,
+} from '../../../core/types.js';
+
+function formatRelativeTime(timestamp: string): string {
+  const then = new Date(timestamp).getTime();
+  if (!Number.isFinite(then)) return '—';
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
 
 export interface InstalledTabProps {
   servers: ServersState;
@@ -38,9 +57,33 @@ export function InstalledTab({ servers, openServerId, onOpenServer, onDiscover, 
   const [deleteTarget, setDeleteTarget] = useState<ServerRecord | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
 
+  const updates = useAsyncData(() => api.listServerUpdates(), []);
+  const [checkingAll, setCheckingAll] = useState(false);
+  const [checkingId, setCheckingId] = useState<string | null>(null);
+  const [checkResults, setCheckResults] = useState<Record<string, UpdateCheckResult>>({});
+  const [updateTarget, setUpdateTarget] = useState<ServerRecord | null>(null);
+  const [drawerServer, setDrawerServer] = useState<ServerRecord | null>(null);
+
   const serverList = servers.status === 'ready' ? servers.data : [];
   const runningCount = serverList.filter((server) => server.status === 'running').length;
-  const selected = serverList.find((server) => server.id === openServerId) ?? null;
+
+  // Keep the drawer mounted across list refreshes (which briefly have no data).
+  useEffect(() => {
+    if (openServerId === null) {
+      setDrawerServer(null);
+      return;
+    }
+    const found = (servers.status === 'ready' ? servers.data : []).find((server) => server.id === openServerId);
+    if (found !== undefined) setDrawerServer(found);
+  }, [openServerId, servers.status, servers.data]);
+  const updateMap = new Map<string, ServerSourceInfo>(
+    (updates.status === 'ready' ? updates.data : []).map((source) => [source.serverId, source]),
+  );
+  const updatesAvailable = serverList.filter((server) => {
+    const check = checkResults[server.id];
+    if (check !== undefined) return check.updateAvailable;
+    return updateMap.get(server.id)?.updateAvailable === true;
+  }).length;
 
   const runAction = async (action: ServerAction, server: ServerRecord): Promise<void> => {
     setPending(`${action}:${server.id}`);
@@ -72,6 +115,106 @@ export function InstalledTab({ servers, openServerId, onOpenServer, onDiscover, 
     }
   };
 
+  const checkAll = async (): Promise<void> => {
+    setCheckingAll(true);
+    setActionError(null);
+    try {
+      const results = await api.checkUpdates();
+      setCheckResults((previous) => {
+        const next = { ...previous };
+        for (const result of results) next[result.serverId] = result;
+        return next;
+      });
+      const available = results.filter((result) => result.updateAvailable).length;
+      toast(
+        available > 0 ? 'info' : 'success',
+        available > 0
+          ? `${available} update${available === 1 ? '' : 's'} available.`
+          : 'All tracked servers are up to date.',
+      );
+      updates.reload();
+    } catch (error) {
+      setActionError(formatApiError(error));
+    } finally {
+      setCheckingAll(false);
+    }
+  };
+
+  const checkServer = async (server: ServerRecord): Promise<void> => {
+    setCheckingId(server.id);
+    setActionError(null);
+    try {
+      const result = await api.checkServerUpdate(server.id);
+      setCheckResults((previous) => ({ ...previous, [server.id]: result }));
+      if (result.error !== null) {
+        toast('error', `“${server.name}” update check failed: ${result.error}`);
+      } else if (result.updateAvailable) {
+        toast(
+          'info',
+          `Update available for “${server.name}”: v${result.fromVersion ?? '?'} → v${result.toVersion ?? '?'}`,
+        );
+      } else {
+        toast('success', `“${server.name}” is up to date.`);
+      }
+      updates.reload();
+    } catch (error) {
+      setActionError(formatApiError(error));
+    } finally {
+      setCheckingId(null);
+    }
+  };
+
+  const renderUpdateCell = (server: ServerRecord) => {
+    const source = updateMap.get(server.id) ?? null;
+    const check = checkResults[server.id] ?? null;
+    const latestVersion = check?.toVersion ?? source?.latestVersion ?? null;
+    const latest = latestVersion !== null ? `v${latestVersion}` : latestVersion ?? source?.latestRef ?? 'available';
+    const updateAvailable = check !== null ? check.updateAvailable : source?.updateAvailable === true;
+
+    if (checkingId === server.id) {
+      return <span className="text-[11px] text-slate-400">Checking…</span>;
+    }
+    if (updates.status === 'loading') {
+      return <Badge tone="neutral">checking…</Badge>;
+    }
+    if (updates.status === 'error' && source === null) {
+      return <Badge tone="neutral">unavailable</Badge>;
+    }
+    if (check?.error !== null && check?.error !== undefined) {
+      return (
+        <div className="space-y-1">
+          <Badge tone="danger">error</Badge>
+          <p className="max-w-[12rem] truncate text-[10px] text-rose-300" title={check.error}>
+            {check.error}
+          </p>
+        </div>
+      );
+    }
+    if (source?.checkError !== null && source?.checkError !== undefined) {
+      return (
+        <div className="space-y-1">
+          <Badge tone="danger">error</Badge>
+          <p className="max-w-[12rem] truncate text-[10px] text-rose-300" title={source.checkError}>
+            {source.checkError}
+          </p>
+        </div>
+      );
+    }
+    if (source === null) {
+      return <Badge tone="neutral">local</Badge>;
+    }
+    return (
+      <div className="space-y-1">
+        <Badge tone={updateAvailable ? 'warning' : 'success'}>
+          {updateAvailable ? `update → ${latest ?? 'available'}` : 'up to date'}
+        </Badge>
+        {source.checkedAt !== null && (
+          <p className="text-[10px] text-slate-500">checked {formatRelativeTime(source.checkedAt)}</p>
+        )}
+      </div>
+    );
+  };
+
   const confirmDelete = async (): Promise<void> => {
     if (!deleteTarget) return;
     setDeleteBusy(true);
@@ -97,18 +240,41 @@ export function InstalledTab({ servers, openServerId, onOpenServer, onDiscover, 
         </Notice>
       )}
 
+      {updates.status === 'error' && (
+        <Notice tone="warning" title="Update tracking unavailable">
+          {updates.error}{' '}
+          <button
+            type="button"
+            onClick={updates.reload}
+            className="font-semibold underline underline-offset-2"
+          >
+            Retry
+          </button>
+        </Notice>
+      )}
+
       <Card
         title="Installed sub-servers"
-        subtitle={`${serverList.length} registered · ${runningCount} running`}
+        subtitle={`${serverList.length} registered · ${runningCount} running · ${updatesAvailable} update${updatesAvailable === 1 ? '' : 's'} available`}
         actions={
           <>
+            <SecondaryButton onClick={() => void checkAll()} disabled={checkingAll} className="px-2 py-1 text-xs">
+              {checkingAll ? 'Checking all…' : 'Check all'}
+            </SecondaryButton>
             <SecondaryButton onClick={onDiscover} className="px-2 py-1 text-xs">
               Discover catalog
             </SecondaryButton>
             <SecondaryButton onClick={onImport} className="px-2 py-1 text-xs">
               Import local servers
             </SecondaryButton>
-            <GhostButton onClick={servers.reload}>Refresh</GhostButton>
+            <GhostButton
+              onClick={() => {
+                servers.reload();
+                updates.reload();
+              }}
+            >
+              Refresh
+            </GhostButton>
           </>
         }
         padded={false}
@@ -164,6 +330,51 @@ export function InstalledTab({ servers, openServerId, onOpenServer, onDiscover, 
                       {server.runtime} · {server.transport}
                     </span>
                   ),
+                },
+                {
+                  key: 'version',
+                  header: 'Version',
+                  render: (server) => {
+                    const source = updateMap.get(server.id) ?? null;
+                    const version = source?.installedVersion ?? server.manifest?.version ?? null;
+                    return version === null ? (
+                      <span className="text-xs text-slate-500">—</span>
+                    ) : (
+                      <span className="font-mono text-xs text-slate-300">v{version}</span>
+                    );
+                  },
+                },
+                {
+                  key: 'update',
+                  header: 'Update',
+                  render: (server) => {
+                    const source = updateMap.get(server.id) ?? null;
+                    const check = checkResults[server.id] ?? null;
+                    const updateAvailable =
+                      check !== null ? check.updateAvailable : source?.updateAvailable === true;
+                    return (
+                      <div className="space-y-1.5">
+                        {renderUpdateCell(server)}
+                        <div className="flex flex-wrap items-center gap-1">
+                          <GhostButton
+                            onClick={() => void checkServer(server)}
+                            disabled={checkingId !== null || checkingAll}
+                          >
+                            Check
+                          </GhostButton>
+                          {updateAvailable && (
+                            <PrimaryButton
+                              onClick={() => setUpdateTarget(server)}
+                              disabled={checkingId !== null || checkingAll}
+                              className="px-2 py-1 text-[11px]"
+                            >
+                              Update
+                            </PrimaryButton>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  },
                 },
                 {
                   key: 'status',
@@ -255,12 +466,37 @@ export function InstalledTab({ servers, openServerId, onOpenServer, onDiscover, 
 
       <RegisterServerCard onRegistered={servers.reload} />
 
-      {selected !== null && (
+      {openServerId !== null && drawerServer !== null && (
         <ServerDrawer
-          key={selected.id}
-          server={selected}
+          key={drawerServer.id}
+          server={drawerServer}
           onClose={() => onOpenServer(null)}
-          onSaved={() => servers.reload()}
+          onSaved={(updated) => {
+            setDrawerServer(updated);
+            servers.reload();
+            updates.reload();
+          }}
+          onUpdated={() => {
+            servers.reload();
+            updates.reload();
+          }}
+        />
+      )}
+
+      {updateTarget !== null && (
+        <UpdateDialog
+          server={updateTarget}
+          source={updateMap.get(updateTarget.id) ?? null}
+          onClose={() => setUpdateTarget(null)}
+          onUpdated={() => {
+            setCheckResults((previous) => {
+              const next = { ...previous };
+              delete next[updateTarget.id];
+              return next;
+            });
+            servers.reload();
+            updates.reload();
+          }}
         />
       )}
 

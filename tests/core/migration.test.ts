@@ -28,13 +28,15 @@ describe('schema migration', () => {
     const db = openDatabase(tempDbPath());
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(3);
+    expect(SCHEMA_VERSION).toBe(4);
 
-    expect(columnNames(db, 'servers')).toEqual(expect.arrayContaining(['env_file', 'approval_required_tools']));
+    expect(columnNames(db, 'servers')).toEqual(
+      expect.arrayContaining(['env_file', 'approval_required_tools', 'config_profile_ids']),
+    );
     expect(columnNames(db, 'escalations')).toEqual(
       expect.arrayContaining(['ticket_type', 'tool_arguments', 'result_json', 'consumed_at']),
     );
-    for (const table of ['catalog_sources', 'ui_users', 'ui_sessions']) {
+    for (const table of ['catalog_sources', 'ui_users', 'ui_sessions', 'server_sources', 'config_profiles']) {
       const found = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
         .get(table) as { name?: string } | undefined;
@@ -96,8 +98,10 @@ describe('schema migration', () => {
     migrate(db);
 
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(version.user_version).toBe(3);
-    expect(columnNames(db, 'servers')).toEqual(expect.arrayContaining(['env_file', 'approval_required_tools']));
+    expect(version.user_version).toBe(4);
+    expect(columnNames(db, 'servers')).toEqual(
+      expect.arrayContaining(['env_file', 'approval_required_tools', 'config_profile_ids']),
+    );
     expect(columnNames(db, 'escalations')).toEqual(
       expect.arrayContaining(['ticket_type', 'tool_arguments', 'result_json', 'consumed_at']),
     );
@@ -108,6 +112,52 @@ describe('schema migration', () => {
     const ticket = db.prepare('SELECT * FROM escalations WHERE id = ?').get('esc_legacy') as Record<string, unknown>;
     expect(ticket.status).toBe('pending');
     expect(ticket.ticket_type).toBe('scope');
+    db.close();
+  });
+
+  it('adds config_profile_ids when upgrading a v3 database', () => {
+    const path = tempDbPath();
+    const db = new DatabaseSync(path);
+    db.exec(`
+      CREATE TABLE servers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        runtime TEXT NOT NULL,
+        transport TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'stopped',
+        command TEXT,
+        args TEXT NOT NULL DEFAULT '[]',
+        url TEXT,
+        env TEXT NOT NULL DEFAULT '{}',
+        headers TEXT NOT NULL DEFAULT '{}',
+        manifest TEXT,
+        high_privilege_tools TEXT NOT NULL DEFAULT '[]',
+        delegation_supported INTEGER NOT NULL DEFAULT 0,
+        source_url TEXT,
+        work_dir TEXT,
+        env_file TEXT,
+        approval_required_tools TEXT NOT NULL DEFAULT '[]',
+        last_error TEXT,
+        pid INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      PRAGMA user_version = 3;
+    `);
+    db.prepare(
+      `INSERT INTO servers (id,name,runtime,transport,status,created_at,updated_at)
+       VALUES ('srv_v3','v3','node','stdio','stopped','2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+    ).run();
+
+    migrate(db);
+
+    const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
+    expect(version.user_version).toBe(4);
+    expect(columnNames(db, 'servers')).toEqual(expect.arrayContaining(['config_profile_ids']));
+    const row = db.prepare('SELECT config_profile_ids FROM servers WHERE id = ?').get('srv_v3') as {
+      config_profile_ids: string;
+    };
+    expect(row.config_profile_ids).toBe('[]');
     db.close();
   });
 

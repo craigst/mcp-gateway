@@ -231,6 +231,8 @@ export interface ServerRecord {
   envFile?: string | null;
   /** Tools that require an approved escalation ticket before execution. */
   approvalRequiredTools?: string[];
+  /** Config profiles applied to this server (merged into env/headers at start). */
+  configProfileIds?: string[];
   lastError: string | null;
   pid: number | null;
   createdAt: string;
@@ -473,4 +475,103 @@ export interface HarnessImportInput {
   headers?: Record<string, string>;
   highPrivilegeTools?: string[];
   approvalRequiredTools?: string[];
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.4 — update tracking & reusable configuration profiles
+// ---------------------------------------------------------------------------
+
+export type UpdateStatus = 'unknown' | 'up-to-date' | 'update-available' | 'error';
+
+export interface ServerSourceInfo {
+  serverId: string;
+  sourceKind: 'catalog' | 'git' | 'local';
+  catalogSourceId: string | null;
+  catalogEntryId: string | null;
+  repoUrl: string | null;
+  requestedRef: string | null;
+  installedCommit: string | null;
+  installedVersion: string | null;
+  latestCommit: string | null;
+  latestVersion: string | null;
+  latestRef: string | null;
+  updateAvailable: boolean;
+  checkedAt: string | null;
+  checkError: string | null;
+  changelogUrl: string | null;
+}
+
+export interface UpdateCheckResult {
+  serverId: string;
+  serverName: string;
+  status: UpdateStatus;
+  updateAvailable: boolean;
+  fromVersion: string | null;
+  toVersion: string | null;
+  fromCommit: string | null;
+  toCommit: string | null;
+  latestRef: string | null;
+  checkedAt: string;
+  error: string | null;
+}
+
+export interface ServerUpdateResult {
+  server: ServerRecord;
+  before: { version: string | null; commit: string | null };
+  after: { version: string | null; commit: string | null };
+  test: InstallTestResult | null;
+  changed: boolean;
+}
+
+/**
+ * A configuration/credential value stored entirely in the gateway's AES-256 vault.
+ * `encrypted` values are profile-owned secrets; `vault-ref` points at an existing
+ * named secret from the Vault page. Values are never returned by the API.
+ */
+export interface ConfigProfileValue {
+  key: string;
+  source: 'encrypted' | 'vault-ref';
+  /** Vault secret name when source is `vault-ref`. */
+  ref: string | null;
+}
+
+export interface ConfigProfile {
+  id: string;
+  name: string;
+  description: string | null;
+  /** Environment variable names and where their encrypted values live. */
+  entries: ConfigProfileValue[];
+  /** HTTP header names and their encrypted value references. */
+  headers: ConfigProfileValue[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConfigProfileInputValue {
+  key: string;
+  /** New plaintext value: encrypted into the gateway vault. Never returned. */
+  value?: string;
+  /** Reference to an existing gateway vault secret by name. */
+  secretRef?: string;
+}
+
+export interface ConfigProfileInput {
+  name: string;
+  description?: string | null;
+  entries?: ConfigProfileInputValue[];
+  headers?: ConfigProfileInputValue[];
+}
+
+export interface ConfigProfileSummary extends ConfigProfile {
+  attachedServerIds: string[];
+}
+
+export interface ConfigProfileApplyResult {
+  serverId: string;
+  serverName: string;
+  applied: boolean;
+  restarted: boolean;
+  test: InstallTestResult | null;
+  error: string | null;
 }

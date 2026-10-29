@@ -6,6 +6,7 @@ import { cx } from '../lib/cx.js';
 export type PageKey =
   | 'dashboard'
   | 'catalog'
+  | 'configurations'
   | 'vaultwarden'
   | 'rbac'
   | 'vault'
@@ -27,6 +28,12 @@ export const NAV_ITEMS: readonly NavItem[] = [
     label: 'Catalog',
     icon: '▤',
     description: 'Browse private catalogs, install servers and import local harnesses.',
+  },
+  {
+    key: 'configurations',
+    label: 'Configurations',
+    icon: '⚙',
+    description: 'Reusable encrypted env/headers applied to many MCP servers.',
   },
   {
     key: 'vaultwarden',
@@ -124,7 +131,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
           {NAV_ITEMS.map((item) => navButton(item, false))}
         </nav>
         <div className="space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
-          <p>v0.3.0 · MCP 2025-06-18</p>
+          <p>v0.4.0 · MCP 2025-06-18</p>
           <div className="rounded-lg border border-slate-800 px-2.5 py-2">
             <div className="flex items-center gap-2">
               <span

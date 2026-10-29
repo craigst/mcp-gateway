@@ -15,10 +15,17 @@ interface ManagedServer {
   logs: SubServerLogLine[];
 }
 
+export interface ProfileRuntimeConfig {
+  env: Record<string, string>;
+  headers: Record<string, string>;
+}
+
 export interface SupervisorOptions {
   repository: CatalogRepository;
   config: GatewayConfig;
   vault?: VaultService;
+  /** Resolves attached configuration profiles (env/headers/envFile) per server. */
+  profileResolver?: (serverId: string) => ProfileRuntimeConfig;
   logger?: Logger;
 }
 
@@ -95,8 +102,13 @@ export class DefaultSupervisor implements Supervisor {
   private async createClient(record: ServerRecord, onLog: (line: SubServerLogLine) => void): Promise<McpClient> {
     if (record.transport === 'stdio') {
       if (!record.command) throw new GatewayError(ErrorCodes.INVALID_PARAMS, `Server '${record.name}' has no command`);
-      const env = { ...(record.envFile ? readEnvFile(record.envFile) : {}), ...record.env };
-      if (record.envFile) this.pushLog(record.id, 'system', `loaded env file ${record.envFile}`);
+      const profile = this.options.profileResolver?.(record.id);
+      const env: Record<string, string> = { ...(profile?.env ?? {}) };
+      if (record.envFile) {
+        Object.assign(env, readEnvFile(record.envFile));
+        this.pushLog(record.id, 'system', `loaded env file ${record.envFile}`);
+      }
+      Object.assign(env, record.env);
       const requiredSecrets = record.manifest?.required_secrets ?? [];
       if (requiredSecrets.length > 0 && this.options.vault) {
         Object.assign(env, this.options.vault.resolveSecrets(requiredSecrets));
@@ -117,7 +129,7 @@ export class DefaultSupervisor implements Supervisor {
     const client = new HttpMcpClient({
       serverId: record.id,
       url: record.url,
-      headers: record.headers ?? {},
+      headers: { ...(this.options.profileResolver?.(record.id)?.headers ?? {}), ...(record.headers ?? {}) },
       requestTimeoutMs: this.options.config.defaultToolTimeoutMs,
     });
     return client;

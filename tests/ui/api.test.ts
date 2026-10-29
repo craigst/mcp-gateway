@@ -579,3 +579,179 @@ describe('ApiClient master key regeneration', () => {
     });
   });
 });
+
+describe('ApiClient v0.4 update manager & encrypted config profiles', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const sourceInfo = {
+    serverId: 'srv_brain',
+    sourceKind: 'catalog',
+    catalogSourceId: 'cat_1',
+    catalogEntryId: 'brain-mcp',
+    repoUrl: 'https://github.com/example/brain-mcp',
+    requestedRef: 'v1.0.0',
+    installedVersion: '1.0.0',
+    installedCommit: 'a1b2c3d',
+    latestVersion: '1.2.0',
+    latestCommit: 'd4e5f6a',
+    latestRef: 'v1.2.0',
+    updateAvailable: true,
+    checkedAt: '2026-10-29T19:00:00.000Z',
+    checkError: null,
+    changelogUrl: null,
+  };
+
+  const checkResult = {
+    serverId: 'srv_brain',
+    serverName: 'brain',
+    status: 'update-available',
+    updateAvailable: true,
+    fromVersion: '1.0.0',
+    toVersion: '1.2.0',
+    fromCommit: 'a1b2c3d',
+    toCommit: 'd4e5f6a',
+    latestRef: 'v1.2.0',
+    checkedAt: '2026-10-29T19:00:00.000Z',
+    error: null,
+  };
+
+  const profile = {
+    id: 'cfg_1',
+    name: 'Internal services',
+    description: null,
+    entries: [
+      { key: 'N8N_BASE_URL', source: 'encrypted', ref: null },
+      { key: 'N8N_API_KEY', source: 'vault-ref', ref: 'N8N_API_KEY' },
+    ],
+    headers: [],
+    createdAt: '2026-10-29T18:00:00.000Z',
+    updatedAt: '2026-10-29T18:00:00.000Z',
+    attachedServerIds: ['srv_n8n'],
+  };
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function lastCall(): [string, RequestInit] {
+    return fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string, RequestInit];
+  }
+
+  it('calls the update manager endpoints (list, check all, check one, update)', async () => {
+    const client = new ApiClient('http://gateway.test');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ sources: [sourceInfo] }));
+    expect(await client.listServerUpdates()).toEqual([sourceInfo]);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/updates');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ results: [checkResult] }));
+    expect(await client.checkUpdates(['srv_brain'])).toEqual([checkResult]);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/updates/check');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ serverIds: ['srv_brain'] });
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ results: [] }));
+    await client.checkUpdates();
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({});
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ update: checkResult }));
+    expect(await client.checkServerUpdate('srv_brain')).toEqual(checkResult);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/updates/servers/srv_brain/check');
+    expect(lastCall()[1].method).toBe('POST');
+
+    const updateResult = {
+      server: { id: 'srv_brain', name: 'brain' },
+      before: { version: '1.0.0', commit: 'a1b2c3d' },
+      after: { version: '1.2.0', commit: 'd4e5f6a' },
+      test: { ok: true, toolCount: 2, tools: ['brain_search'], latencyMs: 3.1, error: null },
+      changed: true,
+    };
+    fetchMock.mockResolvedValueOnce(fakeResponse({ result: updateResult }));
+    const updated = await client.updateServer('srv_brain', { restart: false, test: true });
+    expect(updated.changed).toBe(true);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/updates/servers/srv_brain/update');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ restart: false, test: true });
+
+    const headers = lastCall()[1].headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+    expect(lastCall()[1].credentials).toBe('include');
+  });
+
+  it('calls the encrypted config-profile endpoints', async () => {
+    const client = new ApiClient('http://gateway.test');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ profiles: [profile] }));
+    expect(await client.listConfigProfiles()).toEqual([profile]);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/config-profiles');
+
+    const input = {
+      name: 'Internal services',
+      entries: [
+        { key: 'N8N_BASE_URL', value: 'http://10.0.0.5:5678' },
+        { key: 'N8N_API_KEY', secretRef: 'N8N_API_KEY' },
+      ],
+      headers: [],
+    };
+    fetchMock.mockResolvedValueOnce(fakeResponse({ profile }, 201));
+    await client.createConfigProfile(input);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/config-profiles');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual(input);
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ profile }));
+    await client.getConfigProfile('cfg_1');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/config-profiles/cfg_1');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ profile: { ...profile, name: 'Renamed' } }));
+    await client.updateConfigProfile('cfg_1', { ...input, name: 'Renamed' });
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/config-profiles/cfg_1');
+    expect(lastCall()[1].method).toBe('PUT');
+    expect(JSON.parse(String(lastCall()[1].body))).toMatchObject({ name: 'Renamed' });
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ deleted: true }));
+    expect(await client.deleteConfigProfile('cfg_1')).toBe(true);
+    expect(lastCall()[1].method).toBe('DELETE');
+
+    const applyResults = [
+      {
+        serverId: 'srv_n8n',
+        serverName: 'n8n',
+        applied: true,
+        restarted: true,
+        test: { ok: true, toolCount: 5, tools: ['n8n_list'], latencyMs: 2.4, error: null },
+        error: null,
+      },
+    ];
+    fetchMock.mockResolvedValueOnce(fakeResponse({ results: applyResults }));
+    expect(
+      await client.applyConfigProfile('cfg_1', { serverIds: ['srv_n8n'], restart: true, test: true }),
+    ).toEqual(applyResults);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/config-profiles/cfg_1/apply');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({
+      serverIds: ['srv_n8n'],
+      restart: true,
+      test: true,
+    });
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ detached: true }));
+    expect(await client.detachConfigProfile('cfg_1', 'srv_n8n')).toBe(true);
+    expect(lastCall()[0]).toBe(
+      'http://gateway.test/mcp/v1/admin/config-profiles/cfg_1/servers/srv_n8n',
+    );
+    expect(lastCall()[1].method).toBe('DELETE');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ profile: { ...profile, id: 'cfg_migrated' } }, 201));
+    const migrated = await client.migrateEnvFile('srv_n8n');
+    expect(migrated.id).toBe('cfg_migrated');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/config-profiles/migrate-env-file');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ serverId: 'srv_n8n' });
+  });
+});

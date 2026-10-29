@@ -1,0 +1,7 @@
+{
+  "name": "update-fixture",
+  "version": "2.0.0",
+  "runtime": "node20",
+  "build_command": "node scripts/fail.mjs",
+  "start_command": "node server.js"
+}

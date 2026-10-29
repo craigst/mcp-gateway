@@ -21,6 +21,9 @@ import type {
   CatalogInstallResult,
   CatalogSource,
   CatalogSourceKind,
+  ConfigProfileApplyResult,
+  ConfigProfileInput,
+  ConfigProfileSummary,
   CreateKeyInput,
   DelegationResult,
   DelegationTarget,
@@ -34,7 +37,10 @@ import type {
   PermittedServerSummary,
   PolicyDenialReason,
   ServerRecord,
+  ServerSourceInfo,
   ServerStatus,
+  ServerUpdateResult,
+  UpdateCheckResult,
   ToolDescriptor,
   ToolGuardrail,
   ToolSearchResult,
@@ -413,4 +419,64 @@ export interface UiAuthService {
   changePassword(username: string, currentPassword: string, newPassword: string): void;
   /** Number of active (non-revoked, unexpired) sessions for a user. */
   activeSessions(username: string): number;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.4 — server update tracking & reusable configuration profiles
+// ---------------------------------------------------------------------------
+
+export interface ServerSourceRecordInput {
+  serverId: string;
+  sourceKind?: 'catalog' | 'git' | 'local';
+  catalogSourceId?: string | null;
+  catalogEntryId?: string | null;
+  repoUrl: string;
+  requestedRef?: string | null;
+  installedCommit?: string | null;
+  installedVersion?: string | null;
+  changelogUrl?: string | null;
+}
+
+export interface ServerUpdateService {
+  /** Every server that has a tracked upstream repository. */
+  listSources(): ServerSourceInfo[];
+  get(serverId: string): ServerSourceInfo | null;
+  /** Re-read the upstream ref/commit and persist the update state. */
+  check(serverId: string): Promise<UpdateCheckResult>;
+  checkAll(): Promise<UpdateCheckResult[]>;
+  /** Rebuild this one server from its upstream and restart/test it. */
+  update(
+    serverId: string,
+    options?: { ref?: string | null; restart?: boolean; test?: boolean },
+  ): Promise<ServerUpdateResult>;
+  /** Persist source metadata after an install/import. */
+  recordSource(input: ServerSourceRecordInput): void;
+}
+
+export interface ConfigProfileResolver {
+  /** Merge attached profile env/headers (resolving encrypted vault values) for a server. */
+  resolveForServer(serverId: string): { env: Record<string, string>; headers: Record<string, string> };
+  profileIdsForServer(serverId: string): string[];
+}
+
+export interface ConfigProfileService extends ConfigProfileResolver {
+  list(): ConfigProfileSummary[];
+  get(id: string): ConfigProfileSummary | null;
+  create(input: ConfigProfileInput): Promise<ConfigProfileSummary>;
+  update(id: string, input: ConfigProfileInput): Promise<ConfigProfileSummary>;
+  remove(id: string): void;
+  /** Attach profiles to servers (union), optionally restart + probe. */
+  apply(
+    profileIds: string[],
+    serverIds: string[],
+    options?: { restart?: boolean; test?: boolean },
+  ): Promise<ConfigProfileApplyResult[]>;
+  /** Remove a profile from one server. */
+  detach(profileId: string, serverId: string): void;
+  /**
+   * Migrate a legacy server env file into an encrypted profile attached to that
+   * server, then clear the envFile path. Values never touch SQLite in plaintext.
+   */
+  migrateEnvFile(serverId: string, name?: string): Promise<ConfigProfileSummary>;
 }

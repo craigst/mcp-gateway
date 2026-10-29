@@ -8,10 +8,12 @@ import type {
   CatalogRepository,
   CatalogService,
   DelegationService,
+  ConfigProfileService,
   EscalationService,
   GitImportService,
   KeyService,
   PolicyEngine,
+  ServerUpdateService,
   Supervisor,
   VaultService,
 } from './core/ports.js';
@@ -39,6 +41,10 @@ import { MasterKeyControl } from './admin/master-keys.js';
 import { SqliteUiAuthService } from './auth/service.js';
 import { AuthApi } from './auth/http.js';
 import { authenticateRequest } from './auth/request-auth.js';
+import { DefaultConfigProfileService } from './config_profiles/index.js';
+import { ConfigProfilesApi } from './admin/config-profiles-api.js';
+import { DefaultServerUpdateService } from './updates/index.js';
+import { UpdatesApi } from './admin/updates-api.js';
 
 export interface GatewayServices {
   keys: KeyService;
@@ -51,6 +57,8 @@ export interface GatewayServices {
   delegation: DelegationService;
   supervisor: Supervisor;
   audit: AuditService;
+  configProfiles: ConfigProfileService;
+  updates: ServerUpdateService;
   router: JsonRpcRouter;
   admin: AdminApi;
 }
@@ -124,14 +132,59 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     },
   });
 
-  const supervisor = new DefaultSupervisor({ repository, config, vault, logger });
+  // The supervisor needs profiles and profiles need the supervisor: resolve lazily.
+  const profileHolder: { service: DefaultConfigProfileService | null } = { service: null };
+  const supervisor = new DefaultSupervisor({
+    repository,
+    config,
+    vault,
+    logger,
+    profileResolver: (serverId) =>
+      profileHolder.service?.resolveForServer(serverId) ?? { env: {}, headers: {} },
+  });
+  const configProfiles = new DefaultConfigProfileService({
+    db,
+    repository,
+    vault,
+    supervisor,
+    logger,
+  });
+  profileHolder.service = configProfiles;
+  const configProfilesApi = new ConfigProfilesApi({ config, keys, configProfiles, logger, authenticate });
+
+  // Server update tracking (v0.4). Catalog installs feed source metadata via a
+  // lazy callback because the catalog is constructed before this service.
+  const sourceHolder: { record: ((input: import('./core/ports.js').ServerSourceRecordInput) => void) | null } = {
+    record: null,
+  };
+  const pluginCatalog = new GitPluginCatalog({
+    db,
+    config,
+    repository,
+    vault,
+    supervisor,
+    git,
+    logger,
+    onServerSource: (input) => sourceHolder.record?.(input),
+  });
+  const updates = new DefaultServerUpdateService({
+    db,
+    config,
+    repository,
+    supervisor,
+    vault,
+    catalog: pluginCatalog,
+    git,
+    logger,
+  });
+  sourceHolder.record = (input) => updates.recordSource(input);
+  const updatesApi = new UpdatesApi({ config, keys, updates, authenticate, logger });
 
   // v0.2: approval gating for dangerous tools + Vault Warden + harness discovery.
   const approvals = new SqliteApprovalService({ db, repository, supervisor, logger });
   const vaultwardenApi = new VaultwardenApi({ config, keys, catalog, audit, db, logger, authenticate });
   const discovery = new DefaultHarnessDiscoveryService({ repository, logger });
   const discoveryApi = new DiscoveryApi({ config, keys, discovery, logger, authenticate });
-  const pluginCatalog = new GitPluginCatalog({ db, config, repository, vault, supervisor, git, logger });
   const catalogApi = new CatalogApi({ config, keys, catalog: pluginCatalog, logger, authenticate });
   const masterKeys = new MasterKeyControl({ keys, logger });
 
@@ -164,6 +217,8 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     vaultwardenApi,
     discoveryApi,
     catalogApi,
+    configProfilesApi,
+    updatesApi,
     logger,
   });
   const server = new GatewayHttpServer({ config, router, admin, keys, uiAuth, authApi, supervisor, audit, logger });
@@ -185,6 +240,8 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     delegation,
     supervisor,
     audit,
+    configProfiles,
+    updates,
     router,
     admin,
   };

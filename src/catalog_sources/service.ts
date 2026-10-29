@@ -28,6 +28,7 @@ import type {
   GitImportInput,
   GitImportService,
   PluginCatalogService,
+  ServerSourceRecordInput,
   Supervisor,
   VaultService,
 } from '../core/ports.js';
@@ -78,6 +79,12 @@ export interface GitPluginCatalogDeps {
   fetcher?: typeof fetch;
   /** Per-source umbrella entry cache TTL (default 45s). */
   cacheTtlMs?: number;
+  /**
+   * Optional hook invoked after a successful install/import so the update
+   * tracker can persist the server's upstream source (v0.4). Failures are logged
+   * and never fail the install — there is no hard dependency on the updates module.
+   */
+  onServerSource?: (input: ServerSourceRecordInput) => void;
 }
 
 interface InstallCommonOptions {
@@ -168,6 +175,7 @@ export class GitPluginCatalog implements PluginCatalogService {
   private readonly logger: Logger;
   private readonly store: CatalogSourceStore;
   private readonly providers: Record<CatalogSourceKind, CatalogProvider>;
+  private readonly onServerSource: ((input: ServerSourceRecordInput) => void) | undefined;
 
   constructor(deps: GitPluginCatalogDeps) {
     this.config = deps.config;
@@ -176,6 +184,7 @@ export class GitPluginCatalog implements PluginCatalogService {
     this.supervisor = deps.supervisor;
     this.logger = deps.logger ?? createLogger('catalog_sources', 'silent');
     this.store = new SqliteCatalogSourceRepository(deps.db);
+    this.onServerSource = deps.onServerSource;
     this.git = (deps.git ??
       new DefaultGitImportService({
         config: deps.config,
@@ -426,6 +435,17 @@ export class GitPluginCatalog implements PluginCatalogService {
     }
     if (record !== server) this.repository.upsertServer(record);
 
+    // Track the upstream repository for update checks (best effort).
+    this.publishServerSource({
+      serverId: record.id,
+      sourceKind: options.marker === null ? 'git' : 'catalog',
+      catalogSourceId: options.marker?.sourceId ?? null,
+      catalogEntryId: options.marker?.entryId ?? null,
+      repoUrl: options.url,
+      requestedRef: options.ref,
+      installedVersion: record.manifest?.version ?? null,
+    });
+
     const shouldStart = options.start === true || options.test === true;
     let started = record;
     if (shouldStart) started = await this.supervisor.start(record.id);
@@ -438,6 +458,19 @@ export class GitPluginCatalog implements PluginCatalogService {
       test,
       buildLogTail: this.buildLogTail(),
     };
+  }
+
+  /** Invokes the optional update-tracking hook without ever failing the install. */
+  private publishServerSource(input: ServerSourceRecordInput): void {
+    if (this.onServerSource === undefined) return;
+    try {
+      this.onServerSource(input);
+    } catch (error) {
+      this.logger.warn('failed to record installed server source for updates', {
+        serverId: input.serverId,
+        error: scrubSecrets(error instanceof Error ? error.message : String(error), []),
+      });
+    }
   }
 
   private async runTest(
