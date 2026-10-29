@@ -9,6 +9,7 @@ import type {
   DelegationService,
   EscalationService,
   KeyService,
+  McpClient,
   PolicyEngine,
   Supervisor,
 } from '../core/ports.js';
@@ -18,6 +19,7 @@ import type {
   JsonRpcRequest,
   PolicyDenialReason,
   RequestContext,
+  ServerRecord,
   ToolDescriptor,
 } from '../core/types.js';
 
@@ -36,7 +38,7 @@ export interface RouterDeps {
 }
 
 const PROTOCOL_VERSION = '2025-06-18';
-const GATEWAY_VERSION = '0.4.0';
+const GATEWAY_VERSION = '0.5.0';
 
 /**
  * JSON-RPC method dispatch. Authorization, audit recording and escalation
@@ -69,7 +71,12 @@ export class JsonRpcRouter {
           return {
             protocolVersion: PROTOCOL_VERSION,
             serverInfo: { name: 'mcp-gateway', version: GATEWAY_VERSION },
-            capabilities: { tools: { listChanged: true }, logging: {} },
+            capabilities: {
+              tools: { listChanged: true },
+              prompts: { listChanged: true },
+              resources: { listChanged: true, subscribe: false },
+              logging: {},
+            },
             instructions:
               'Zero-trust MCP gateway. Use tools/search or tools/list to discover permitted tools; tools/call executes directly.',
             _meta: {
@@ -126,6 +133,10 @@ export class JsonRpcRouter {
           const name = requiredString(params.name, 'name');
           const requestedServer = optionalString(params.serverId, 'serverId');
           const args = asObject(params.arguments ?? {});
+          // Attribute the audit row to the server even when resolution/denial
+          // throws (unknown tool, high-privilege denial), so the inspector can
+          // show failed and denied requests per server.
+          if (requestedServer) serverId = requestedServer;
           const tool = this.resolveTool(key, name, requestedServer);
           serverId = tool.serverId;
           toolId = tool.id;
@@ -207,6 +218,70 @@ export class JsonRpcRouter {
           };
         }
 
+        case 'prompts/list': {
+          const requestedServer = optionalString(params.serverId, 'serverId');
+          return this.listPromptCollection(key, requestedServer);
+        }
+
+        case 'prompts/get': {
+          const name = requiredString(params.name, 'name');
+          const args = asObject(params.arguments ?? {});
+          const requestedServer = optionalString(params.serverId, 'serverId');
+          const server = this.resolveCapabilityServer(key, requestedServer, (record) =>
+            (record.prompts ?? []).some((prompt) => prompt.name === name),
+          );
+          serverId = server.id;
+          const client = await this.ensureClient(server.id);
+          if (typeof client.getPrompt !== 'function') {
+            throw new GatewayError(ErrorCodes.METHOD_NOT_FOUND, 'This server does not expose MCP prompts');
+          }
+          return client.getPrompt(name, args);
+        }
+
+        case 'resources/list': {
+          const requestedServer = optionalString(params.serverId, 'serverId');
+          return this.listResourceCollection(key, requestedServer);
+        }
+
+        case 'resources/templates/list': {
+          const requestedServer = optionalString(params.serverId, 'serverId');
+          if (requestedServer) {
+            if (!this.deps.policy.isServerPermitted(key, requestedServer)) throw toolNotFound();
+            serverId = requestedServer;
+            const client = await this.ensureClient(requestedServer);
+            if (typeof client.listResourceTemplates !== 'function') return { resourceTemplates: [] };
+            const templates = await client.listResourceTemplates();
+            return { resourceTemplates: templates };
+          }
+          const templates: unknown[] = [];
+          for (const server of this.visibleServers(key)) {
+            const client = this.deps.supervisor.client(server.id);
+            if (!client || typeof client.listResourceTemplates !== 'function') continue;
+            try {
+              for (const template of await client.listResourceTemplates()) {
+                templates.push({ ...template, server_id: server.id });
+              }
+            } catch {
+              // best effort
+            }
+          }
+          return { resourceTemplates: templates };
+        }
+
+        case 'resources/read': {
+          const uri = requiredString(params.uri, 'uri');
+          const requestedServer = optionalString(params.serverId, 'serverId');
+          const server = this.resolveCapabilityServer(key, requestedServer, (record) =>
+            (record.resources ?? []).some((resource) => resource.uri === uri),
+          );
+          serverId = server.id;
+          const client = await this.ensureClient(server.id);
+          if (typeof client.readResource !== 'function') {
+            throw new GatewayError(ErrorCodes.METHOD_NOT_FOUND, 'This server does not expose MCP resources');
+          }
+          return client.readResource(uri);
+        }
+
         case 'agents/delegate': {
           if (!this.deps.policy.canDelegate(key)) {
             throw accessDenied('Access Denied: key has no delegation claim.', { reason: 'DELEGATION_NOT_PERMITTED' });
@@ -278,6 +353,80 @@ export class JsonRpcRouter {
         }
       }
     }
+  }
+
+  private async ensureClient(serverId: string): Promise<McpClient> {
+    if (this.deps.supervisor.status(serverId) !== 'running') {
+      await this.deps.supervisor.start(serverId);
+    }
+    const client = this.deps.supervisor.client(serverId);
+    if (!client) throw new GatewayError(ErrorCodes.UPSTREAM_ERROR, `Server '${serverId}' is unavailable`);
+    return client;
+  }
+
+  private visibleServers(key: AuthenticatedKey): ServerRecord[] {
+    return this.deps.catalog.repository.listServers().filter((server) => this.deps.policy.isServerPermitted(key, server.id));
+  }
+
+  private resolveCapabilityServer(
+    key: AuthenticatedKey,
+    requestedServer: string | undefined,
+    predicate: (server: ServerRecord) => boolean,
+  ): ServerRecord {
+    if (requestedServer) {
+      const server = this.deps.catalog.repository.getServer(requestedServer);
+      if (!server || !this.deps.policy.isServerPermitted(key, requestedServer)) throw toolNotFound();
+      return server;
+    }
+    const match = this.visibleServers(key).find(predicate);
+    if (!match) throw toolNotFound();
+    return match;
+  }
+
+  private async listPromptCollection(
+    key: AuthenticatedKey,
+    requestedServer?: string,
+  ): Promise<{ prompts: unknown[]; total: number }> {
+    const prompts: unknown[] = [];
+    const servers = requestedServer
+      ? this.visibleServers(key).filter((server) => server.id === requestedServer)
+      : this.visibleServers(key);
+    if (requestedServer && servers.length === 0) throw toolNotFound();
+    for (const server of servers) {
+      const client = this.deps.supervisor.client(server.id);
+      if (!client || typeof client.listPrompts !== 'function') continue;
+      try {
+        for (const prompt of await client.listPrompts()) {
+          prompts.push({ ...prompt, server_id: server.id });
+        }
+      } catch {
+        // best effort; discovery stored whatever the server advertised at start
+      }
+    }
+    return { prompts, total: prompts.length };
+  }
+
+  private async listResourceCollection(
+    key: AuthenticatedKey,
+    requestedServer?: string,
+  ): Promise<{ resources: unknown[]; total: number }> {
+    const resources: unknown[] = [];
+    const servers = requestedServer
+      ? this.visibleServers(key).filter((server) => server.id === requestedServer)
+      : this.visibleServers(key);
+    if (requestedServer && servers.length === 0) throw toolNotFound();
+    for (const server of servers) {
+      const client = this.deps.supervisor.client(server.id);
+      if (!client || typeof client.listResources !== 'function') continue;
+      try {
+        for (const resource of await client.listResources()) {
+          resources.push({ ...resource, server_id: server.id });
+        }
+      } catch {
+        // best effort
+      }
+    }
+    return { resources, total: resources.length };
   }
 
   /** Resolve a tool name to a visible tool, enforcing anti-probing semantics. */

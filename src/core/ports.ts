@@ -36,6 +36,8 @@ import type {
   JsonSchema,
   PermittedServerSummary,
   PolicyDenialReason,
+  PromptDescriptor,
+  ResourceDescriptor,
   ServerRecord,
   ServerSourceInfo,
   ServerStatus,
@@ -115,6 +117,16 @@ export interface CatalogRepository {
   getToolByName(serverId: string, name: string): ToolDescriptor | null;
   listTools(): ToolDescriptor[];
   listToolsByServer(serverId: string): ToolDescriptor[];
+  /** Persist MCP discovery extras (capabilities/instructions/prompts/resources). */
+  updateDiscovery(
+    serverId: string,
+    patch: {
+      capabilities?: Record<string, unknown>;
+      instructions?: string | null;
+      prompts?: PromptDescriptor[];
+      resources?: ResourceDescriptor[];
+    },
+  ): void;
 }
 
 export interface CatalogService {
@@ -147,6 +159,27 @@ export interface McpInitializeResult {
   protocolVersion: string;
   serverInfo: { name: string; version: string };
   capabilities: Record<string, unknown>;
+  instructions?: string | null;
+}
+
+export interface RawPromptDefinition {
+  name: string;
+  description: string;
+  arguments: Array<{ name: string; description?: string; required?: boolean }>;
+}
+
+export interface RawResourceDefinition {
+  uri: string;
+  name: string;
+  description: string;
+  mimeType: string | null;
+}
+
+export interface RawResourceTemplateDefinition {
+  uriTemplate: string;
+  name: string;
+  description: string;
+  mimeType: string | null;
 }
 
 export interface McpCallResult {
@@ -164,6 +197,12 @@ export interface McpClient {
     args: Record<string, unknown>,
     options?: { timeoutMs?: number; meta?: Record<string, unknown> },
   ): Promise<McpCallResult>;
+  /** Optional MCP capability discovery/proxying (not all servers support them). */
+  listPrompts?(): Promise<RawPromptDefinition[]>;
+  getPrompt?(name: string, args: Record<string, unknown>): Promise<unknown>;
+  listResources?(): Promise<RawResourceDefinition[]>;
+  listResourceTemplates?(): Promise<RawResourceTemplateDefinition[]>;
+  readResource?(uri: string): Promise<unknown>;
   notify(method: string, params?: unknown): void;
   close(): Promise<void>;
 }

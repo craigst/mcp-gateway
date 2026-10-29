@@ -288,3 +288,16 @@ Major upgrade delivering private-catalog import and approval-gated credential ac
 | Encrypted configuration profiles | No env files. Profiles store env/header values in the AES-256-GCM vault — either profile-owned encrypted values or references to named Vault secrets. Attach one profile to many servers, merge at process start, apply & test (restart + tools/list); edit keeps unchanged values when blank; one-click migration of legacy env files into encrypted profiles, then the env-file reference is cleared. |
 | Schema | Version 4: `server_sources`, `config_profiles`, `servers.config_profile_ids`; idempotent/self-healing column migrations. |
 | Tests | 687 tests / 65 files, including a full HTTP v0.4 flow (install → upstream commit → check → update → probe; profile apply/keep/edit/migrate). |
+
+
+---
+
+## v0.5 upgrade (shipped)
+
+| Area | Delivered |
+|---|---|
+| Server inspector | Full-page inspector per server: overview (status/actions/capabilities/instructions/manifest/source/update), tools with schemas + Try playground + usage, prompts & resources with get/read, encrypted configuration with masked values + audited reveal, and per-server activity with ok/error/denied status, key attribution, latency percentiles and filters. |
+| MCP capabilities | Transports now speak `prompts/list`, `prompts/get`, `resources/list`, `resources/templates/list`, `resources/read`; discovery at server start stores prompts/resources/instructions/capabilities; the JSON-RPC router proxies all five methods for permitted servers and advertises them in `initialize`. |
+| Audit | Server attribution on failed/unknown/denied tool calls (previously only successful calls carried a server id); per-server stats/keys-used aggregates; every credential reveal written to the audit log (`admin.reveal`) with the value never logged. |
+| UI | `#/server/<id>` route, five inspector tabs, audit page failed/denied presets and server links. |
+| Tests | 733 tests / 72 files, including an HTTP v0.5 e2e for prompts/resources proxying, inspector composition, audited reveal and ok/error/denied activity. |

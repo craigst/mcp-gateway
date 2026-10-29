@@ -25,7 +25,9 @@ import type {
   KeySummary,
   KeyType,
   RuntimeKind,
+  ServerActivityPage,
   ServerGrant,
+  ServerInspectorOverview,
   ServerRecord,
   ServerSourceInfo,
   ServerStatus,
@@ -321,6 +323,29 @@ export interface ApplyConfigProfileRequest {
   serverIds: string[];
   restart?: boolean;
   test?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// v0.5 inspector request types
+// ---------------------------------------------------------------------------
+
+export interface ServerActivityFilters {
+  status?: AuditStatus;
+  toolId?: string;
+  keyId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface RevealSecretRequest {
+  kind: 'env' | 'header' | 'profile';
+  key: string;
+  profileId?: string;
+}
+
+export interface RevealedSecret {
+  key: string;
+  value: string;
 }
 
 /** Tool row returned by `GET /admin/vaultwarden`. */
@@ -898,6 +923,37 @@ export class ApiClient {
       INSTALL_TIMEOUT_MS,
     );
     return response.result;
+  }
+
+  // -- v0.5 server inspector ------------------------------------------------
+
+  /** Full per-server view: tools/prompts/resources, config, stats and recent activity. */
+  getServerInspector(serverId: string): Promise<ServerInspectorOverview> {
+    return this.request<ServerInspectorOverview>(
+      `/mcp/v1/admin/servers/${encodeURIComponent(serverId)}/inspector`,
+    );
+  }
+
+  /** Paginated audit slice for one server (summary + entries + total). */
+  getServerActivity(serverId: string, filters: ServerActivityFilters = {}): Promise<ServerActivityPage> {
+    const query = buildQuery({
+      status: filters.status,
+      toolId: filters.toolId,
+      keyId: filters.keyId,
+      limit: filters.limit,
+      offset: filters.offset,
+    });
+    return this.request<ServerActivityPage>(
+      `/mcp/v1/admin/servers/${encodeURIComponent(serverId)}/activity${query}`,
+    );
+  }
+
+  /** Audited, one-shot credential reveal for a server env/header or profile entry. */
+  revealSecret(serverId: string, input: RevealSecretRequest): Promise<RevealedSecret> {
+    return this.request<RevealedSecret>(
+      `/mcp/v1/admin/servers/${encodeURIComponent(serverId)}/reveal`,
+      { method: 'POST', body: JSON.stringify(input) },
+    );
   }
 
   // -- v0.4 configuration profiles -----------------------------------------

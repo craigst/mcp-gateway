@@ -1,4 +1,4 @@
-# Gateway API Contract (v0.4.0)
+# Gateway API Contract (v0.5.0)
 
 All JSON bodies are `application/json`. Auth is `Authorization: Bearer <key>` unless noted.
 Admin routes require a **master** key, except audit, delegations, escalations and tools which
@@ -37,7 +37,7 @@ Accepts a single request or a batch (max 20). `id` is echoed verbatim. Notificat
 // result
 {
   "protocolVersion": "2025-06-18",
-  "serverInfo": { "name": "mcp-gateway", "version": "0.4.0" },
+  "serverInfo": { "name": "mcp-gateway", "version": "0.5.0" },
   "capabilities": { "tools": { "listChanged": true }, "logging": {} },
   "_meta": { "gateway": { "key_id": "key_...", "key_type": "agent", "delegation_max_depth": 3 } }
 }
@@ -109,7 +109,7 @@ Depth > `MCP_DELEGATION_MAX_DEPTH` → `-32003`.
 
 | Route | Auth | Response |
 |---|---|---|
-| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.4.0", "uptimeMs": 1234 }` |
+| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.5.0", "uptimeMs": 1234 }` |
 | `GET /mcp/v1/metrics` | any key | `MetricsSnapshot` (see `src/core/ports.ts`) |
 
 ## 3. Admin API

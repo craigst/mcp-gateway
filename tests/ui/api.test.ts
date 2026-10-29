@@ -755,3 +755,85 @@ describe('ApiClient v0.4 update manager & encrypted config profiles', () => {
     expect(JSON.parse(String(lastCall()[1].body))).toEqual({ serverId: 'srv_n8n' });
   });
 });
+
+describe('ApiClient v0.5 server inspector', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function lastCall(): [string, RequestInit] {
+    return fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string, RequestInit];
+  }
+
+  it('loads the inspector overview and paginated activity with filters', async () => {
+    const client = new ApiClient('http://gateway.test');
+    const overview = {
+      server: { id: 'srv_brain', name: 'brain' },
+      source: null,
+      tools: [],
+      prompts: [],
+      resources: [],
+      config: { env: [], headers: [], profiles: [], vaultRefs: [] },
+      stats: { total: 0 },
+      keysUsed: [],
+      activity: [],
+    };
+
+    fetchMock.mockResolvedValueOnce(fakeResponse(overview));
+    expect(await client.getServerInspector('srv_brain')).toEqual(overview);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/servers/srv_brain/inspector');
+    expect(lastCall()[1].credentials).toBe('include');
+
+    const activity = { summary: { total: 3 }, entries: [], total: 3 };
+    fetchMock.mockResolvedValueOnce(fakeResponse(activity));
+    expect(
+      await client.getServerActivity('srv_brain', {
+        status: 'denied',
+        toolId: 'srv_brain:brain_whoami',
+        keyId: 'key_agent',
+        limit: 25,
+        offset: 50,
+      }),
+    ).toEqual(activity);
+    expect(lastCall()[0]).toBe(
+      'http://gateway.test/mcp/v1/admin/servers/srv_brain/activity?status=denied&toolId=srv_brain%3Abrain_whoami&keyId=key_agent&limit=25&offset=50',
+    );
+
+    fetchMock.mockResolvedValueOnce(fakeResponse(activity));
+    await client.getServerActivity('srv_brain');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/servers/srv_brain/activity');
+  });
+
+  it('reveals a secret and maps errors onto ApiError', async () => {
+    const client = new ApiClient('http://gateway.test');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ key: 'N8N_API_KEY', value: 'super-secret' }));
+    expect(
+      await client.revealSecret('srv_brain', { kind: 'profile', key: 'N8N_API_KEY', profileId: 'cfg_1' }),
+    ).toEqual({ key: 'N8N_API_KEY', value: 'super-secret' });
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/servers/srv_brain/reveal');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({
+      kind: 'profile',
+      key: 'N8N_API_KEY',
+      profileId: 'cfg_1',
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({ error: { code: 403, message: 'Reveal not permitted' } }, 403),
+    );
+    const caught = await client.revealSecret('srv_brain', { kind: 'env', key: 'TOKEN' }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(caught).toBeInstanceOf(ApiError);
+    expect(caught).toMatchObject({ status: 403, message: 'Reveal not permitted' });
+  });
+});

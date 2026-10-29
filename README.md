@@ -33,6 +33,7 @@ If not, the tool is invisible — not merely denied.
 | 🗝️ | **Vault Warden approvals** | Approval-gated credential delivery: agents request a secret, a human approves, the gateway executes once and returns a file path — values never enter the model context. |
 | 🔄 | **Update manager** | Per-server upstream tracking (tag/commit): "update available" badges, check-all, and one-click staged updates (clone → build → swap → restart → probe) with automatic rollback on a failed build. |
 | ⚙️ | **Encrypted configuration profiles** | Save credentials/endpoints (IPs, ports, API keys, headers) once **in the AES-256 vault**, reference named secrets, and apply one profile to many MCP servers. No env files — values are decrypted only into the sub-process environment. |
+| 🔬 | **Server inspector** | Open any MCP server: every tool (with schema + live Try), prompts, resources and templates, capabilities/instructions, encrypted configuration with audited reveal, version/update/changelog, and per-server request history — ok, failed **and denied** — with the API key that used it. |
 | 🖥️ | **Web UI console** | Dashboard, catalog manager, RBAC grid, vault, audit explorer, delegation observer, live log stream, JSON-RPC playground. |
 | 🔑 | **Built-in console login** | Username/password sessions (scrypt, HttpOnly SameSite=Strict cookie, CSRF protection). API keys are for AI/external clients only. |
 | 📊 | **Audit everything** | Every discovery/execution/denial recorded with latency, key, tool, delegation depth and payload (truncated). |
@@ -42,8 +43,18 @@ If not, the tool is invisible — not merely denied.
 
 ![Installed servers with version and update awareness](docs/screenshots/v04/installed.png)
 
+![Server inspector — activity with ok, error and denied requests](docs/screenshots/v05/activity.png)
+
 <details>
-<summary>More screenshots (configurations · update dialog · login · dashboard · catalog · Vault Warden)</summary>
+<summary>More screenshots (inspector · configurations · update dialog · login · dashboard · catalog · Vault Warden)</summary>
+
+| Inspector overview | Inspector configuration |
+|---|---|
+| ![Inspector overview](docs/screenshots/v05/overview.png) | ![Inspector configuration](docs/screenshots/v05/configuration.png) |
+
+| Inspector tools | Prompts & resources |
+|---|---|
+| ![Inspector tools](docs/screenshots/v05/tools.png) | ![Prompts & resources](docs/screenshots/v05/prompts-resources.png) |
 
 | Encrypted configurations | Update confirmation |
 |---|---|
@@ -245,6 +256,25 @@ Save endpoints, IPs, ports, API keys and headers once, encrypted in the gateway'
 - legacy env-file configs can be migrated with one click — the gateway reads the file once,
   encrypts every value into a profile, attaches it and clears the env-file reference.
 
+## Inspect any MCP server
+
+Click a server in **Catalog → Installed** (or **Open**) to land on its inspector page:
+
+- **Overview** — status/actions, runtime/transport/PID/workdir, tool/prompt/resource counts,
+  request stats (ok, error, denied, error rate, p50/p95, last used), source & updates with
+  changelog, manifest/capabilities/instructions.
+- **Tools** — every tool with its full input schema, high-privilege/approval flags, usage
+  count/last used, and a **Try** playground that calls the tool and shows result + latency.
+- **Prompts & Resources** — MCP prompts (arguments + *Get prompt*) and resources
+  (*Read*), plus resource templates; the gateway also proxies `prompts/list`, `prompts/get`,
+  `resources/list`, `resources/templates/list` and `resources/read` to agents.
+- **Configuration** — the encrypted configuration actually reaching this server: attached
+  profiles (encrypted / vault-ref), server env/headers with masked values and one-shot
+  **audited reveal** (every reveal is written to the audit log).
+- **Activity** — per-server requests with filters (All / Failed / Denied / OK, tool, API key),
+  latency, payload and the exact key (`dsh-harness`, `demo-agent`, …) that used the server.
+  Failed and denied requests are first-class — they are what the manager is for.
+
 ## Use it from an agent
 
 ```bash
@@ -309,7 +339,7 @@ npm run lint           # eslint
 npm run build          # server + UI bundle
 ```
 
-The suite is **687 tests across 65 files**: unit suites per module, an integration suite that
+The suite is **733 tests across 72 files**: unit suites per module, an integration suite that
 boots a real gateway on an ephemeral port and spawns fixture MCP servers, and an end-to-end
 scenario covering vault → git import → catalog → execution → delegation → depth guard → escalation,
 plus jsdom UI tests. CI also builds the Docker image and smoke-tests `/health` inside the container.
@@ -333,7 +363,8 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 | v0.1.0 | Core engine, JSON-RPC ingress, RBAC/zero-trust catalog, UI, delegation, vault + git import | ✅ shipped |
 | v0.2.0 | Private GitHub catalogs, harness discovery/import, auto-manifest detection, approval-gated Vault Warden, UI marketplace | ✅ shipped |
 | v0.3.0 | Built-in username/password Web UI login, session-authenticated console + WebSocket logs, master-key rotation, persistent podman/systemd deployment | ✅ shipped |
-| **v0.4.0** | **Upstream update manager (checks + staged per-server updates) and encrypted configuration profiles replacing env files** | ✅ **current** |
+| v0.4.0 | Upstream update manager (checks + staged per-server updates) and encrypted configuration profiles replacing env files | ✅ shipped |
+| **v0.5.0** | **Full MCP server inspector (tools/prompts/resources/config/activity), proxied prompts & resources, audited credential reveal, per-server failed/denied request history** | ✅ **current** |
 
 ## License
 

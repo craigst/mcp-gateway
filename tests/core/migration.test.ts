@@ -28,10 +28,18 @@ describe('schema migration', () => {
     const db = openDatabase(tempDbPath());
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(4);
+    expect(SCHEMA_VERSION).toBe(5);
 
     expect(columnNames(db, 'servers')).toEqual(
-      expect.arrayContaining(['env_file', 'approval_required_tools', 'config_profile_ids']),
+      expect.arrayContaining([
+        'env_file',
+        'approval_required_tools',
+        'config_profile_ids',
+        'capabilities_json',
+        'instructions',
+        'prompts_json',
+        'resources_json',
+      ]),
     );
     expect(columnNames(db, 'escalations')).toEqual(
       expect.arrayContaining(['ticket_type', 'tool_arguments', 'result_json', 'consumed_at']),
@@ -98,9 +106,17 @@ describe('schema migration', () => {
     migrate(db);
 
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(version.user_version).toBe(4);
+    expect(version.user_version).toBe(5);
     expect(columnNames(db, 'servers')).toEqual(
-      expect.arrayContaining(['env_file', 'approval_required_tools', 'config_profile_ids']),
+      expect.arrayContaining([
+        'env_file',
+        'approval_required_tools',
+        'config_profile_ids',
+        'capabilities_json',
+        'instructions',
+        'prompts_json',
+        'resources_json',
+      ]),
     );
     expect(columnNames(db, 'escalations')).toEqual(
       expect.arrayContaining(['ticket_type', 'tool_arguments', 'result_json', 'consumed_at']),
@@ -152,7 +168,7 @@ describe('schema migration', () => {
     migrate(db);
 
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(version.user_version).toBe(4);
+    expect(version.user_version).toBe(5);
     expect(columnNames(db, 'servers')).toEqual(expect.arrayContaining(['config_profile_ids']));
     const row = db.prepare('SELECT config_profile_ids FROM servers WHERE id = ?').get('srv_v3') as {
       config_profile_ids: string;

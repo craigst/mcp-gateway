@@ -55,6 +55,8 @@ export interface AdminDeps {
   vaultwardenApi?: AdminSubRouter;
   updatesApi?: AdminSubRouter;
   configProfilesApi?: AdminSubRouter;
+  /** Per-server inspector routes (`/servers/:id/inspector|activity|reveal`). */
+  inspectorApi?: AdminSubRouter;
   logger?: Logger;
 }
 
@@ -188,6 +190,14 @@ export class AdminApi {
   private async handleServers(req: IncomingMessage, res: ServerResponse, rest: string[]): Promise<void> {
     this.requireKey(req, ['master']);
     const method = req.method ?? 'GET';
+    if (
+      this.deps.inspectorApi &&
+      rest.length >= 2 &&
+      ['inspector', 'activity', 'reveal'].includes(rest[1]!)
+    ) {
+      const handled = await this.deps.inspectorApi.handle(req, res, new URL(req.url ?? '/', 'http://localhost'));
+      if (handled) return;
+    }
 
     if (rest.length === 0 && method === 'GET') {
       this.sendJson(res, 200, { servers: this.deps.supervisor.list() });

@@ -45,10 +45,19 @@ export interface InstalledTabProps {
   onOpenServer: (id: string | null) => void;
   onDiscover: () => void;
   onImport: () => void;
+  /** Navigate to the full `#/server/<id>` inspector page. */
+  onOpenInspector: (serverId: string) => void;
 }
 
 /** Installed tab: lifecycle controls, activation probes, policy drawer, logs. */
-export function InstalledTab({ servers, openServerId, onOpenServer, onDiscover, onImport }: InstalledTabProps) {
+export function InstalledTab({
+  servers,
+  openServerId,
+  onOpenServer,
+  onDiscover,
+  onImport,
+  onOpenInspector,
+}: InstalledTabProps) {
   const toast = useToast();
   const [pending, setPending] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -312,7 +321,14 @@ export function InstalledTab({ servers, openServerId, onOpenServer, onDiscover, 
                   header: 'Server',
                   render: (server) => (
                     <div className="min-w-0">
-                      <p className="font-medium text-slate-200">{server.name}</p>
+                      <button
+                        type="button"
+                        onClick={() => onOpenInspector(server.id)}
+                        className="text-left font-medium text-slate-200 underline-offset-2 transition-colors hover:text-sky-300 hover:underline"
+                        title={`Open the ${server.name} inspector`}
+                      >
+                        {server.name}
+                      </button>
                       <p className="font-mono text-[11px] text-slate-500">{server.id}</p>
                       {server.envFile ? (
                         <p className="mt-0.5 truncate font-mono text-[10px] text-slate-500" title={server.envFile}>
@@ -449,6 +465,7 @@ export function InstalledTab({ servers, openServerId, onOpenServer, onDiscover, 
                         Test
                       </GhostButton>
                       <GhostButton onClick={() => onOpenServer(server.id)}>Details</GhostButton>
+                      <GhostButton onClick={() => onOpenInspector(server.id)}>Open</GhostButton>
                       <DangerButton
                         onClick={() => setDeleteTarget(server)}
                         disabled={pending !== null}
@@ -471,6 +488,7 @@ export function InstalledTab({ servers, openServerId, onOpenServer, onDiscover, 
           key={drawerServer.id}
           server={drawerServer}
           onClose={() => onOpenServer(null)}
+          onOpenInspector={onOpenInspector}
           onSaved={(updated) => {
             setDrawerServer(updated);
             servers.reload();

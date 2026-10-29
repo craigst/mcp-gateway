@@ -45,6 +45,8 @@ import { DefaultConfigProfileService } from './config_profiles/index.js';
 import { ConfigProfilesApi } from './admin/config-profiles-api.js';
 import { DefaultServerUpdateService } from './updates/index.js';
 import { UpdatesApi } from './admin/updates-api.js';
+import { ServerInspectorService } from './inspector/index.js';
+import { InspectorApi } from './admin/inspector-api.js';
 
 export interface GatewayServices {
   keys: KeyService;
@@ -59,6 +61,7 @@ export interface GatewayServices {
   audit: AuditService;
   configProfiles: ConfigProfileService;
   updates: ServerUpdateService;
+  inspector: ServerInspectorService;
   router: JsonRpcRouter;
   admin: AdminApi;
 }
@@ -179,6 +182,17 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
   });
   sourceHolder.record = (input) => updates.recordSource(input);
   const updatesApi = new UpdatesApi({ config, keys, updates, authenticate, logger });
+  const inspector = new ServerInspectorService({
+    db,
+    repository,
+    keys,
+    audit,
+    vault,
+    configProfiles,
+    updates,
+    logger,
+  });
+  const inspectorApi = new InspectorApi({ config, keys, inspector, authenticate, logger });
 
   // v0.2: approval gating for dangerous tools + Vault Warden + harness discovery.
   const approvals = new SqliteApprovalService({ db, repository, supervisor, logger });
@@ -219,6 +233,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     catalogApi,
     configProfilesApi,
     updatesApi,
+    inspectorApi,
     logger,
   });
   const server = new GatewayHttpServer({ config, router, admin, keys, uiAuth, authApi, supervisor, audit, logger });
@@ -242,6 +257,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     audit,
     configProfiles,
     updates,
+    inspector,
     router,
     admin,
   };

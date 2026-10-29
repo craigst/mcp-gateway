@@ -14,6 +14,8 @@ import type {
   RuntimeKind,
   ServerManifest,
   ServerRecord,
+  PromptDescriptor,
+  ResourceDescriptor,
   ServerStatus,
   ToolDescriptor,
   TransportKind,
@@ -38,6 +40,10 @@ interface ServerRow {
   env_file: string | null;
   approval_required_tools: string;
   config_profile_ids: string;
+  capabilities_json: string;
+  instructions: string | null;
+  prompts_json: string;
+  resources_json: string;
   last_error: string | null;
   pid: number | null;
   created_at: string;
@@ -75,6 +81,10 @@ function mapServerRow(row: ServerRow): ServerRecord {
     envFile: row.env_file ?? null,
     approvalRequiredTools: parseJson<string[]>(row.approval_required_tools, []),
     configProfileIds: parseJson<string[]>(row.config_profile_ids, []),
+    capabilities: parseJson<Record<string, unknown>>(row.capabilities_json, {}),
+    instructions: row.instructions ?? null,
+    prompts: parseJson<PromptDescriptor[]>(row.prompts_json, []),
+    resources: parseJson<ResourceDescriptor[]>(row.resources_json, []),
     lastError: row.last_error ?? null,
     pid: row.pid ?? null,
     createdAt: row.created_at,
@@ -111,8 +121,9 @@ export class SqliteCatalogRepository implements CatalogRepository {
           `INSERT INTO servers
              (id, name, runtime, transport, status, command, args, url, env, headers, manifest,
               high_privilege_tools, delegation_supported, source_url, work_dir, env_file,
-              approval_required_tools, config_profile_ids, last_error, pid, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              approval_required_tools, config_profile_ids, capabilities_json, instructions,
+              prompts_json, resources_json, last_error, pid, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
              runtime = excluded.runtime,
@@ -131,6 +142,10 @@ export class SqliteCatalogRepository implements CatalogRepository {
              env_file = excluded.env_file,
              approval_required_tools = excluded.approval_required_tools,
              config_profile_ids = excluded.config_profile_ids,
+             capabilities_json = excluded.capabilities_json,
+             instructions = excluded.instructions,
+             prompts_json = excluded.prompts_json,
+             resources_json = excluded.resources_json,
              last_error = excluded.last_error,
              pid = excluded.pid,
              created_at = excluded.created_at,
@@ -155,6 +170,10 @@ export class SqliteCatalogRepository implements CatalogRepository {
           server.envFile ?? null,
           toJson(server.approvalRequiredTools ?? []),
           toJson(server.configProfileIds ?? []),
+          toJson(server.capabilities ?? {}),
+          server.instructions ?? null,
+          toJson(server.prompts ?? []),
+          toJson(server.resources ?? []),
           server.lastError ?? null,
           server.pid ?? null,
           server.createdAt,
@@ -211,6 +230,27 @@ export class SqliteCatalogRepository implements CatalogRepository {
     next.status = status;
     next.updatedAt = nowIso();
     this.upsertServer(next);
+  }
+
+  updateDiscovery(
+    serverId: string,
+    patch: {
+      capabilities?: Record<string, unknown>;
+      instructions?: string | null;
+      prompts?: ToolDescriptor extends never ? never : import('../core/types.js').PromptDescriptor[];
+      resources?: import('../core/types.js').ResourceDescriptor[];
+    },
+  ): void {
+    const current = this.getServer(serverId);
+    if (!current) throw invalidParams(`Server '${serverId}' was not found.`);
+    this.upsertServer({
+      ...current,
+      capabilities: patch.capabilities ?? current.capabilities,
+      instructions: patch.instructions === undefined ? current.instructions ?? null : patch.instructions,
+      prompts: patch.prompts ?? current.prompts ?? [],
+      resources: patch.resources ?? current.resources ?? [],
+      updatedAt: nowIso(),
+    });
   }
 
   upsertTools(serverId: string, tools: ToolDescriptor[]): void {

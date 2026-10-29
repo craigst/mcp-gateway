@@ -16,13 +16,15 @@ export interface CatalogPageProps {
   /** Deep-link target when arriving from another page (e.g. Vault Warden CTAs). */
   initialTab?: CatalogTab;
   onTabChange?: (tab: CatalogTab) => void;
+  /** Open the full server inspector (`#/server/<id>`). */
+  onOpenServer?: (serverId: string) => void;
 }
 
 /**
  * Catalog workspace: installed servers, remote catalog discovery, source
  * management and local harness import — all in one page with tabs.
  */
-export function CatalogPage({ initialTab = 'installed', onTabChange }: CatalogPageProps) {
+export function CatalogPage({ initialTab = 'installed', onTabChange, onOpenServer }: CatalogPageProps) {
   const [tab, setTabState] = useState<CatalogTab>(initialTab);
   const [openServerId, setOpenServerId] = useState<string | null>(null);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
@@ -116,6 +118,7 @@ export function CatalogPage({ initialTab = 'installed', onTabChange }: CatalogPa
           onOpenServer={setOpenServerId}
           onDiscover={() => setTab('discover')}
           onImport={() => setTab('import')}
+          onOpenInspector={onOpenServer ?? (() => {})}
         />
       </TabPanel>
 

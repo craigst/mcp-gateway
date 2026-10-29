@@ -18,6 +18,20 @@ import {
 import type { AuditEntry, AuditStatus, KeySummary, ServerRecord } from '../../core/types.js';
 import type { AuditFilters } from '../lib/api.js';
 
+type StatusPreset = 'all' | 'failed' | 'denied' | 'ok';
+
+const PRESETS: readonly { value: StatusPreset; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'denied', label: 'Denied' },
+  { value: 'ok', label: 'OK' },
+];
+
+export interface AuditPageProps {
+  /** Navigate to the full server inspector (`#/server/<id>`). */
+  onOpenServer?: (serverId: string) => void;
+}
+
 const PAGE_SIZE = 50;
 const STATUS_OPTIONS: readonly AuditStatus[] = ['ok', 'error', 'denied'];
 
@@ -67,12 +81,31 @@ function draftToQuery(draft: FilterDraft, offset: number): AuditFilters {
 }
 
 /** Audit log explorer: server-side filtered search with expandable payloads. */
-export function AuditPage() {
+export function AuditPage({ onOpenServer }: AuditPageProps) {
   const [draft, setDraft] = useState<FilterDraft>(EMPTY_DRAFT);
   const [query, setQuery] = useState<AuditFilters>({ limit: PAGE_SIZE, offset: 0 });
+  const [preset, setPreset] = useState<StatusPreset>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const audit = useAsyncData(() => api.queryAudit(query), [query]);
+  const audit = useAsyncData(async () => {
+    if (preset === 'failed') {
+      // "Failed" = denials + errors; the audit API accepts a single status, so
+      // merge the two latest slices and report the combined total.
+      const [errors, denied] = await Promise.all([
+        api.queryAudit({ ...query, status: 'error', offset: 0 }),
+        api.queryAudit({ ...query, status: 'denied', offset: 0 }),
+      ]);
+      const merged = new Map<number, AuditEntry>();
+      for (const entry of [...errors.entries, ...denied.entries]) merged.set(entry.id, entry);
+      return {
+        entries: [...merged.values()]
+          .sort((left, right) => right.ts.localeCompare(left.ts))
+          .slice(0, PAGE_SIZE),
+        total: errors.total + denied.total,
+      };
+    }
+    return api.queryAudit({ ...query, ...(preset === 'all' ? {} : { status: preset }) });
+  }, [query, preset]);
   const keys = useAsyncData(() => api.listKeys(), []);
   const servers = useAsyncData(() => api.listServers(), []);
 
@@ -84,13 +117,21 @@ export function AuditPage() {
 
   const applyFilters = (): void => {
     setExpandedId(null);
+    setPreset('all');
     setQuery(draftToQuery(draft, 0));
   };
 
   const resetFilters = (): void => {
     setDraft(EMPTY_DRAFT);
+    setPreset('all');
     setExpandedId(null);
     setQuery({ limit: PAGE_SIZE, offset: 0 });
+  };
+
+  const selectPreset = (next: StatusPreset): void => {
+    setPreset(next);
+    setExpandedId(null);
+    setQuery((previous) => ({ ...previous, offset: 0 }));
   };
 
   const goToOffset = (nextOffset: number): void => {
@@ -105,6 +146,29 @@ export function AuditPage() {
   return (
     <div className="space-y-4">
       <Card title="Filters" subtitle="GET /mcp/v1/admin/audit — key, server, tool, method, status, full-text search">
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            Quick status
+          </span>
+          {PRESETS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => selectPreset(option.value)}
+              aria-pressed={preset === option.value}
+              className={
+                preset === option.value
+                  ? 'rounded-full bg-slate-800 px-3 py-1 text-xs font-semibold text-sky-300'
+                  : 'rounded-full px-3 py-1 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-900 hover:text-slate-200'
+              }
+            >
+              {option.label}
+            </button>
+          ))}
+          {preset === 'failed' && (
+            <span className="text-[11px] text-slate-500">denied + errors, newest first</span>
+          )}
+        </div>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Field label="Key">
             <Select value={draft.keyId} onChange={(event) => updateDraft('keyId', event.target.value)}>
@@ -178,6 +242,9 @@ export function AuditPage() {
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <PrimaryButton onClick={applyFilters}>Apply filters</PrimaryButton>
           <GhostButton onClick={resetFilters}>Reset</GhostButton>
+          {draft.serverId !== '' && onOpenServer !== undefined && (
+            <GhostButton onClick={() => onOpenServer(draft.serverId)}>Open server inspector →</GhostButton>
+          )}
           <span className="text-xs text-slate-500">
             {audit.status === 'ready' ? `${formatNumber(total)} matching entries` : 'Querying…'}
           </span>
@@ -234,7 +301,23 @@ export function AuditPage() {
                   header: 'Server / tool',
                   render: (entry) => (
                     <div className="text-[11px] text-slate-400">
-                      <p>{entry.serverId ?? '—'}</p>
+                      {entry.serverId === null ? (
+                        <p>—</p>
+                      ) : onOpenServer === undefined ? (
+                        <p>{entry.serverId}</p>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenServer(entry.serverId as string);
+                          }}
+                          className="underline-offset-2 transition-colors hover:text-sky-300 hover:underline"
+                          title="Open this server's inspector"
+                        >
+                          {entry.serverId}
+                        </button>
+                      )}
                       <p className="font-mono text-slate-500">{entry.toolId ?? ''}</p>
                     </div>
                   ),
@@ -283,20 +366,24 @@ export function AuditPage() {
               <p className="text-xs text-slate-500">
                 Showing {entries.length === 0 ? 0 : offset + 1}–{offset + entries.length} of {formatNumber(total)}
               </p>
-              <div className="flex gap-1">
-                <GhostButton
-                  onClick={() => goToOffset(Math.max(0, offset - PAGE_SIZE))}
-                  disabled={offset === 0}
-                >
-                  Previous
-                </GhostButton>
-                <GhostButton
-                  onClick={() => goToOffset(offset + PAGE_SIZE)}
-                  disabled={offset + entries.length >= total}
-                >
-                  Next
-                </GhostButton>
-              </div>
+              {preset === 'failed' ? (
+                <span className="text-[11px] text-slate-500">Merged view — refine filters for pagination</span>
+              ) : (
+                <div className="flex gap-1">
+                  <GhostButton
+                    onClick={() => goToOffset(Math.max(0, offset - PAGE_SIZE))}
+                    disabled={offset === 0}
+                  >
+                    Previous
+                  </GhostButton>
+                  <GhostButton
+                    onClick={() => goToOffset(offset + PAGE_SIZE)}
+                    disabled={offset + entries.length >= total}
+                  >
+                    Next
+                  </GhostButton>
+                </div>
+              )}
             </div>
           </>
         )}

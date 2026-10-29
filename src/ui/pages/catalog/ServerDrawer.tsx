@@ -26,6 +26,8 @@ export interface ServerDrawerProps {
   onSaved: (server: ServerRecord) => void;
   /** Called after an update or profile change so the parent list can refresh. */
   onUpdated: () => void;
+  /** Navigate to the full `#/server/<id>` inspector page. */
+  onOpenInspector?: (serverId: string) => void;
 }
 
 function InfoRow({ label, children }: { label: string; children: ReactNode }) {
@@ -49,7 +51,7 @@ function truncateMiddle(value: string, max = 52): string {
  * high-privilege and approval-required toggles, env file, activation probe
  * and logs.
  */
-export function ServerDrawer({ server, onClose, onSaved, onUpdated }: ServerDrawerProps) {
+export function ServerDrawer({ server, onClose, onSaved, onUpdated, onOpenInspector }: ServerDrawerProps) {
   const toast = useToast();
   const toolsState = useAsyncData(() => api.serverTools(server.id), [server.id]);
   const logsState = useAsyncData(() => api.serverLogs(server.id, 200), [server.id]);
@@ -235,6 +237,9 @@ export function ServerDrawer({ server, onClose, onSaved, onUpdated }: ServerDraw
       size="xl"
       footer={
         <>
+          {onOpenInspector !== undefined && (
+            <GhostButton onClick={() => onOpenInspector(server.id)}>Open full inspector</GhostButton>
+          )}
           <SecondaryButton onClick={onClose}>Close</SecondaryButton>
           <PrimaryButton onClick={() => void savePolicy()} disabled={saving || toolsState.status !== 'ready'}>
             {saving ? 'Saving policy…' : 'Save policy'}

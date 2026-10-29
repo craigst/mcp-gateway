@@ -6,6 +6,9 @@ import type {
   McpCallResult,
   McpClient,
   McpInitializeResult,
+  RawPromptDefinition,
+  RawResourceDefinition,
+  RawResourceTemplateDefinition,
   RawToolDefinition,
   SubServerLogLine,
 } from '../../core/ports.js';
@@ -202,7 +205,7 @@ export class StdioMcpClient implements McpClient {
       {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: this.options.clientInfo ?? { name: 'mcp-gateway', version: '0.4.0' },
+        clientInfo: this.options.clientInfo ?? { name: 'mcp-gateway', version: '0.5.0' },
       },
       timeout,
     );
@@ -212,6 +215,7 @@ export class StdioMcpClient implements McpClient {
       protocolVersion: result?.protocolVersion ?? PROTOCOL_VERSION,
       serverInfo: this.serverInfo,
       capabilities: result?.capabilities ?? {},
+      instructions: typeof result?.instructions === 'string' ? result.instructions : null,
     };
   }
 
@@ -232,6 +236,80 @@ export class StdioMcpClient implements McpClient {
     const params: Record<string, unknown> = { name, arguments: args };
     if (options?.meta) params._meta = options.meta;
     return this.request<McpCallResult>('tools/call', params, options?.timeoutMs ?? this.options.requestTimeoutMs ?? 60_000);
+  }
+
+  async listPrompts(): Promise<RawPromptDefinition[]> {
+    const result = await this.request<{ prompts?: unknown }>(
+      'prompts/list',
+      {},
+      this.requestTimeout(),
+    );
+    return toArray(result?.prompts)
+      .filter(isRecord)
+      .map((prompt) => ({
+        name: asString(prompt.name),
+        description: asString(prompt.description),
+        arguments: toArray(prompt.arguments)
+          .filter(isRecord)
+          .map((argument) => {
+            const mapped: RawPromptDefinition['arguments'][number] = {
+              name: asString(argument.name),
+            };
+            if (argument.description !== undefined) {
+              mapped.description = asString(argument.description);
+            }
+            if (argument.required !== undefined) mapped.required = Boolean(argument.required);
+            return mapped;
+          }),
+      }));
+  }
+
+  async getPrompt(name: string, args: Record<string, unknown>): Promise<unknown> {
+    return this.request<unknown>(
+      'prompts/get',
+      { name, arguments: args },
+      this.requestTimeout(),
+    );
+  }
+
+  async listResources(): Promise<RawResourceDefinition[]> {
+    const result = await this.request<{ resources?: unknown }>(
+      'resources/list',
+      {},
+      this.requestTimeout(),
+    );
+    return toArray(result?.resources)
+      .filter(isRecord)
+      .map((resource) => ({
+        uri: asString(resource.uri),
+        name: asString(resource.name),
+        description: asString(resource.description),
+        mimeType: asStringOrNull(resource.mimeType),
+      }));
+  }
+
+  async listResourceTemplates(): Promise<RawResourceTemplateDefinition[]> {
+    const result = await this.request<{ resourceTemplates?: unknown }>(
+      'resources/templates/list',
+      {},
+      this.requestTimeout(),
+    );
+    return toArray(result?.resourceTemplates)
+      .filter(isRecord)
+      .map((template) => ({
+        uriTemplate: asString(template.uriTemplate),
+        name: asString(template.name),
+        description: asString(template.description),
+        mimeType: asStringOrNull(template.mimeType),
+      }));
+  }
+
+  async readResource(uri: string): Promise<unknown> {
+    return this.request<unknown>('resources/read', { uri }, this.requestTimeout());
+  }
+
+  private requestTimeout(): number {
+    return this.options.requestTimeoutMs ?? 20_000;
   }
 
   notify(method: string, params?: unknown): void {
@@ -271,6 +349,22 @@ export class StdioMcpClient implements McpClient {
       }
     });
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : value === undefined || value === null ? fallback : String(value);
+}
+
+function asStringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
 function truncateForLog(line: string, max = 2_000): string {

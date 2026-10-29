@@ -303,3 +303,64 @@ At process start the gateway resolves the attached profiles from the vault and i
 values into the sub-process environment/headers. Merge precedence: attached profiles (in order) <
 server-specific env/headers. Secrets are decrypted only in the gateway process, never written to
 SQLite, logs, or API responses.
+
+## 9. v0.5 — MCP server inspector
+
+Everything an AI (or an operator) can use from one server, plus its encrypted configuration,
+upstream version and per-server request history.
+
+```jsonc
+GET /mcp/v1/admin/servers/:id/inspector
+→ {
+  "server": ServerRecord,                 // includes runtime/transport/status/pid/workDir, manifest,
+                                          // capabilities, instructions, prompts[], resources[],
+                                          // env, headers, protection lists, configProfileIds
+  "source": ServerSourceInfo | null,      // repo/ref/installed+latest version+commit/changelog
+  "tools": ToolDescriptor[],              // full inputSchema for each tool
+  "prompts": [{ "name": "…", "description": "…",
+                "arguments": [{ "name": "…", "required": true }] }],
+  "resources": [{ "uri": "demo://readme", "name": "…", "mimeType": "text/markdown" }],
+  "config": {
+    "env":     [{ "key": "N8N_API_KEY", "masked": true, "value": null, "source": "server" }],
+    "headers": [{ "key": "Authorization", "masked": true, "value": null, "source": "header" }],
+    "profiles": [{ "id": "cfg_…", "name": "n8n connection", "description": "…",
+                   "entries": [{ "key": "N8N_API_KEY", "source": "encrypted", "ref": null }],
+                   "headers": [] }],
+    "vaultRefs": ["SHARED_DEMO_TOKEN"]
+  },
+  "stats": { "total": 142, "ok": 130, "error": 4, "denied": 8, "errorRate": 0.0845,
+             "lastUsedAt": "…", "avgLatencyMs": 12.4, "p50LatencyMs": 9.1, "p95LatencyMs": 41.0,
+             "distinctKeys": 3,
+             "toolUsage": [{ "toolId": "srv_…:ssh_run", "name": "ssh_run", "count": 40,
+                             "lastUsedAt": "…", "avgLatencyMs": 15.2 }] },
+  "keysUsed": [{ "keyId": "key_…", "keyName": "dsh-harness", "keyPrefix": "mcp_master_",
+                 "keyType": "master", "count": 120, "lastUsedAt": "…" }],
+  "activity": [ AuditEntry, … ]          // most recent 20 (ok/error/denied)
+}
+
+GET /mcp/v1/admin/servers/:id/activity?status=ok|error|denied&toolId=&keyId=&limit=&offset=
+→ { "summary": ServerUsageStats, "entries": AuditEntry[], "total": 0 }
+
+POST /mcp/v1/admin/servers/:id/reveal
+{ "kind": "env" | "header" | "profile", "key": "N8N_API_KEY", "profileId": "cfg_…" }
+→ { "key": "N8N_API_KEY", "value": "…" }   // master-only; every reveal writes an
+                                          // audit entry (method "admin.reveal") — the value
+                                          // itself is never logged
+```
+
+### Proxied MCP capabilities (JSON-RPC)
+
+The gateway now also proxies prompts/resources for permitted servers (server-level grants;
+invisible servers are indistinguishable from unknown). Audit rows record the server.
+
+```jsonc
+{ "method": "prompts/list",             "params": { "serverId": "srv_…" } }   // serverId optional
+{ "method": "prompts/get",              "params": { "name": "summarize", "arguments": {…}, "serverId": "…" } }
+{ "method": "resources/list",           "params": { "serverId": "srv_…" } }
+{ "method": "resources/templates/list", "params": { "serverId": "srv_…" } }
+{ "method": "resources/read",           "params": { "uri": "demo://readme", "serverId": "…" } }
+```
+
+`initialize` now advertises `prompts` and `resources` capabilities alongside `tools`. Prompts,
+resources, instructions and capabilities are discovered automatically at server start and stored
+on the server record so the inspector always has them.

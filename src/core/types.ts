@@ -233,10 +233,44 @@ export interface ServerRecord {
   approvalRequiredTools?: string[];
   /** Config profiles applied to this server (merged into env/headers at start). */
   configProfileIds?: string[];
+  /** MCP capabilities advertised by the sub-server (from initialize). */
+  capabilities?: Record<string, unknown>;
+  /** Optional server instructions returned by initialize. */
+  instructions?: string | null;
+  /** MCP prompts discovered from the sub-server. */
+  prompts?: PromptDescriptor[];
+  /** MCP resources discovered from the sub-server. */
+  resources?: ResourceDescriptor[];
   lastError: string | null;
   pid: number | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PromptArgument {
+  name: string;
+  description?: string;
+  required?: boolean;
+}
+
+export interface PromptDescriptor {
+  name: string;
+  description: string;
+  arguments: PromptArgument[];
+}
+
+export interface ResourceDescriptor {
+  uri: string;
+  name: string;
+  description: string;
+  mimeType: string | null;
+}
+
+export interface ResourceTemplateDescriptor {
+  uriTemplate: string;
+  name: string;
+  description: string;
+  mimeType: string | null;
 }
 
 export interface ToolDescriptor {
@@ -574,4 +608,78 @@ export interface ConfigProfileApplyResult {
   restarted: boolean;
   test: InstallTestResult | null;
   error: string | null;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.5 — server inspector (full per-server view: tools/prompts/resources,
+// encrypted configuration, update info, activity and credential reveal)
+// ---------------------------------------------------------------------------
+
+export interface InspectorEnvEntry {
+  key: string;
+  /** Masked entries can be revealed through the audited reveal endpoint. */
+  masked: boolean;
+  value: string | null;
+  source: 'server' | 'header';
+}
+
+export interface InspectorProfileEntry {
+  key: string;
+  source: 'encrypted' | 'vault-ref';
+  ref: string | null;
+}
+
+export interface InspectorProfile {
+  id: string;
+  name: string;
+  description: string | null;
+  entries: InspectorProfileEntry[];
+  headers: InspectorProfileEntry[];
+}
+
+export interface ServerUsageStats {
+  total: number;
+  ok: number;
+  error: number;
+  denied: number;
+  errorRate: number;
+  lastUsedAt: string | null;
+  avgLatencyMs: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+  distinctKeys: number;
+  toolUsage: Array<{ toolId: string; name: string; count: number; lastUsedAt: string | null; avgLatencyMs: number }>;
+}
+
+export interface ServerKeyUsage {
+  keyId: string;
+  keyName: string;
+  keyPrefix: string;
+  keyType: string;
+  count: number;
+  lastUsedAt: string | null;
+}
+
+export interface ServerInspectorOverview {
+  server: ServerRecord;
+  source: ServerSourceInfo | null;
+  tools: ToolDescriptor[];
+  prompts: PromptDescriptor[];
+  resources: ResourceDescriptor[];
+  config: {
+    env: InspectorEnvEntry[];
+    headers: InspectorEnvEntry[];
+    profiles: InspectorProfile[];
+    vaultRefs: string[];
+  };
+  stats: ServerUsageStats;
+  keysUsed: ServerKeyUsage[];
+  activity: AuditEntry[];
+}
+
+export interface ServerActivityPage {
+  summary: ServerUsageStats;
+  entries: AuditEntry[];
+  total: number;
 }

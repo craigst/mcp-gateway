@@ -6,6 +6,7 @@ import { cx } from '../lib/cx.js';
 export type PageKey =
   | 'dashboard'
   | 'catalog'
+  | 'server'
   | 'configurations'
   | 'vaultwarden'
   | 'rbac'
@@ -69,7 +70,12 @@ export interface LayoutProps {
 /** Console shell: sidebar navigation, gateway health, signed-in operator. */
 export function Layout({ current, onNavigate, user, onSignOut, signingOut = false, children }: LayoutProps) {
   const [connection, setConnection] = useState<ConnectionState>('checking');
-  const active = NAV_ITEMS.find((item) => item.key === current) ?? NAV_ITEMS[0];
+  const active: NavItem = NAV_ITEMS.find((item) => item.key === current) ?? {
+    key: 'server',
+    label: 'Server inspector',
+    icon: '▤',
+    description: 'Tools, encrypted configuration and activity for one MCP server.',
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -131,7 +137,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
           {NAV_ITEMS.map((item) => navButton(item, false))}
         </nav>
         <div className="space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
-          <p>v0.4.0 · MCP 2025-06-18</p>
+          <p>v0.5.0 · MCP 2025-06-18</p>
           <div className="rounded-lg border border-slate-800 px-2.5 py-2">
             <div className="flex items-center gap-2">
               <span

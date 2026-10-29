@@ -80,6 +80,8 @@ export class DefaultSupervisor implements Supervisor {
       this.options.repository.upsertTools(serverId, tools);
       this.pushLog(serverId, 'system', `discovered ${tools.length} tool(s)`);
 
+      await this.discoverExtras(serverId, client, info);
+
       const pid = client instanceof StdioMcpClient ? (client.pid ?? null) : null;
       const updated = this.updateStatus(serverId, 'running', { pid, lastError: null });
       this.logger.info('sub-server started', { serverId, name: record.name, tools: tools.length, pid });
@@ -133,6 +135,48 @@ export class DefaultSupervisor implements Supervisor {
       requestTimeoutMs: this.options.config.defaultToolTimeoutMs,
     });
     return client;
+  }
+
+  /** Best-effort discovery of prompts/resources/instructions; failures are logged. */
+  private async discoverExtras(
+    serverId: string,
+    client: McpClient,
+    info: { capabilities: Record<string, unknown>; instructions?: string | null },
+  ): Promise<void> {
+    let prompts: import('../core/types.js').PromptDescriptor[] = [];
+    let resources: import('../core/types.js').ResourceDescriptor[] = [];
+    if (typeof client.listPrompts === 'function') {
+      try {
+        const raw = await client.listPrompts();
+        prompts = raw.map((prompt) => ({
+          name: prompt.name,
+          description: prompt.description ?? '',
+          arguments: prompt.arguments ?? [],
+        }));
+      } catch (error) {
+        this.pushLog(serverId, 'system', `prompts/list unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (typeof client.listResources === 'function') {
+      try {
+        const raw = await client.listResources();
+        resources = raw.map((resource) => ({
+          uri: resource.uri,
+          name: resource.name,
+          description: resource.description ?? '',
+          mimeType: resource.mimeType ?? null,
+        }));
+      } catch (error) {
+        this.pushLog(serverId, 'system', `resources/list unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    this.options.repository.updateDiscovery(serverId, {
+      capabilities: info.capabilities,
+      instructions: info.instructions ?? null,
+      prompts,
+      resources,
+    });
+    this.pushLog(serverId, 'system', `discovered ${prompts.length} prompt(s), ${resources.length} resource(s)`);
   }
 
   private toDescriptors(record: ServerRecord, rawTools: RawToolDefinition[]): ToolDescriptor[] {
