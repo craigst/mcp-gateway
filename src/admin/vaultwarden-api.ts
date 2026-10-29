@@ -42,6 +42,8 @@ export interface VaultwardenApiDeps {
   audit: AuditService;
   db: DatabaseSync;
   logger?: Logger;
+  /** Resolves Bearer API key or Web UI session cookie. */
+  authenticate?: (req: IncomingMessage) => AuthenticatedKey;
 }
 
 export interface VaultwardenToolSummary {
@@ -197,6 +199,16 @@ export class VaultwardenApi implements AdminSubRouter {
   }
 
   private requireMasterKey(req: IncomingMessage): AuthenticatedKey {
+    const injected = this.deps.authenticate;
+    if (injected) {
+      const key = injected(req);
+      if (key.keyType !== 'master') {
+        throw accessDenied('Access Denied: master privileges are required for this admin resource.', {
+          reason: 'SCOPE_RESTRICTION',
+        });
+      }
+      return key;
+    }
     const header = req.headers.authorization;
     let plaintext: string | null = null;
     if (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')) plaintext = header.slice(7).trim();

@@ -35,6 +35,10 @@ import { DefaultHarnessDiscoveryService } from './discovery/service.js';
 import { DiscoveryApi } from './admin/discovery-api.js';
 import { GitPluginCatalog } from './catalog_sources/index.js';
 import { CatalogApi } from './admin/catalog-api.js';
+import { MasterKeyControl } from './admin/master-keys.js';
+import { SqliteUiAuthService } from './auth/service.js';
+import { AuthApi } from './auth/http.js';
+import { authenticateRequest } from './auth/request-auth.js';
 
 export interface GatewayServices {
   keys: KeyService;
@@ -81,6 +85,10 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
   const repository = new SqliteCatalogRepository(db);
   const keys = new SqliteKeyService(db, { pepper: config.keyPepper, logger: createLogger('rbac', config.logLevel) });
   const policy = new RbacPolicyEngine({ logger: createLogger('policy', config.logLevel) });
+  const uiAuth = new SqliteUiAuthService(db, config, { logger: createLogger('auth', config.logLevel) });
+  uiAuth.ensureBootstrapUser();
+  const authApi = new AuthApi({ uiAuth, config, logger });
+  const authenticate = (req: import('node:http').IncomingMessage) => authenticateRequest(req, keys, uiAuth);
   const catalog = new DefaultCatalogService(repository, policy);
   const escalations = new SqliteEscalationService(db, { logger });
   const vault = new SqliteVaultService(db, config.vaultSecret, { logger });
@@ -120,11 +128,12 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
 
   // v0.2: approval gating for dangerous tools + Vault Warden + harness discovery.
   const approvals = new SqliteApprovalService({ db, repository, supervisor, logger });
-  const vaultwardenApi = new VaultwardenApi({ config, keys, catalog, audit, db, logger });
+  const vaultwardenApi = new VaultwardenApi({ config, keys, catalog, audit, db, logger, authenticate });
   const discovery = new DefaultHarnessDiscoveryService({ repository, logger });
-  const discoveryApi = new DiscoveryApi({ config, keys, discovery, logger });
+  const discoveryApi = new DiscoveryApi({ config, keys, discovery, logger, authenticate });
   const pluginCatalog = new GitPluginCatalog({ db, config, repository, vault, supervisor, git, logger });
-  const catalogApi = new CatalogApi({ config, keys, catalog: pluginCatalog, logger });
+  const catalogApi = new CatalogApi({ config, keys, catalog: pluginCatalog, logger, authenticate });
+  const masterKeys = new MasterKeyControl({ keys, logger });
 
   const router = new JsonRpcRouter({
     config,
@@ -150,12 +159,14 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     audit,
     delegation,
     approvals,
+    masterKeys,
+    authenticate,
     vaultwardenApi,
     discoveryApi,
     catalogApi,
     logger,
   });
-  const server = new GatewayHttpServer({ config, router, admin, keys, supervisor, audit, logger });
+  const server = new GatewayHttpServer({ config, router, admin, keys, uiAuth, authApi, supervisor, audit, logger });
 
   // Reset stale "running" rows from a previous process, then bootstrap the master key.
   for (const record of repository.listServers()) {
@@ -184,13 +195,49 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     logger,
     services,
     server,
-    start: () => server.start(),
+    start: async () => {
+      const address = await server.start();
+      await autostartServers(supervisor, repository, config.autostart, logger);
+      return address;
+    },
     stop: async () => {
       await server.stop();
       await supervisor.shutdown();
       db.close();
     },
   };
+}
+
+/**
+ * Starts configured sub-servers after boot (`MCP_AUTOSTART=all` or `name1,name2`).
+ * Failures are logged and never block the gateway from coming up.
+ */
+async function autostartServers(
+  supervisor: Supervisor,
+  repository: CatalogRepository,
+  setting: string | undefined,
+  logger: Logger,
+): Promise<void> {
+  const requested = (setting ?? '').trim();
+  if (!requested) return;
+  const servers = repository.listServers();
+  const selected =
+    requested.toLowerCase() === 'all'
+      ? servers
+      : servers.filter((server) => requested.split(',').map((name) => name.trim()).includes(server.name));
+  for (const server of selected) {
+    if (server.status === 'running') continue;
+    try {
+      await supervisor.start(server.id);
+      logger.info('autostarted sub-server', { serverId: server.id, name: server.name });
+    } catch (error) {
+      logger.warn('autostart failed', {
+        serverId: server.id,
+        name: server.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 }
 
 function bootstrapMasterKey(keys: KeyService, config: GatewayConfig, logger: Logger): void {

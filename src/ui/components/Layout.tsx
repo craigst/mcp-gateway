@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api } from '../lib/api.js';
 import { cx } from '../lib/cx.js';
-import { ConfirmDialog } from './ConfirmDialog.js';
 
 export type PageKey =
   | 'dashboard'
@@ -44,23 +43,25 @@ export const NAV_ITEMS: readonly NavItem[] = [
 
 type ConnectionState = 'checking' | 'online' | 'offline';
 
-function maskKey(key: string | null): string | null {
-  if (!key) return null;
-  return `${key.slice(0, Math.min(12, key.length))}…`;
+function userInitials(username: string): string {
+  const trimmed = username.trim();
+  if (trimmed === '') return '?';
+  return trimmed.slice(0, 2).toUpperCase();
 }
 
 export interface LayoutProps {
   current: PageKey;
   onNavigate: (page: PageKey) => void;
+  /** Signed-in operator username (session login). */
+  user: string;
+  onSignOut: () => void;
+  signingOut?: boolean;
   children: ReactNode;
 }
 
-/** Console shell: sidebar navigation, gateway health, operator key custody. */
-export function Layout({ current, onNavigate, children }: LayoutProps) {
+/** Console shell: sidebar navigation, gateway health, signed-in operator. */
+export function Layout({ current, onNavigate, user, onSignOut, signingOut = false, children }: LayoutProps) {
   const [connection, setConnection] = useState<ConnectionState>('checking');
-  const [keyPreview, setKeyPreview] = useState<string | null>(() => maskKey(api.getApiKey()));
-  const [keyModalOpen, setKeyModalOpen] = useState(false);
-  const [keyDraft, setKeyDraft] = useState('');
   const active = NAV_ITEMS.find((item) => item.key === current) ?? NAV_ITEMS[0];
 
   useEffect(() => {
@@ -82,24 +83,6 @@ export function Layout({ current, onNavigate, children }: LayoutProps) {
       clearInterval(timer);
     };
   }, []);
-
-  const openKeyModal = (): void => {
-    setKeyDraft(api.getApiKey() ?? '');
-    setKeyModalOpen(true);
-  };
-
-  const saveKey = (): void => {
-    api.setApiKey(keyDraft.trim() === '' ? null : keyDraft.trim());
-    setKeyPreview(maskKey(api.getApiKey()));
-    setKeyModalOpen(false);
-  };
-
-  const clearKey = (): void => {
-    api.setApiKey(null);
-    setKeyPreview(null);
-    setKeyDraft('');
-    setKeyModalOpen(false);
-  };
 
   const navButton = (item: NavItem, compact: boolean): ReactNode => (
     <button
@@ -141,14 +124,29 @@ export function Layout({ current, onNavigate, children }: LayoutProps) {
           {NAV_ITEMS.map((item) => navButton(item, false))}
         </nav>
         <div className="space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
-          <p>v0.2.0 · MCP 2025-06-18</p>
-          <button
-            type="button"
-            onClick={openKeyModal}
-            className="w-full rounded-lg border border-slate-800 px-2.5 py-1.5 text-left text-xs text-slate-300 transition-colors hover:bg-slate-900"
-          >
-            {keyPreview ? `Key ${keyPreview}` : 'Set API key'}
-          </button>
+          <p>v0.3.0 · MCP 2025-06-18</p>
+          <div className="rounded-lg border border-slate-800 px-2.5 py-2">
+            <div className="flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-sky-500/15 text-[10px] font-bold text-sky-300"
+              >
+                {userInitials(user)}
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium text-slate-200">{user}</p>
+                <p className="text-[10px] text-slate-500">signed in</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onSignOut}
+              disabled={signingOut}
+              className="mt-2 w-full rounded-md border border-slate-700 px-2 py-1 text-[11px] font-semibold text-slate-300 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {signingOut ? 'Signing out…' : 'Sign out'}
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -181,12 +179,16 @@ export function Layout({ current, onNavigate, children }: LayoutProps) {
                     ? 'Gateway offline'
                     : 'Checking gateway'}
               </span>
+              <span className="hidden items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-slate-300 sm:inline-flex">
+                signed in as <span className="font-semibold text-slate-100">{user}</span>
+              </span>
               <button
                 type="button"
-                onClick={openKeyModal}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800"
+                onClick={onSignOut}
+                disabled={signingOut}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {keyPreview ? 'API key' : 'Set API key'}
+                {signingOut ? 'Signing out…' : 'Sign out'}
               </button>
             </div>
           </div>
@@ -198,42 +200,6 @@ export function Layout({ current, onNavigate, children }: LayoutProps) {
         <main className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8">{children}</main>
       </div>
 
-      <ConfirmDialog
-        open={keyModalOpen}
-        title="Gateway API key"
-        description="The key is kept in this browser only (localStorage: mcp_gateway_key). Admin routes need a sup or master key; vault routes need master."
-        confirmLabel="Save key"
-        onConfirm={saveKey}
-        onCancel={() => setKeyModalOpen(false)}
-      >
-        <div className="space-y-3">
-          <label className="block text-xs font-medium text-slate-300">
-            Bearer token
-            <input
-              type="password"
-              value={keyDraft}
-              onChange={(event) => setKeyDraft(event.target.value)}
-              placeholder="mcp_master_…"
-              autoComplete="off"
-              spellCheck={false}
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100 placeholder:text-slate-600"
-            />
-          </label>
-          <p className="text-[11px] text-slate-500">
-            Plaintext keys are only shown once at creation time. Storing the key here keeps it out of the
-            built bundle.
-          </p>
-          {keyPreview !== null && (
-            <button
-              type="button"
-              onClick={clearKey}
-              className="rounded-lg border border-rose-800 px-3 py-1.5 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-950/40"
-            >
-              Remove stored key
-            </button>
-          )}
-        </div>
-      </ConfirmDialog>
     </div>
   );
 }

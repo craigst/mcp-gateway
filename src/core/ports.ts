@@ -381,3 +381,36 @@ export interface ApprovalService {
   approveAndExecute(ticketId: string, resolvedBy: string, note?: string | null): Promise<{ ticket: EscalationTicket; result: unknown }>;
   deny(ticketId: string, resolvedBy: string, note?: string | null): EscalationTicket;
 }
+
+
+// ---------------------------------------------------------------------------
+// v0.3 — built-in Web UI username/password sessions
+// ---------------------------------------------------------------------------
+
+export interface UiUser {
+  username: string;
+}
+
+export interface UiSession {
+  token: string;
+  user: UiUser;
+  expiresAt: string;
+}
+
+/** Session-auth principal used by admin/JSON-RPC when the browser is logged in. */
+export interface UiPrincipal extends UiUser {
+  via: 'session';
+}
+
+export interface UiAuthService {
+  /** Creates/updates the configured bootstrap user if the table is empty. */
+  ensureBootstrapUser(): void;
+  /** Verify credentials and create a session. Throws on invalid credentials. */
+  login(username: string, password: string): UiSession;
+  /** Resolve a raw session token to a user (sliding expiry); null when invalid. */
+  authenticate(token: string | null | undefined): UiUser | null;
+  logout(token: string | null | undefined): void;
+  changePassword(username: string, currentPassword: string, newPassword: string): void;
+  /** Number of active (non-revoked, unexpired) sessions for a user. */
+  activeSessions(username: string): number;
+}

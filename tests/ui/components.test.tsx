@@ -5,8 +5,6 @@ const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     getHealth: vi.fn(),
     getMetrics: vi.fn(),
-    getApiKey: vi.fn((): string | null => null),
-    setApiKey: vi.fn(),
     listKeys: vi.fn(),
     listServers: vi.fn(),
     listDelegations: vi.fn(),
@@ -95,7 +93,6 @@ beforeEach(() => {
     gatewayOverheadMs: 1.4,
     subServerMs: 2,
   });
-  apiMock.getApiKey.mockReturnValue(null);
 });
 
 afterEach(() => {
@@ -149,7 +146,7 @@ describe('PlaygroundPage', () => {
 describe('Layout', () => {
   it('renders the navigation shell, children and gateway connection state', async () => {
     render(
-      <Layout current="dashboard" onNavigate={() => {}}>
+      <Layout current="dashboard" onNavigate={() => {}} user="operator" onSignOut={() => {}}>
         <div>page content</div>
       </Layout>,
     );
@@ -159,6 +156,8 @@ describe('Layout', () => {
       expect(screen.getAllByText(label).length).toBeGreaterThan(0);
     }
     expect(await screen.findByText('Gateway online')).toBeTruthy();
-    expect(screen.getAllByText('Set API key').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('operator').length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: 'Sign out' }).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Set API key')).toBeNull();
   });
 });

@@ -1,9 +1,31 @@
-# Gateway API Contract (v0.2.0)
+# Gateway API Contract (v0.3.0)
 
 All JSON bodies are `application/json`. Auth is `Authorization: Bearer <key>` unless noted.
 Admin routes require a **master** key, except audit, delegations, escalations and tools which
 accept `master` **or** `sup`. Vault routes are master-only. Errors use
 `{ "error": { "code": <jsonrpc-code|http>, "message": "...", "data": {...} } }`.
+
+## 0. Web console session auth
+
+The browser console does **not** use API keys. It signs in with the configured
+`MCP_UI_USERNAME` / `MCP_UI_PASSWORD` and receives an HttpOnly `mcp_session` cookie
+(`SameSite=Strict`, sliding expiry). API keys remain for AI/external management clients.
+
+```jsonc
+POST /mcp/v1/auth/login        { "username": "admin", "password": "…" }
+  → 200 { "user": { "username": "admin" }, "expiresAt": "…" } + Set-Cookie: mcp_session=…
+  → 401 { "error": { "code": -32005, "message": "Invalid username or password." } }
+
+POST /mcp/v1/auth/logout       → { "ok": true } (revokes the session, clears the cookie)
+GET  /mcp/v1/auth/me           → { "authenticated": true, "user": { "username": "admin" } }
+POST /mcp/v1/auth/password     { "currentPassword": "…", "newPassword": "…" }
+  → { "ok": true } (+ cookie cleared; all sessions revoked)
+```
+
+Session-authenticated requests are accepted everywhere an admin/master key is
+(admin REST, JSON-RPC, metrics, live-log WebSocket). Cookie-authenticated
+POST/PUT/PATCH/DELETE requests are rejected when an `Origin` header does not match
+the request host (CSRF defence).
 
 ## 1. JSON-RPC ingress — `POST /mcp/v1`
 
@@ -15,7 +37,7 @@ Accepts a single request or a batch (max 20). `id` is echoed verbatim. Notificat
 // result
 {
   "protocolVersion": "2025-06-18",
-  "serverInfo": { "name": "mcp-gateway", "version": "0.2.0" },
+  "serverInfo": { "name": "mcp-gateway", "version": "0.3.0" },
   "capabilities": { "tools": { "listChanged": true }, "logging": {} },
   "_meta": { "gateway": { "key_id": "key_...", "key_type": "agent", "delegation_max_depth": 3 } }
 }
@@ -87,7 +109,7 @@ Depth > `MCP_DELEGATION_MAX_DEPTH` → `-32003`.
 
 | Route | Auth | Response |
 |---|---|---|
-| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.2.0", "uptimeMs": 1234 }` |
+| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.3.0", "uptimeMs": 1234 }` |
 | `GET /mcp/v1/metrics` | any key | `MetricsSnapshot` (see `src/core/ports.ts`) |
 
 ## 3. Admin API

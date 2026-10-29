@@ -262,3 +262,17 @@ Major upgrade delivering private-catalog import and approval-gated credential ac
 | Schema | Version 2 migration: `servers.headers/env_file/approval_required_tools`, escalation ticket type/args/result/consumed, `catalog_sources`; automatic upgrade from v1. |
 | UI | Tabbed catalog workspace (Installed / Discover / Sources / Import), server policy drawer with per-tool protection, install dialog with env + probe result, Vault Warden approvals, toasts/skeletons, deep-linkable routes. |
 | Tests | 480 tests / 40 files (unit, integration, live stdio E2E, approval + discovery flows, jsdom UI); real-world validation against a private umbrella catalog and local harness configs. |
+
+
+---
+
+## v0.3 upgrade (shipped)
+
+| Area | Delivered |
+|---|---|
+| Console login | Built-in username/password sessions: scrypt password hashing, random 32-byte session tokens stored as SHA-256, HttpOnly `SameSite=Strict` cookie, sliding 12h expiry, CSRF same-origin check for cookie-auth writes. Auth API at `/mcp/v1/auth/{login,logout,me,password}`. |
+| Single auth path | Admin REST, catalog/discovery/Vault Warden sub-routers, JSON-RPC, metrics and the live-log WebSocket all accept **either** a Bearer API key (AI/external) **or** the console session cookie. Session principals map to a `ui:<user>` master identity. |
+| Key management | Browser no longer stores or prompts for API keys; RBAC keeps a master-key card (regenerate + copy) explicitly labelled for AI/external clients. Route serialises `KeySummary` only (never `keyHash`). |
+| Ops | `MCP_AUTOSTART=all\|names` starts sub-servers after boot; persistent rootless podman deployment via systemd user quadlet (`docs/DSH.md`, README). |
+| DSH | `@deepseek-ai/dsh-mcp-client` connects over Streamable HTTP; gateway tools surface as `mcp__gateway__*` (verified with 179 tools against a live service). |
+| Tests | 581 tests / 49 files (78 new auth tests, 62 UI tests, session integration + master-key route coverage). |

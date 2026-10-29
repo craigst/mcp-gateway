@@ -17,6 +17,7 @@ import type {
 } from '../core/ports.js';
 import type {
   AuthenticatedKey,
+  ApiKeyRecord,
   EscalationStatus,
   KeySummary,
   KeyType,
@@ -27,6 +28,7 @@ import type {
 } from '../core/types.js';
 import { KEY_TYPES } from '../core/types.js';
 import { readJsonBody } from '../gateway/server.js';
+import { MasterKeyControl } from './master-keys.js';
 import type { AdminSubRouter } from './types.js';
 
 const RUNTIMES: RuntimeKind[] = ['node', 'python', 'binary', 'remote-agent'];
@@ -44,6 +46,9 @@ export interface AdminDeps {
   audit: AuditService;
   delegation: DelegationService;
   approvals?: ApprovalService;
+  masterKeys?: MasterKeyControl;
+  /** Resolves the caller from a Bearer key or the Web UI session cookie. */
+  authenticate?: (req: IncomingMessage) => AuthenticatedKey;
   /** Mounted admin sub-routers (v0.2). */
   catalogApi?: AdminSubRouter;
   discoveryApi?: AdminSubRouter;
@@ -136,6 +141,24 @@ export class AdminApi {
         metadata: typeof body.metadata === 'object' && body.metadata !== null ? (body.metadata as Record<string, unknown>) : {},
       });
       this.sendJson(res, 201, { key: toKeySummary(issued.key), plaintext: issued.plaintext });
+      return;
+    }
+    if (rest.length === 2 && rest[0] === 'master' && rest[1] === 'regenerate' && method === 'POST') {
+      if (!this.deps.masterKeys) {
+        throw new GatewayError(ErrorCodes.NOT_IMPLEMENTED, 'Master-key rotation is not available', { httpStatus: 503 });
+      }
+      const raw = await readOptionalJsonBody(req, this.deps.config.requestBodyLimitBytes);
+      const body = isRecord(raw) ? raw : {};
+      const result = this.deps.masterKeys.regenerate({
+        revokePrevious: body.revokePrevious === undefined ? undefined : Boolean(body.revokePrevious),
+        name: typeof body.name === 'string' ? body.name : undefined,
+      });
+      this.logger.info('master key regenerated via API', { keyId: result.key.id, revokedCount: result.revokedCount });
+      this.sendJson(res, 201, {
+        key: toKeySummary(result.key),
+        plaintext: result.plaintext,
+        revokedCount: result.revokedCount,
+      });
       return;
     }
     if (rest.length === 1 && method === 'GET') {
@@ -456,13 +479,11 @@ export class AdminApi {
   // -------------------------------------------------------------------------
 
   private requireKey(req: IncomingMessage, allowed: KeyType[]): AuthenticatedKey {
-    const header = req.headers.authorization;
-    let plaintext: string | null = null;
-    if (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')) plaintext = header.slice(7).trim();
-    const apiKey = req.headers['x-mcp-api-key'];
-    if (!plaintext && typeof apiKey === 'string') plaintext = apiKey.trim();
-    if (!plaintext) throw new GatewayError(ErrorCodes.KEY_INVALID, 'Unauthorized: missing API key.', { httpStatus: 401 });
-    const key = this.deps.keys.authenticate(plaintext);
+    // Session-authenticated Web UI users resolve to a synthetic master principal;
+    // AI/external clients keep using Bearer API keys.
+    const key = this.deps.authenticate
+      ? this.deps.authenticate(req)
+      : this.authenticateBearer(req);
     // Master is a superset of every role.
     if (key.keyType === 'master') return key;
     if (!allowed.includes(key.keyType)) {
@@ -471,6 +492,16 @@ export class AdminApi {
       });
     }
     return key;
+  }
+
+  private authenticateBearer(req: IncomingMessage): AuthenticatedKey {
+    const header = req.headers.authorization;
+    let plaintext: string | null = null;
+    if (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')) plaintext = header.slice(7).trim();
+    const apiKey = req.headers['x-mcp-api-key'];
+    if (!plaintext && typeof apiKey === 'string') plaintext = apiKey.trim();
+    if (!plaintext) throw new GatewayError(ErrorCodes.KEY_INVALID, 'Unauthorized: missing API key.', { httpStatus: 401 });
+    return this.deps.keys.authenticate(plaintext);
   }
 
   private assertObject(body: unknown): asserts body is Record<string, unknown> {
@@ -488,9 +519,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function toKeySummary(record: KeySummary): KeySummary {
-  const grants: ServerGrant[] = record.serverGrants;
-  return { ...record, serverGrants: grants };
+/** Reads a JSON body, treating an empty body as `{}` (optional-body endpoints). */
+async function readOptionalJsonBody(req: IncomingMessage, limitBytes: number): Promise<unknown> {
+  try {
+    return await readJsonBody(req, limitBytes);
+  } catch (error) {
+    if (error instanceof GatewayError && error.code === ErrorCodes.INVALID_PARAMS) return {};
+    throw error;
+  }
+}
+
+function toKeySummary(record: KeySummary | ApiKeyRecord): KeySummary {
+  // Explicit projection: the admin API must never serialise keyHash.
+  return {
+    id: record.id,
+    name: record.name,
+    keyType: record.keyType,
+    keyPrefix: record.keyPrefix,
+    serverGrants: record.serverGrants as ServerGrant[],
+    delegationAllowed: record.delegationAllowed,
+    escalationAllowed: record.escalationAllowed,
+    expiresAt: record.expiresAt,
+    revokedAt: record.revokedAt,
+    createdAt: record.createdAt,
+    lastUsedAt: record.lastUsedAt,
+  };
 }
 
 function numberParam(url: URL, name: string, fallback: number): number {

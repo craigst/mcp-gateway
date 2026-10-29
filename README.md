@@ -32,28 +32,29 @@ If not, the tool is invisible — not merely denied.
 | 🔎 | **Harness import** | Read-only discovery of MCP servers already configured in Claude Code, opencode and OpenMausBot; one-click import with env-file references. |
 | 🗝️ | **Vault Warden approvals** | Approval-gated credential delivery: agents request a secret, a human approves, the gateway executes once and returns a file path — values never enter the model context. |
 | 🖥️ | **Web UI console** | Dashboard, catalog manager, RBAC grid, vault, audit explorer, delegation observer, live log stream, JSON-RPC playground. |
+| 🔑 | **Built-in console login** | Username/password sessions (scrypt, HttpOnly SameSite=Strict cookie, CSRF protection). API keys are for AI/external clients only. |
 | 📊 | **Audit everything** | Every discovery/execution/denial recorded with latency, key, tool, delegation depth and payload (truncated). |
 | 🧪 | **Real tests** | Vitest unit + integration + E2E against live stdio sub-processes; CI builds the Docker image and smoke-tests `/health`. |
 
 ## Console
 
-![Vault Warden — pending credential approvals, tool protection and vault access log](docs/screenshots/v02/vaultwarden.png)
+![Gateway dashboard — live telemetry, sub-server status and signed-in operator](docs/screenshots/v03/dashboard.png)
 
 <details>
-<summary>More screenshots (dashboard · catalog discover · catalog import · sources)</summary>
+<summary>More screenshots (login · catalog import · discover · Vault Warden)</summary>
 
-| Dashboard | Catalog Discover |
+| Sign-in page | Catalog import |
 |---|---|
-| ![Dashboard](docs/screenshots/v02/dashboard.png) | ![Catalog Discover](docs/screenshots/v02/catalog-discover.png) |
+| ![Login](docs/screenshots/v03/login.png) | ![Catalog import](docs/screenshots/v03/catalog-import.png) |
 
-| Catalog Import | Connect a catalog |
+| Catalog discover | Vault Warden |
 |---|---|
-| ![Catalog Import](docs/screenshots/v02/catalog-import.png) | ![Catalog Sources](docs/screenshots/v02/catalog-sources.png) |
+| ![Catalog discover](docs/screenshots/v03/catalog-discover.png) | ![Vault Warden](docs/screenshots/v03/vaultwarden.png) |
 
 </details>
 
-Screenshots use generic demo data (no personal configuration): a demo catalog, two fixture
-sub-servers and a Vaultwarden fixture with one pending credential request.
+The console signs in with a username/password session; **API keys are only for AI agents and
+external management clients**. Screenshots use generic demo data (no personal configuration).
 
 ## Architecture
 
@@ -86,9 +87,13 @@ docker compose up -d --build
 curl -s localhost:8080/mcp/v1/health
 ```
 
-Open <http://localhost:8080> for the console. On first boot (empty key table) the
-bootstrap master key from `MCP_MASTER_KEY` is registered; if it is unset a random
-master key is generated and printed once to the container logs:
+Open <http://localhost:8080> and sign in with the Web UI credentials
+(`MCP_UI_USERNAME`, default `admin`, and `MCP_UI_PASSWORD`; when no password is set a random
+one is generated and printed once to the logs). The console uses a session cookie — API
+keys are only needed by AI/external clients.
+
+On first boot (empty key table) the bootstrap master key from `MCP_MASTER_KEY` is registered;
+if it is unset a random master key is generated and printed once to the container logs:
 
 ```bash
 docker compose logs gateway | grep "master key"
@@ -135,6 +140,79 @@ Dangerous Vaultwarden tools are approval-gated: an agent call returns
 `-32004 ESCALATION_REQUIRED`, a human approves it in **Vault Warden**, the gateway executes
 the stored call once and stores the result, and the agent retrieves it with the ticket.
 Deliveries are short-lived `0600` file paths — secret values never enter the model context.
+
+## Run persistently with rootless podman (Linux)
+
+The gateway runs happily as a systemd user quadlet, surviving reboots:
+
+```bash
+# 1. Secrets (0600). Generate strong values:
+install -d -m700 ~/.config/mcp-gateway
+cat > ~/.config/mcp-gateway/gateway.env <<EOF
+MCP_DATA_DIR=/data
+MCP_MASTER_KEY=mcp_master_$(openssl rand -hex 24)
+MCP_VAULT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
+MCP_UI_USERNAME=admin
+MCP_UI_PASSWORD=$(openssl rand -base64 18 | tr -d '\n=')
+MCP_AUTOSTART=all
+MCP_GIT_IMPORT_ALLOWED_PREFIXES=https://github.com/
+EOF
+chmod 600 ~/.config/mcp-gateway/gateway.env
+podman build -t localhost/mcp-gateway:0.3.0 .
+
+# 2. Quadlet unit
+cat > ~/.config/containers/systemd/mcp-gateway.container <<EOF
+[Unit]
+Description=MCP Gateway
+After=network-online.target
+
+[Container]
+ContainerName=mcp-gateway
+Image=localhost/mcp-gateway:0.3.0
+PublishPort=8080:8080
+Volume=%h/.local/share/mcp-gateway/data:/data:Z
+EnvironmentFile=%h/.config/mcp-gateway/gateway.env
+UserNS=keep-id
+NoNewPrivileges=true
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
+EOF
+
+# 3. Start + start on boot
+systemctl --user daemon-reload
+systemctl --user start mcp-gateway.service
+loginctl enable-linger "$USER"
+```
+
+`MCP_AUTOSTART=all` (or `name1,name2`) starts catalogued sub-servers after each boot, so the
+gateway is ready for agents without manual clicks. `systemctl --user status mcp-gateway`.
+
+## Connect to the DeepSeek Harness (DSH)
+
+DSH's `@deepseek-ai/dsh-mcp-client` can point straight at `/mcp/v1` over Streamable HTTP, so
+every tool the key may see appears as `mcp__gateway__<tool>`:
+
+```yaml
+- insert:
+    - id: mcp-gateway
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: gateway
+        transport: streamable-http
+        url: http://127.0.0.1:8080/mcp/v1
+        headers:
+          Authorization: "Bearer mcp_master_…"   # AI/external API key
+        toolCallTimeoutMs: 120000
+        failOnStartupError: false
+```
+
+Restart DSH after adding the row (MCP rows are read at profile load). Full guide:
+[`docs/DSH.md`](./docs/DSH.md).
 
 ## Use it from an agent
 
@@ -200,14 +278,16 @@ npm run lint           # eslint
 npm run build          # server + UI bundle
 ```
 
-The suite is **480 tests across 40 files**: unit suites per module, an integration suite that
+The suite is **581 tests across 49 files**: unit suites per module, an integration suite that
 boots a real gateway on an ephemeral port and spawns fixture MCP servers, and an end-to-end
 scenario covering vault → git import → catalog → execution → delegation → depth guard → escalation,
 plus jsdom UI tests. CI also builds the Docker image and smoke-tests `/health` inside the container.
 
 ## Security
 
-- Every request is authenticated; keys are stored only as SHA-256 hashes.
+- Every request is authenticated; API keys are stored only as SHA-256 hashes.
+- The console uses scrypt-hashed passwords and HttpOnly `SameSite=Strict` session cookies;
+  cookie-authenticated writes are same-origin checked.
 - The catalog is filtered server-side before serialization (no client-side trust).
 - Denials for invisible tools are indistinguishable from unknown tools.
 - Sub-processes run unprivileged inside the container; build/clone URLs are allowlisted.
@@ -220,7 +300,8 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 | Release | Scope | State |
 |---|---|---|
 | v0.1.0 | Core engine, JSON-RPC ingress, RBAC/zero-trust catalog, UI, delegation, vault + git import | ✅ shipped |
-| **v0.2.0** | **Private GitHub catalogs, harness discovery/import, auto-manifest detection, approval-gated Vault Warden, UI marketplace** | ✅ **current** |
+| v0.2.0 | Private GitHub catalogs, harness discovery/import, auto-manifest detection, approval-gated Vault Warden, UI marketplace | ✅ shipped |
+| **v0.3.0** | **Built-in username/password Web UI login, session-authenticated console + WebSocket logs, master-key rotation, persistent podman/systemd deployment** | ✅ **current** |
 
 ## License
 

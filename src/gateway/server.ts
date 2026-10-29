@@ -3,15 +3,17 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import type { Socket } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { ErrorCodes, GatewayError, accessDenied, asGatewayError, invalidKey, invalidParams } from '../core/errors.js';
+import { ErrorCodes, GatewayError, accessDenied, asGatewayError, invalidParams } from '../core/errors.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { GatewayConfig } from '../core/config.js';
-import type { AuditService, KeyService, Supervisor } from '../core/ports.js';
+import type { AuditService, KeyService, Supervisor, UiAuthService } from '../core/ports.js';
+import type { AuthApi } from '../auth/http.js';
+import { authenticateRequest } from '../auth/request-auth.js';
 import type { AuthenticatedKey, JsonRpcRequest, JsonRpcResponse, RequestContext } from '../core/types.js';
 import type { AdminApi } from '../admin/router.js';
 import { createRequestContext, JsonRpcRouter } from './router.js';
 
-const GATEWAY_VERSION = '0.2.0';
+const GATEWAY_VERSION = '0.3.0';
 const MAX_BATCH_SIZE = 20;
 
 export interface GatewayServerDeps {
@@ -19,6 +21,8 @@ export interface GatewayServerDeps {
   router: JsonRpcRouter;
   admin: AdminApi;
   keys: KeyService;
+  uiAuth: UiAuthService;
+  authApi: AuthApi;
   supervisor: Supervisor;
   audit: AuditService;
   logger?: Logger;
@@ -95,6 +99,13 @@ export class GatewayHttpServer {
     this.applySecurityHeaders(res);
 
     try {
+      if (url.pathname === '/mcp/v1/auth' || url.pathname.startsWith('/mcp/v1/auth/')) {
+        const handled = await this.deps.authApi.handle(req, res, url);
+        if (!handled) {
+          this.sendError(res, 404, new GatewayError(ErrorCodes.METHOD_NOT_FOUND, 'Unknown auth endpoint'));
+        }
+        return;
+      }
       if (url.pathname === '/mcp/v1' || url.pathname === '/mcp/v1/') {
         await this.handleRpc(req, res);
         return;
@@ -231,15 +242,8 @@ export class GatewayHttpServer {
   // -------------------------------------------------------------------------
 
   private authenticate(req: IncomingMessage): AuthenticatedKey {
-    const header = req.headers.authorization;
-    let plaintext: string | null = null;
-    if (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')) {
-      plaintext = header.slice(7).trim();
-    }
-    const apiKeyHeader = req.headers['x-mcp-api-key'];
-    if (!plaintext && typeof apiKeyHeader === 'string') plaintext = apiKeyHeader.trim();
-    if (!plaintext) throw invalidKey('MISSING_KEY');
-    return this.deps.keys.authenticate(plaintext);
+    // Bearer API key (AI/external clients) OR the browser's session cookie.
+    return authenticateRequest(req, this.deps.keys, this.deps.uiAuth);
   }
 
   // -------------------------------------------------------------------------
@@ -259,8 +263,7 @@ export class GatewayHttpServer {
       let key: AuthenticatedKey;
       try {
         const apiKey = url.searchParams.get('api_key');
-        if (!apiKey) throw invalidKey('MISSING_KEY');
-        key = this.deps.keys.authenticate(apiKey);
+        key = apiKey ? this.deps.keys.authenticate(apiKey) : this.authenticate(req);
         if (key.keyType !== 'master' && key.keyType !== 'sup') {
           throw accessDenied('Access Denied: supervisor or master key required for live logs.', {
             reason: 'SCOPE_RESTRICTION',

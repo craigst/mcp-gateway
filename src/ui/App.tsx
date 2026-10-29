@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
+import { api } from './lib/api.js';
+import type { LoginResponse, SessionUser } from './lib/api.js';
 import { Layout } from './components/Layout.js';
 import type { PageKey } from './components/Layout.js';
 import { ToastProvider } from './components/Toasts.js';
+import { LoginPage } from './pages/Login.js';
 import { DashboardPage } from './pages/Dashboard.js';
 import { CatalogPage } from './pages/Catalog.js';
 import type { CatalogTab } from './pages/Catalog.js';
@@ -45,6 +48,11 @@ function locationFromHash(): HashLocation {
   return { page, catalogTab: isCatalogTab(tab) ? tab : null };
 }
 
+type SessionState =
+  | { status: 'loading' }
+  | { status: 'anonymous' }
+  | { status: 'authenticated'; user: SessionUser };
+
 interface RenderContext {
   catalogTab: CatalogTab;
   onCatalogTabChange: (tab: CatalogTab) => void;
@@ -73,14 +81,58 @@ function renderPage(page: PageKey, context: RenderContext) {
   }
 }
 
+function SessionSplash() {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-950 text-slate-100">
+      <span
+        aria-hidden="true"
+        className="h-6 w-6 animate-spin rounded-full border-2 border-slate-700 border-t-sky-400"
+      />
+      <p role="status" className="text-sm text-slate-400">
+        Checking your session…
+      </p>
+    </div>
+  );
+}
+
 /**
- * Console shell. Navigation is state based (no router dependency) and mirrors
- * the SPA routes documented in API.md §5 via the URL hash.
+ * Console shell. Authenticates against `GET /auth/me` on mount: a loading
+ * splash, then the login page (anonymous) or the management shell
+ * (authenticated). Any HTTP 401 from a later request returns to login.
+ * Navigation is state based (no router dependency) and mirrored in the URL hash.
  */
 export function App() {
   const initial = locationFromHash();
+  const [session, setSession] = useState<SessionState>({ status: 'loading' });
+  const [signingOut, setSigningOut] = useState(false);
   const [page, setPage] = useState<PageKey>(initial.page);
   const [catalogTab, setCatalogTab] = useState<CatalogTab>(initial.catalogTab ?? 'installed');
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getSession().then(
+      (status) => {
+        if (cancelled) return;
+        setSession(
+          status.authenticated && status.user !== undefined
+            ? { status: 'authenticated', user: status.user }
+            : { status: 'anonymous' },
+        );
+      },
+      () => {
+        if (!cancelled) setSession({ status: 'anonymous' });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Any 401 from any request (initial load, navigation or a page fetch) drops
+  // the console back to the login screen.
+  useEffect(() => {
+    return api.onUnauthorized(() => setSession({ status: 'anonymous' }));
+  }, []);
 
   useEffect(() => {
     const onHashChange = (): void => {
@@ -107,9 +159,41 @@ export function App() {
     }
   }, []);
 
+  const handleAuthenticated = useCallback((result: LoginResponse) => {
+    setSession({ status: 'authenticated', user: result.user });
+  }, []);
+
+  const handleSignOut = useCallback(async (): Promise<void> => {
+    setSigningOut(true);
+    try {
+      await api.logout();
+    } catch {
+      // Best effort: even if the server session is already gone, drop the UI session.
+    } finally {
+      setSigningOut(false);
+      setSession({ status: 'anonymous' });
+    }
+  }, []);
+
+  if (session.status === 'loading') return <SessionSplash />;
+
+  if (session.status === 'anonymous') {
+    return (
+      <ToastProvider>
+        <LoginPage onAuthenticated={handleAuthenticated} />
+      </ToastProvider>
+    );
+  }
+
   return (
     <ToastProvider>
-      <Layout current={page} onNavigate={navigate}>
+      <Layout
+        current={page}
+        onNavigate={navigate}
+        user={session.user.username}
+        onSignOut={() => void handleSignOut()}
+        signingOut={signingOut}
+      >
         {renderPage(page, {
           catalogTab,
           onCatalogTabChange: setCatalogTab,

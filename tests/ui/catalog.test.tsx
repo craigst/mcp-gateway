@@ -19,7 +19,6 @@ const { apiMock } = vi.hoisted(() => ({
     deleteServer: vi.fn(),
     serverLogs: vi.fn(),
     registerServer: vi.fn(),
-    getApiKey: vi.fn(() => null),
     listDiscoverySources: vi.fn(),
     scanDiscovery: vi.fn(),
     importDiscoveryEntry: vi.fn(),

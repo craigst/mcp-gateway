@@ -26,6 +26,14 @@ export interface GatewayConfig {
   defaultToolTimeoutMs: number;
   /** Optional HMAC pepper mixed into API key hashes. */
   keyPepper: string | null;
+  /** Servers to start with the gateway: 'all' or a comma-separated name list. */
+  autostart?: string;
+  /** Built-in Web UI login (defaults resolved by loadConfig). */
+  uiUsername?: string;
+  uiPassword?: string | null;
+  uiSessionTtlMs?: number;
+  /** Set Secure on the session cookie when served over HTTPS. */
+  uiCookieSecure?: boolean;
   publicBaseUrl: string;
 }
 
@@ -75,6 +83,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
     requestBodyLimitBytes: intFromEnv(env.MCP_BODY_LIMIT_BYTES, 1_048_576),
     defaultToolTimeoutMs: intFromEnv(env.MCP_TOOL_TIMEOUT_MS, 60_000),
     keyPepper: env.MCP_KEY_PEPPER ?? null,
+    autostart: env.MCP_AUTOSTART ?? '',
+    uiUsername: env.MCP_UI_USERNAME ?? 'admin',
+    uiPassword: env.MCP_UI_PASSWORD ?? null,
+    uiSessionTtlMs: intFromEnv(env.MCP_UI_SESSION_TTL_MS, 12 * 60 * 60 * 1000),
+    uiCookieSecure: env.MCP_UI_COOKIE_SECURE === 'true',
     publicBaseUrl: env.MCP_PUBLIC_BASE_URL ?? `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`,
   };
 }

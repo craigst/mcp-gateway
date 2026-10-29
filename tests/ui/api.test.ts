@@ -1,11 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  API_KEY_STORAGE_KEY,
-  ApiClient,
-  ApiError,
-  parseApiError,
-} from '../../src/ui/lib/api.js';
+import { ApiClient, ApiError, parseApiError } from '../../src/ui/lib/api.js';
 
 /** Minimal fetch Response stub (the client only needs ok/status/text). */
 function fakeResponse(body: unknown, status = 200): Response {
@@ -31,36 +26,76 @@ describe('ApiClient', () => {
     vi.unstubAllGlobals();
   });
 
-  it('stores the operator key in localStorage and sends a bearer header', async () => {
+  it('sends the HttpOnly session cookie on every request and never a bearer header', async () => {
     fetchMock.mockResolvedValue(fakeResponse({ keys: [] }));
     const client = new ApiClient('http://gateway.test');
-
-    expect(client.getApiKey()).toBeNull();
-    client.setApiKey('  mcp_master_abc  ');
-    expect(localStorage.getItem(API_KEY_STORAGE_KEY)).toBe('mcp_master_abc');
-    expect(client.getApiKey()).toBe('mcp_master_abc');
 
     await client.listKeys();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const call = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(call[0]).toBe('http://gateway.test/mcp/v1/admin/keys');
+    expect(call[1].credentials).toBe('include');
     const headers = call[1].headers as Record<string, string>;
-    expect(headers.Authorization).toBe('Bearer mcp_master_abc');
+    expect(headers.Authorization).toBeUndefined();
+    // The client persists no session material in browser storage.
+    expect(localStorage.length).toBe(0);
   });
 
-  it('omits the authorization header when no key is configured and clears stored keys', async () => {
-    fetchMock.mockResolvedValue(fakeResponse({ status: 'ok', version: '0.1.0', uptimeMs: 10 }));
-    const client = new ApiClient('');
-    client.setApiKey('mcp_ag_temporary');
-    client.setApiKey(null);
-    expect(client.getApiKey()).toBeNull();
+  it('authenticates through the session endpoints (login / me / logout / password)', async () => {
+    const client = new ApiClient('http://gateway.test');
 
-    await client.getHealth();
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({ user: { username: 'operator' }, expiresAt: '2026-10-30T00:00:00.000Z' }),
+    );
+    const login = await client.login('operator', 'correct horse');
+    expect(login.user.username).toBe('operator');
+    let call = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(call[0]).toBe('http://gateway.test/mcp/v1/auth/login');
+    expect(call[1].method).toBe('POST');
+    expect(call[1].credentials).toBe('include');
+    expect(JSON.parse(String(call[1].body))).toEqual({ username: 'operator', password: 'correct horse' });
 
-    const call = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(call[0]).toBe('/mcp/v1/health');
-    expect((call[1].headers as Record<string, string>).Authorization).toBeUndefined();
+    fetchMock.mockResolvedValueOnce(fakeResponse({ authenticated: true, user: { username: 'operator' } }));
+    expect(await client.getSession()).toMatchObject({ authenticated: true, user: { username: 'operator' } });
+    call = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(call[0]).toBe('http://gateway.test/mcp/v1/auth/me');
+    expect(call[1].credentials).toBe('include');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ ok: true }));
+    expect(await client.logout()).toEqual({ ok: true });
+    expect((fetchMock.mock.calls[2] as [string])[0]).toBe('http://gateway.test/mcp/v1/auth/logout');
+    expect((fetchMock.mock.calls[2] as [string, RequestInit])[1].method).toBe('POST');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ ok: true }));
+    await client.changePassword('current-secret', 'new-secret');
+    call = fetchMock.mock.calls[3] as [string, RequestInit];
+    expect(call[0]).toBe('http://gateway.test/mcp/v1/auth/password');
+    expect(call[1].method).toBe('POST');
+    expect(JSON.parse(String(call[1].body))).toEqual({
+      currentPassword: 'current-secret',
+      newPassword: 'new-secret',
+    });
+  });
+
+  it('reports 401 responses through onUnauthorized so the shell can return to login', async () => {
+    const client = new ApiClient('http://gateway.test');
+    const handler = vi.fn();
+    const unsubscribe = client.onUnauthorized(handler);
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ error: { code: 401, message: 'Session expired' } }, 401));
+    const caught = await client.getSession().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(caught).toBeInstanceOf(ApiError);
+    expect(caught).toMatchObject({ status: 401, message: 'Session expired' });
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    fetchMock.mockResolvedValueOnce(fakeResponse({ error: { code: 401, message: 'Session expired' } }, 401));
+    await client.getSession().catch(() => undefined);
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it('maps JSON-RPC errors returned with HTTP 200 onto ApiError', async () => {
@@ -139,7 +174,6 @@ describe('ApiClient', () => {
   it('uses the documented admin paths for key and server mutations', async () => {
     fetchMock.mockResolvedValue(fakeResponse({ key: { id: 'key_1' } }));
     const client = new ApiClient('http://gateway.test');
-    client.setApiKey('mcp_sup_test');
 
     await client.revokeKey('key_1');
     await client.startServer('srv-1');
@@ -216,7 +250,6 @@ describe('ApiClient v0.2 catalog, discovery, policy & Vault Warden', () => {
 
   it('calls the documented catalog source and install endpoints with auth and bodies', async () => {
     const client = new ApiClient('http://gateway.test');
-    client.setApiKey('mcp_master_v2');
 
     fetchMock.mockResolvedValueOnce(fakeResponse({ sources: [catalogSource] }));
     expect(await client.listCatalogSources()).toHaveLength(1);
@@ -238,8 +271,7 @@ describe('ApiClient v0.2 catalog, discovery, policy & Vault Warden', () => {
       kind: 'dsh-umbrella',
       token: 'ghp_secret',
     });
-    const headers = lastCall()[1].headers as Record<string, string>;
-    expect(headers.Authorization).toBe('Bearer mcp_master_v2');
+    expect(lastCall()[1].credentials).toBe('include');
 
     fetchMock.mockResolvedValueOnce(fakeResponse({ deleted: true }));
     expect(await client.deleteCatalogSource('cat_ab12')).toBe(true);
@@ -468,6 +500,82 @@ describe('ApiClient v0.2 catalog, discovery, policy & Vault Warden', () => {
       pendingApprovals: [],
       accessLog: [],
       tools: [],
+    });
+  });
+});
+
+describe('ApiClient master key regeneration', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const newMasterKey = {
+    id: 'key_master_new',
+    name: 'master (regenerated)',
+    keyType: 'master',
+    keyPrefix: 'mcp_master_ab12',
+    serverGrants: [],
+    delegationAllowed: true,
+    escalationAllowed: true,
+    expiresAt: null,
+    revokedAt: null,
+    createdAt: '2026-10-29T19:00:00.000Z',
+    lastUsedAt: null,
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('posts to the master regenerate route using the session cookie', async () => {
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({ key: newMasterKey, plaintext: 'mcp_master_newplaintext', revokedCount: 1 }, 201),
+    );
+    const client = new ApiClient('http://gateway.test');
+
+    const result = await client.regenerateMasterKey({ revokePrevious: false, name: 'rotated' });
+
+    expect(result).toEqual({
+      key: newMasterKey,
+      plaintext: 'mcp_master_newplaintext',
+      revokedCount: 1,
+    });
+    const call = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(call[0]).toBe('http://gateway.test/mcp/v1/admin/keys/master/regenerate');
+    expect(call[1].method).toBe('POST');
+    expect(call[1].credentials).toBe('include');
+    expect(JSON.parse(String(call[1].body))).toEqual({ revokePrevious: false, name: 'rotated' });
+  });
+
+  it('sends an empty object by default and maps API errors onto ApiError', async () => {
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({ key: newMasterKey, plaintext: 'mcp_master_default', revokedCount: 0 }, 201),
+    );
+    const client = new ApiClient('http://gateway.test');
+    expect((await client.regenerateMasterKey()).plaintext).toBe('mcp_master_default');
+    const firstCall = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(firstCall[1].body))).toEqual({});
+
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse(
+        { error: { code: 403, message: 'Access Denied: master key required', data: { reason: 'SCOPE_RESTRICTION' } } },
+        403,
+      ),
+    );
+    const caught = await client.regenerateMasterKey().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(caught).toBeInstanceOf(ApiError);
+    expect(caught).toMatchObject({
+      status: 403,
+      code: 403,
+      message: 'Access Denied: master key required',
+      data: { reason: 'SCOPE_RESTRICTION' },
     });
   });
 });

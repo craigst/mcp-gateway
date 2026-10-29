@@ -202,7 +202,7 @@ export class StdioMcpClient implements McpClient {
       {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: this.options.clientInfo ?? { name: 'mcp-gateway', version: '0.2.0' },
+        clientInfo: this.options.clientInfo ?? { name: 'mcp-gateway', version: '0.3.0' },
       },
       timeout,
     );

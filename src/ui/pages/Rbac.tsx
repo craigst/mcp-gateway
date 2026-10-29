@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api, formatApiError } from '../lib/api.js';
+import type { MasterKeyRegeneration } from '../lib/api.js';
 import { useAsyncData } from '../lib/hooks.js';
 import {
   buildScopeMatrix,
@@ -15,8 +16,11 @@ import { Card } from '../components/Card.js';
 import { Badge, badgeToneForStatus } from '../components/Badge.js';
 import { Table } from '../components/Table.js';
 import { EmptyState } from '../components/EmptyState.js';
-import { ErrorState, InlineNotice, LoadingState } from '../components/States.js';
+import { ErrorState, InlineNotice, LoadingState, Notice } from '../components/States.js';
 import { ConfirmDialog } from '../components/ConfirmDialog.js';
+import { StatTile } from '../components/StatTile.js';
+import { CopyButton } from '../components/CopyButton.js';
+import { useToast } from '../components/Toasts.js';
 import {
   CheckboxField,
   DangerButton,
@@ -102,6 +106,7 @@ function buildGrantsFromSelection(matrix: ScopeRow[], selection: Record<string, 
 
 /** RBAC scope grid: key inventory, one-click provisioning with per-tool grants, revocation. */
 export function RbacPage() {
+  const toast = useToast();
   const keys = useAsyncData(() => api.listKeys(), []);
   const servers = useAsyncData(() => api.listServers(), []);
   const tools = useAsyncData(() => api.rpc<RpcToolList>('tools/list', {}), []);
@@ -113,13 +118,21 @@ export function RbacPage() {
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedKey | null>(null);
-  const [copied, setCopied] = useState(false);
+
+  const [regenerateOpen, setRegenerateOpen] = useState(false);
+  const [keepExistingMasters, setKeepExistingMasters] = useState(false);
+  const [regenerateBusy, setRegenerateBusy] = useState(false);
+  const [regenerateError, setRegenerateError] = useState<string | null>(null);
+  const [regenerated, setRegenerated] = useState<MasterKeyRegeneration | null>(null);
 
   const [revokeTarget, setRevokeTarget] = useState<KeySummary | null>(null);
   const [revokeBusy, setRevokeBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const serverList: ServerRecord[] = servers.status === 'ready' ? servers.data : [];
+  const keyList: KeySummary[] = keys.status === 'ready' ? keys.data : [];
+  const masterKeys = keyList.filter((key) => key.keyType === 'master');
+  const activeMasterKeys = masterKeys.filter((key) => keyStatus(key) === 'active').length;
   const scopeTools: ScopeTool[] =
     tools.status === 'ready'
       ? (tools.data.tools ?? []).map((tool) => ({
@@ -191,7 +204,6 @@ export function RbacPage() {
       });
       setCreated(response);
       setCreateOpen(false);
-      setCopied(false);
       keys.reload();
     } catch (error) {
       setCreateError(formatApiError(error));
@@ -215,19 +227,37 @@ export function RbacPage() {
     }
   };
 
-  const copyPlaintext = (): void => {
-    if (!created) return;
-    void navigator.clipboard?.writeText(created.plaintext).then(
-      () => setCopied(true),
-      () => setCopied(false),
-    );
+  const openRegenerate = (): void => {
+    setKeepExistingMasters(false);
+    setRegenerateError(null);
+    setRegenerateOpen(true);
   };
+
+  const confirmRegenerate = async (): Promise<void> => {
+    setRegenerateBusy(true);
+    setRegenerateError(null);
+    try {
+      const result = await api.regenerateMasterKey({ revokePrevious: !keepExistingMasters });
+      setRegenerateOpen(false);
+      setRegenerated(result);
+      keys.reload();
+      const revoked = `${result.revokedCount} previous master key${result.revokedCount === 1 ? '' : 's'} revoked`;
+      toast('success', `Master key regenerated — ${revoked}. Copy it for your AI clients; your console session is unchanged.`);
+    } catch (error) {
+      setRegenerateError(formatApiError(error));
+    } finally {
+      setRegenerateBusy(false);
+    }
+  };
+
+  const dismissRegenerated = (): void => setRegenerated(null);
 
   return (
     <div className="space-y-5">
       <InlineNotice>
-        Key and server provisioning requires a <code>master</code> key (audit and escalations also accept{' '}
-        <code>sup</code>). Plaintext keys are shown exactly once — store the key in this console via “Set API key”.
+        API keys are for <strong>AI / external clients</strong> — this console signs in with your username and
+        password session. Key and server provisioning requires a <code>master</code> key (audit and escalations also
+        accept <code>sup</code>). Plaintext keys are shown exactly once.
       </InlineNotice>
 
       {actionError !== null && (
@@ -238,6 +268,40 @@ export function RbacPage() {
           <GhostButton onClick={() => setActionError(null)}>Dismiss</GhostButton>
         </div>
       )}
+
+      <Card
+        title="Master control key"
+        subtitle="API keys are for AI / external clients — the console uses your session login."
+        actions={
+          <PrimaryButton onClick={openRegenerate} className="px-3 py-1.5 text-xs" disabled={regenerateBusy}>
+            Regenerate master key
+          </PrimaryButton>
+        }
+      >
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+          <StatTile
+            label="Active master keys"
+            value={keys.status === 'ready' ? activeMasterKeys : '…'}
+            hint={
+              keys.status === 'ready'
+                ? `${masterKeys.length} master key${masterKeys.length === 1 ? '' : 's'} issued · full-admin`
+                : 'loading keys'
+            }
+            tone={keys.status === 'ready' && activeMasterKeys > 1 ? 'warning' : 'danger'}
+          />
+          <div className="space-y-2">
+            <InlineNotice>
+              Master keys are for AI / external clients — this console keeps using your session login. They can mint
+              or revoke any key, install and delete servers and read every vault secret. Keep exactly one active
+              master key, rotate it if it may have leaked, and store it only in trusted places.
+            </InlineNotice>
+            <p className="text-[11px] text-slate-500">
+              Regenerating issues a new master key. Previous master keys are revoked by default; the plaintext is
+              shown exactly once and never changes your console session.
+            </p>
+          </div>
+        </div>
+      </Card>
 
       <Card
         title="API keys"
@@ -496,19 +560,79 @@ export function RbacPage() {
               {created.plaintext}
             </pre>
             <div className="flex gap-2">
-              <PrimaryButton onClick={copyPlaintext} className="px-3 py-1.5 text-xs">
-                {copied ? 'Copied' : 'Copy key'}
-              </PrimaryButton>
-              <SecondaryButton
-                onClick={() => {
-                  api.setApiKey(created.plaintext);
-                  setCreated(null);
-                }}
-                className="px-3 py-1.5 text-xs"
-              >
-                Use in this console
+              <CopyButton value={created.plaintext} label="Copy key" copiedLabel="Copied" variant="primary" />
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Give this key to an AI / external client. This console keeps using your signed-in session.
+            </p>
+          </div>
+        )}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={regenerateOpen}
+        title="Regenerate master key"
+        tone="danger"
+        confirmLabel="Regenerate key"
+        busy={regenerateBusy}
+        onConfirm={() => void confirmRegenerate()}
+        onCancel={() => {
+          if (!regenerateBusy) setRegenerateOpen(false);
+        }}
+        description="Issue a brand-new full-admin master key for AI / external clients. The plaintext is shown once; your console session is unaffected."
+      >
+        <div className="space-y-3">
+          <InlineNotice>
+            This is a root-of-trust operation. If you keep existing master keys, old keys stay valid until you revoke
+            them manually.
+          </InlineNotice>
+          <CheckboxField
+            label="Keep existing master keys (do not revoke them)"
+            checked={keepExistingMasters}
+            onChange={setKeepExistingMasters}
+            disabled={regenerateBusy}
+          />
+          {regenerateError !== null && (
+            <Notice tone="error" title="Master key regeneration failed">
+              {regenerateError}
+            </Notice>
+          )}
+        </div>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={regenerated !== null}
+        title="New master key"
+        confirmLabel="Done"
+        cancelLabel="Close"
+        onConfirm={dismissRegenerated}
+        onCancel={dismissRegenerated}
+        description="Copy the plaintext master key now — the gateway never shows it again."
+      >
+        {regenerated !== null && (
+          <div className="space-y-3">
+            <Notice tone="success" title="Master key regenerated">
+              The new key is active for AI / external clients — your console session is unchanged.{' '}
+              {regenerated.revokedCount} previous master key{regenerated.revokedCount === 1 ? '' : 's'} revoked.
+            </Notice>
+            <pre className="overflow-x-auto rounded-lg border border-emerald-900/60 bg-slate-950 p-3 font-mono text-xs text-emerald-300">
+              {regenerated.plaintext}
+            </pre>
+            <div className="flex flex-wrap gap-2">
+              <CopyButton
+                value={regenerated.plaintext}
+                label="Copy to clipboard"
+                copiedLabel="Copied"
+                variant="primary"
+              />
+              <SecondaryButton onClick={dismissRegenerated} className="px-3 py-1.5 text-xs">
+                Dismiss
               </SecondaryButton>
             </div>
+            <p className="text-[11px] text-slate-500">
+              {regenerated.key.name} · {regenerated.key.keyPrefix}… · created{' '}
+              {formatTimestamp(regenerated.key.createdAt)}
+            </p>
           </div>
         )}
       </ConfirmDialog>

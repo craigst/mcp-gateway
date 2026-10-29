@@ -28,16 +28,18 @@ describe('schema migration', () => {
     const db = openDatabase(tempDbPath());
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(2);
+    expect(SCHEMA_VERSION).toBe(3);
 
     expect(columnNames(db, 'servers')).toEqual(expect.arrayContaining(['env_file', 'approval_required_tools']));
     expect(columnNames(db, 'escalations')).toEqual(
       expect.arrayContaining(['ticket_type', 'tool_arguments', 'result_json', 'consumed_at']),
     );
-    const catalogTable = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_sources'")
-      .get() as { name?: string } | undefined;
-    expect(catalogTable?.name).toBe('catalog_sources');
+    for (const table of ['catalog_sources', 'ui_users', 'ui_sessions']) {
+      const found = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+        .get(table) as { name?: string } | undefined;
+      expect(found?.name).toBe(table);
+    }
     db.close();
   });
 
@@ -94,7 +96,7 @@ describe('schema migration', () => {
     migrate(db);
 
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(version.user_version).toBe(2);
+    expect(version.user_version).toBe(3);
     expect(columnNames(db, 'servers')).toEqual(expect.arrayContaining(['env_file', 'approval_required_tools']));
     expect(columnNames(db, 'escalations')).toEqual(
       expect.arrayContaining(['ticket_type', 'tool_arguments', 'result_json', 'consumed_at']),

@@ -18,7 +18,7 @@ export function openDatabase(dbPath: string): DatabaseSync {
   return db;
 }
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export function migrate(db: DatabaseSync): void {
   db.exec(`
@@ -145,6 +145,26 @@ export function migrate(db: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_delegation_trace ON delegation_traces(trace_id);
+
+    CREATE TABLE IF NOT EXISTS ui_users (
+      username TEXT PRIMARY KEY,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_login_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS ui_sessions (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      username TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      revoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ui_sessions_expiry ON ui_sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_ui_sessions_user ON ui_sessions(username);
 
     CREATE TABLE IF NOT EXISTS catalog_sources (
       id TEXT PRIMARY KEY,

@@ -23,11 +23,6 @@ import {
 
 const DEFAULT_PRESET = PLAYGROUND_METHODS[1];
 
-function maskKey(key: string | null): string {
-  if (!key) return 'no key';
-  return `${key.slice(0, Math.min(12, key.length))}…`;
-}
-
 /** Interactive JSON-RPC sandbox with gateway vs sub-server latency breakdown. */
 export function PlaygroundPage() {
   const [method, setMethod] = useState(DEFAULT_PRESET?.method ?? 'tools/list');
@@ -43,8 +38,6 @@ export function PlaygroundPage() {
         sub_server_ms: outcome.subServerMs,
       })
     : null;
-  const apiKey = api.getApiKey();
-
   const applyPreset = (presetMethod: string): void => {
     const preset = PLAYGROUND_METHODS.find((candidate) => candidate.method === presetMethod);
     if (!preset) return;
@@ -79,15 +72,15 @@ export function PlaygroundPage() {
   return (
     <div className="space-y-4">
       <InlineNotice>
-        Requests are sent through <code>POST /mcp/v1</code> using the key stored in this console — the playground
-        simulates that agent&apos;s scope. A key is required for non-health methods.
+        Requests are sent through <code>POST /mcp/v1</code> using your signed-in session — the playground simulates
+        that operator&apos;s scope. API keys are only for AI / external clients.
       </InlineNotice>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card
           title="Request"
           subtitle="Single JSON-RPC request, id generated per run"
-          actions={<Badge tone={apiKey ? 'success' : 'warning'}>key: {maskKey(apiKey)}</Badge>}
+          actions={<Badge tone="success">session authenticated</Badge>}
         >
           <div className="space-y-3">
             <Field label="Preset">

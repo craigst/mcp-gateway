@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { api } from '../lib/api.js';
 import { formatTimestamp } from '../lib/format.js';
 import { cx } from '../lib/cx.js';
 import { Badge } from './Badge.js';
@@ -27,10 +26,12 @@ function defaultGatewayOrigin(): string {
   return `${protocol}//${window.location.host}`;
 }
 
-/** Build the browser WebSocket URL (key travels as a query param, per API.md §4). */
-export function buildLogSocketUrl(origin: string, apiKey: string, serverId?: string | null): string {
+/**
+ * Build the browser WebSocket URL. The HttpOnly session cookie is sent with the
+ * same-origin handshake automatically, so no key is placed in the query string.
+ */
+export function buildLogSocketUrl(origin: string, serverId?: string | null): string {
   const url = new URL('/mcp/v1/admin/ws/logs', origin.replace(/^ws/, 'http'));
-  url.searchParams.set('api_key', apiKey);
   if (serverId) url.searchParams.set('serverId', serverId);
   const wsProtocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${wsProtocol}//${url.host}${url.pathname}${url.search}`;
@@ -81,14 +82,13 @@ export function LiveLogPanel({ serverId = null, maxLines = 500, className }: Liv
 
     const connect = (): void => {
       if (disposed) return;
-      const apiKey = api.getApiKey();
-      if (!apiKey || typeof WebSocket === 'undefined') {
+      if (typeof WebSocket === 'undefined') {
         setStatus('unavailable');
         return;
       }
       setStatus(attempt === 0 ? 'connecting' : 'reconnecting');
       try {
-        socket = new WebSocket(buildLogSocketUrl(defaultGatewayOrigin(), apiKey, serverId));
+        socket = new WebSocket(buildLogSocketUrl(defaultGatewayOrigin(), serverId));
       } catch {
         setStatus('unavailable');
         return;
@@ -183,7 +183,7 @@ export function LiveLogPanel({ serverId = null, maxLines = 500, className }: Liv
         {lines.length === 0 ? (
           <p className="text-slate-600">
             {status === 'unavailable'
-              ? 'Live logs unavailable — set an API key first.'
+              ? 'Live logs unavailable — sign in to the console first.'
               : 'Waiting for log frames…'}
           </p>
         ) : (

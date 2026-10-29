@@ -22,7 +22,6 @@ const { apiMock } = vi.hoisted(() => ({
     installCatalogEntry: vi.fn(),
     importCatalogUrl: vi.fn(),
     registerServer: vi.fn(),
-    getApiKey: vi.fn(() => null),
   },
 }));
 

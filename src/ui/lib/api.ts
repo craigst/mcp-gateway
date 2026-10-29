@@ -2,8 +2,9 @@
  * Typed client for the MCP Gateway admin + JSON-RPC API.
  *
  * The console is normally served by the gateway from `ui/dist`, so the default
- * base URL is same-origin. All requests authenticate with the operator key
- * stored in localStorage under `mcp_gateway_key`.
+ * base URL is same-origin. Browser requests authenticate with the built-in
+ * username/password session: an HttpOnly `mcp_session` cookie is sent on every
+ * request (`credentials: 'include'`). The browser never stores a bearer key.
  */
 import type {
   AuditEntry,
@@ -28,8 +29,6 @@ import type {
   VaultSecretMetadata,
 } from '../../core/types.js';
 import type { DelegationTrace, MetricsSnapshot, SubServerLogLine } from '../../core/ports.js';
-
-export const API_KEY_STORAGE_KEY = 'mcp_gateway_key';
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -103,6 +102,32 @@ export interface HealthResponse {
   uptimeMs: number;
 }
 
+// ---------------------------------------------------------------------------
+// Session auth (v0.3)
+// ---------------------------------------------------------------------------
+
+export interface SessionUser {
+  username: string;
+}
+
+export interface LoginResponse {
+  user: SessionUser;
+  /** ISO timestamp for the issued session, when provided by the gateway. */
+  expiresAt?: string;
+}
+
+export interface SessionStatus {
+  authenticated: boolean;
+  user?: SessionUser;
+}
+
+export interface SimpleOkResponse {
+  ok: boolean;
+}
+
+/** Listener invoked for every HTTP 401 so the shell can return to the login page. */
+export type UnauthorizedHandler = (error: ApiError) => void;
+
 export interface JsonRpcErrorBody {
   code: number;
   message: string;
@@ -144,6 +169,20 @@ export interface CreateKeyRequest {
 export interface CreateKeyResponse {
   key: KeySummary;
   plaintext: string;
+}
+
+export interface RegenerateMasterKeyRequest {
+  /** Revoke every existing master key after issuing the new one (server default: true). */
+  revokePrevious?: boolean;
+  /** Optional label for the new master key. */
+  name?: string;
+}
+
+export interface MasterKeyRegeneration {
+  key: KeySummary;
+  /** One-time plaintext of the new master key. */
+  plaintext: string;
+  revokedCount: number;
 }
 
 export interface RegisterServerRequest {
@@ -318,15 +357,6 @@ function buildQuery(params: Record<string, string | number | boolean | null | un
   return encoded ? `?${encoded}` : '';
 }
 
-function storageOrNull(): Storage | null {
-  try {
-    if (typeof localStorage === 'undefined') return null;
-    return localStorage;
-  } catch {
-    return null;
-  }
-}
-
 interface TimingMeta {
   gateway_overhead_ms?: unknown;
   sub_server_ms?: unknown;
@@ -362,6 +392,7 @@ export class ApiClient {
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch | null;
   private rpcCounter = 0;
+  private readonly unauthorizedListeners = new Set<UnauthorizedHandler>();
 
   constructor(baseUrl = '', options: ApiClientOptions = {}) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
@@ -369,24 +400,27 @@ export class ApiClient {
     this.fetchImpl = options.fetchImpl ?? null;
   }
 
-  // -- key custody ----------------------------------------------------------
+  // -- session / unauthorized handling -------------------------------------
 
-  /** Persist (or clear, when null/blank) the operator key in localStorage. */
-  setApiKey(key: string | null): void {
-    const storage = storageOrNull();
-    if (!storage) return;
-    if (key === null || key.trim() === '') {
-      storage.removeItem(API_KEY_STORAGE_KEY);
-      return;
-    }
-    storage.setItem(API_KEY_STORAGE_KEY, key.trim());
+  /** Subscribe to HTTP 401 responses; returns an unsubscribe function. */
+  onUnauthorized(handler: UnauthorizedHandler): () => void {
+    this.unauthorizedListeners.add(handler);
+    return () => {
+      this.unauthorizedListeners.delete(handler);
+    };
   }
 
-  getApiKey(): string | null {
-    const storage = storageOrNull();
-    if (!storage) return null;
-    const value = storage.getItem(API_KEY_STORAGE_KEY);
-    return value && value.trim() !== '' ? value : null;
+  private notifyUnauthorized(error: ApiError): void {
+    for (const handler of this.unauthorizedListeners) {
+      try {
+        handler(error);
+      } catch {
+        // A broken listener must never stop the original error from propagating.
+      }
+    }
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new Event('mcp:unauthorized'));
+    }
   }
 
   // -- transport ------------------------------------------------------------
@@ -409,8 +443,6 @@ export class ApiClient {
         Object.assign(headers, init.headers);
       }
     }
-    const apiKey = this.getApiKey();
-    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
     if (init.body !== undefined && init.body !== null && headers['Content-Type'] === undefined) {
       headers['Content-Type'] = 'application/json';
     }
@@ -440,6 +472,8 @@ export class ApiClient {
       }
       response = await fetchFn(`${this.baseUrl}${path}`, {
         ...init,
+        // HttpOnly session cookie: every browser request is credentialed.
+        credentials: 'include',
         headers,
         signal: controller.signal,
       });
@@ -478,7 +512,11 @@ export class ApiClient {
       }
     }
 
-    if (!response.ok) throw parseApiError(response.status, payload);
+    if (!response.ok) {
+      const error = parseApiError(response.status, payload);
+      if (response.status === 401) this.notifyUnauthorized(error);
+      throw error;
+    }
     return payload as T;
   }
 
@@ -518,6 +556,39 @@ export class ApiClient {
     };
   }
 
+  // -- session auth ---------------------------------------------------------
+
+  /** Username/password login; the gateway responds with an HttpOnly cookie. */
+  login(username: string, password: string): Promise<LoginResponse> {
+    return this.request<LoginResponse>('/mcp/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+  }
+
+  /** Destroy the current session cookie. */
+  async logout(): Promise<SimpleOkResponse> {
+    const response = await this.request<{ ok?: boolean }>('/mcp/v1/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    return { ok: response.ok ?? true };
+  }
+
+  /** Current session identity; rejects with a 401 ApiError when signed out. */
+  getSession(): Promise<SessionStatus> {
+    return this.request<SessionStatus>('/mcp/v1/auth/me');
+  }
+
+  /** Change the signed-in user's password. */
+  async changePassword(currentPassword: string, newPassword: string): Promise<SimpleOkResponse> {
+    const response = await this.request<{ ok?: boolean }>('/mcp/v1/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    return { ok: response.ok ?? true };
+  }
+
   // -- health & metrics -----------------------------------------------------
 
   getHealth(): Promise<HealthResponse> {
@@ -553,6 +624,19 @@ export class ApiClient {
       body: JSON.stringify({}),
     });
     return response.key;
+  }
+
+  /**
+   * Issue a brand-new master key for external AI clients. The plaintext is
+   * returned exactly once and must be copied by the operator — the console
+   * itself authenticates with its session and never adopts it.
+   * `revokePrevious` defaults to true server-side.
+   */
+  regenerateMasterKey(input: RegenerateMasterKeyRequest = {}): Promise<MasterKeyRegeneration> {
+    return this.request<MasterKeyRegeneration>('/mcp/v1/admin/keys/master/regenerate', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 
   // -- catalog / servers ----------------------------------------------------

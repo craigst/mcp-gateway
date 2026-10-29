@@ -7,8 +7,10 @@ const { apiMock } = vi.hoisted(() => ({
     resolveEscalation: vi.fn(),
     protectVaultWarden: vi.fn(),
     getHealth: vi.fn(),
-    getApiKey: vi.fn(() => null),
-    setApiKey: vi.fn(),
+    getSession: vi.fn(),
+    login: vi.fn(),
+    logout: vi.fn(),
+    onUnauthorized: vi.fn(),
   },
 }));
 
@@ -111,7 +113,8 @@ const installedOverview = {
 
 beforeEach(() => {
   apiMock.getHealth.mockResolvedValue({ status: 'ok', version: '0.2.0', uptimeMs: 1000 });
-  apiMock.getApiKey.mockReturnValue(null);
+  apiMock.getSession.mockResolvedValue({ authenticated: true, user: { username: 'operator' } });
+  apiMock.onUnauthorized.mockReturnValue(() => {});
   apiMock.getVaultWarden.mockResolvedValue(installedOverview);
   apiMock.resolveEscalation.mockResolvedValue({
     escalation: { ...approveTicket, status: 'approved' },
