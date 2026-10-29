@@ -127,7 +127,7 @@ describe('SqliteUiAuthService.ensureBootstrapUser', () => {
     }
   });
 
-  it('generates a 24-character password and logs it once at warn level', () => {
+  it('leaves first-run setup required (no user, no generated password) when no password is configured', () => {
     const freshDb = makeDb();
     try {
       const capture = captureLogger();
@@ -138,24 +138,19 @@ describe('SqliteUiAuthService.ensureBootstrapUser', () => {
       );
       service.ensureBootstrapUser();
 
-      const warnings = capture.records.filter(
-        (record) =>
-          record.level === 'warn' && record.message.includes('generated Web UI password'),
+      expect(service.hasUsers()).toBe(false);
+      expect(userRows(freshDb)).toEqual([]);
+      expect(capture.records.some((record) => record.message.includes('generated Web UI password'))).toBe(
+        false,
       );
-      expect(warnings).toHaveLength(1);
-      const generated = warnings[0]?.context?.password;
-      expect(typeof generated).toBe('string');
-      expect(String(generated)).toHaveLength(24);
-      expect(warnings[0]?.context?.username).toBe(TEST_USERNAME);
+      expect(capture.records.some((record) => record.level === 'warn')).toBe(false);
+      expect(
+        capture.records.some((record) => record.message.includes('first-run setup required')),
+      ).toBe(true);
 
-      const infos = capture.records.filter(
-        (record) => record.level === 'info' && record.context?.username === TEST_USERNAME,
-      );
-      expect(infos.length).toBeGreaterThanOrEqual(1);
-
-      const stored = userRows(freshDb)[0]?.password_hash ?? '';
-      expect(verifyPassword(String(generated), stored)).toBe(true);
-      expect(service.login(TEST_USERNAME, String(generated)).user.username).toBe(TEST_USERNAME);
+      // A later call is still a no-op (nothing is ever auto-generated).
+      service.ensureBootstrapUser();
+      expect(userRows(freshDb)).toEqual([]);
     } finally {
       freshDb.close();
     }
@@ -191,6 +186,84 @@ describe('SqliteUiAuthService.ensureBootstrapUser', () => {
     } finally {
       freshDb.close();
     }
+  });
+});
+
+describe('SqliteUiAuthService.hasUsers / setup / verifyUserPassword', () => {
+  function makeFirstRunService(): { db: DatabaseSync; service: SqliteUiAuthService } {
+    const firstRunDb = makeDb();
+    const service = new SqliteUiAuthService(
+      firstRunDb,
+      makeConfig({ uiPassword: null }),
+      { logger: silentLogger() },
+    );
+    service.ensureBootstrapUser();
+    return { db: firstRunDb, service };
+  }
+
+  it('reports setup state and creates the first user via setup()', () => {
+    const { db: firstRunDb, service } = makeFirstRunService();
+    try {
+      expect(service.hasUsers()).toBe(false);
+
+      const session = service.setup('new-admin', 'first-run-password');
+      expect(session.user).toEqual({ username: 'new-admin' });
+      expect(session.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(service.hasUsers()).toBe(true);
+      expect(service.authenticate(session.token)).toEqual({ username: 'new-admin' });
+      expect(service.activeSessions('new-admin')).toBe(1);
+
+      const users = userRows(firstRunDb);
+      expect(users).toHaveLength(1);
+      expect(users[0]?.username).toBe('new-admin');
+      expect(users[0]?.password_hash.startsWith('scrypt$')).toBe(true);
+      expect(users[0]?.password_hash).not.toContain('first-run-password');
+      expect(users[0]?.last_login_at).not.toBeNull();
+
+      // An ordinary login with the new credentials works afterwards.
+      expect(service.login('new-admin', 'first-run-password').user.username).toBe('new-admin');
+    } finally {
+      firstRunDb.close();
+    }
+  });
+
+  it('refuses setup once a user exists (409 conflict error)', () => {
+    const error = gatewayError(() => auth.setup('second-admin', 'another-password'));
+    expect(error.code).toBe(ErrorCodes.ACCESS_DENIED);
+    expect(error.httpStatus).toBe(409);
+    expect(error.message).toBe('Setup already completed');
+    expect(error.data?.status).toBe('CONFLICT');
+    expect(userRows()).toHaveLength(1);
+  });
+
+  it('validates the first-run username and password', () => {
+    const { db: firstRunDb, service } = makeFirstRunService();
+    try {
+      for (const [username, password] of [
+        ['', 'long-enough-password'],
+        ['   ', 'long-enough-password'],
+        ['bad name', 'long-enough-password'],
+        ['.starts-with-dot', 'long-enough-password'],
+        ['a'.repeat(65), 'long-enough-password'],
+        ['valid-name', 'short'],
+        ['valid-name', ''],
+      ] as const) {
+        const error = gatewayError(() => service.setup(username, password));
+        expect(error.code).toBe(ErrorCodes.INVALID_PARAMS);
+      }
+      expect(service.hasUsers()).toBe(false);
+      expect(userRows(firstRunDb)).toEqual([]);
+    } finally {
+      firstRunDb.close();
+    }
+  });
+
+  it('verifyUserPassword is true only for the correct password', () => {
+    expect(auth.verifyUserPassword(TEST_USERNAME, TEST_PASSWORD)).toBe(true);
+    expect(auth.verifyUserPassword(TEST_USERNAME, 'wrong-password')).toBe(false);
+    expect(auth.verifyUserPassword('nobody', TEST_PASSWORD)).toBe(false);
+    expect(auth.verifyUserPassword('', '')).toBe(false);
+    expect(auth.verifyUserPassword(TEST_USERNAME, '')).toBe(false);
   });
 });
 

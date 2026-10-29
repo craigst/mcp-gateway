@@ -57,6 +57,8 @@ export interface AdminDeps {
   configProfilesApi?: AdminSubRouter;
   /** Per-server inspector routes (`/servers/:id/inspector|activity|reveal`). */
   inspectorApi?: AdminSubRouter;
+  backupApi?: AdminSubRouter;
+  settingsApi?: AdminSubRouter;
   logger?: Logger;
 }
 
@@ -109,6 +111,10 @@ export class AdminApi {
           return (await this.deps.vaultwardenApi?.handle(req, res, url)) ?? false;
         case 'updates':
           return (await this.deps.updatesApi?.handle(req, res, url)) ?? false;
+        case 'backups':
+          return (await this.deps.backupApi?.handle(req, res, url)) ?? false;
+        case 'settings':
+          return (await this.deps.settingsApi?.handle(req, res, url)) ?? false;
         case 'config-profiles':
           return (await this.deps.configProfilesApi?.handle(req, res, url)) ?? false;
         default:

@@ -1,10 +1,12 @@
 /**
  * HTTP sub-handler for the built-in Web UI auth endpoints:
  *
- *   POST /mcp/v1/auth/login      {username,password} -> 200 + session cookie
- *   POST /mcp/v1/auth/logout     -> 200 {ok:true} + cleared cookie
- *   GET  /mcp/v1/auth/me         -> 200 {authenticated:true,user} or 401
- *   POST /mcp/v1/auth/password   {currentPassword,newPassword} -> 200 {ok:true}
+ *   POST /mcp/v1/auth/login        {username,password} -> 200 + session cookie
+ *   POST /mcp/v1/auth/logout       -> 200 {ok:true} + cleared cookie
+ *   GET  /mcp/v1/auth/me           -> 200 (setup status or session user) or 401
+ *   POST /mcp/v1/auth/password     {currentPassword,newPassword} -> 200 {ok:true}
+ *   POST /mcp/v1/auth/setup        {username,password} -> 201 + session cookie (first run)
+ *   POST /mcp/v1/auth/setup/restore {backup,password} -> 200 {result} (first run)
  *
  * The handler is mounted ahead of JSON-RPC parsing (it consumes the request body
  * itself) and returns `false` for any path outside `/mcp/v1/auth`.
@@ -14,6 +16,7 @@ import type { GatewayConfig } from '../core/config.js';
 import { ErrorCodes, GatewayError, invalidParams } from '../core/errors.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { UiAuthService, UiSession } from '../core/ports.js';
+import type { RestoreResult } from '../core/types.js';
 import { clearSessionCookie, readSessionToken, serializeSessionCookie } from './cookies.js';
 
 export const AUTH_PATH_PREFIX = '/mcp/v1/auth';
@@ -23,17 +26,24 @@ export interface AuthApiDependencies {
   uiAuth: UiAuthService;
   config: GatewayConfig;
   logger?: Logger;
+  /**
+   * First-run backup restore hook (wired to BackupService). Only invoked while the
+   * gateway has no UI users; the restored users then log in normally.
+   */
+  setupRestore?: (input: { backup: unknown; password: string }) => Promise<RestoreResult>;
 }
 
 export class AuthApi {
   private readonly uiAuth: UiAuthService;
   private readonly config: GatewayConfig;
   private readonly logger: Logger;
+  private readonly setupRestore: ((input: { backup: unknown; password: string }) => Promise<RestoreResult>) | undefined;
 
   constructor(deps: AuthApiDependencies) {
     this.uiAuth = deps.uiAuth;
     this.config = deps.config;
     this.logger = deps.logger ?? createLogger('auth');
+    this.setupRestore = deps.setupRestore;
   }
 
   async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
@@ -55,6 +65,10 @@ export class AuthApi {
           return await this.handleMe(req, res, method);
         case '/password':
           return await this.handlePassword(req, res, method);
+        case '/setup':
+          return await this.handleSetup(req, res, method);
+        case '/setup/restore':
+          return await this.handleSetupRestore(req, res, method);
         default:
           this.sendError(res, 404, ErrorCodes.METHOD_NOT_FOUND, 'Not Found', {
             status: 'NOT_FOUND',
@@ -127,12 +141,88 @@ export class AuthApi {
     method: string,
   ): Promise<boolean> {
     if (method !== 'GET') return this.methodNotAllowed(res, 'GET');
+
+    // Before the first user exists the console must render the setup wizard, not a
+    // login form. This endpoint is intentionally unauthenticated in that state.
+    if (!this.uiAuth.hasUsers()) {
+      this.sendJson(res, 200, {
+        authenticated: false,
+        setupRequired: true,
+        restoreSupported: true,
+      });
+      return true;
+    }
+
     const user = this.currentUser(req);
     if (user === null) {
       this.sendSessionUnauthorized(res);
       return true;
     }
-    this.sendJson(res, 200, { authenticated: true, user: { username: user.username } });
+    this.sendJson(res, 200, {
+      authenticated: true,
+      user: { username: user.username },
+      setupRequired: false,
+    });
+    return true;
+  }
+
+  private async handleSetup(
+    req: IncomingMessage,
+    res: ServerResponse,
+    method: string,
+  ): Promise<boolean> {
+    if (method !== 'POST') return this.methodNotAllowed(res, 'POST');
+    if (this.uiAuth.hasUsers()) throw this.setupConflict();
+
+    const body = await this.readJsonBody(req);
+    const { username, password } = body;
+    if (typeof username !== 'string' || typeof password !== 'string') {
+      throw invalidParams('Invalid request body: username and password are required.');
+    }
+
+    const session = this.uiAuth.setup(username, password);
+    res.setHeader('Set-Cookie', serializeSessionCookie(session.token, this.config));
+    this.logger.info('Web UI first-run setup completed via API', {
+      username: session.user.username,
+    });
+    this.sendJson(res, 201, {
+      user: { username: session.user.username },
+      expiresAt: session.expiresAt,
+      setupRequired: false,
+    });
+    return true;
+  }
+
+  private async handleSetupRestore(
+    req: IncomingMessage,
+    res: ServerResponse,
+    method: string,
+  ): Promise<boolean> {
+    if (method !== 'POST') return this.methodNotAllowed(res, 'POST');
+    if (this.uiAuth.hasUsers()) throw this.setupConflict();
+    if (this.setupRestore === undefined) {
+      throw new GatewayError(
+        ErrorCodes.NOT_IMPLEMENTED,
+        'Backup restore is not available on this gateway',
+        { httpStatus: 503 },
+      );
+    }
+
+    const body = await this.readJsonBody(req);
+    const backup = body.backup;
+    const password = body.password;
+    const isBackupObject = typeof backup === 'object' && backup !== null && !Array.isArray(backup);
+    if ((typeof backup !== 'string' && !isBackupObject) || typeof password !== 'string' || password === '') {
+      throw invalidParams(
+        'Invalid request body: "backup" (object or base64 string) and "password" are required.',
+      );
+    }
+
+    // The restore applies the backup (users included) — no session is issued; the
+    // restored users log in normally afterwards.
+    const result = await this.setupRestore({ backup, password });
+    this.logger.info('first-run backup restore completed');
+    this.sendJson(res, 200, { result });
     return true;
   }
 
@@ -204,6 +294,13 @@ export class AuthApi {
       status: 'METHOD_NOT_ALLOWED',
     });
     return true;
+  }
+
+  private setupConflict(): GatewayError {
+    return new GatewayError(ErrorCodes.ACCESS_DENIED, 'Setup already completed', {
+      data: { status: 'CONFLICT' },
+      httpStatus: 409,
+    });
   }
 
   private sendSessionUnauthorized(res: ServerResponse): void {

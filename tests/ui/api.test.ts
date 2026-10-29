@@ -837,3 +837,134 @@ describe('ApiClient v0.5 server inspector', () => {
     expect(caught).toMatchObject({ status: 403, message: 'Reveal not permitted' });
   });
 });
+
+describe('ApiClient v0.6 setup, settings & encrypted backups', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function lastCall(): [string, RequestInit] {
+    return fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string, RequestInit];
+  }
+
+  it('reports setupRequired from /auth/me and supports first-run setup/restore', async () => {
+    const client = new ApiClient('http://gateway.test');
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({ authenticated: false, setupRequired: true, restoreSupported: true }),
+    );
+    expect(await client.getSession()).toEqual({
+      authenticated: false,
+      setupRequired: true,
+      restoreSupported: true,
+    });
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/auth/me');
+
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({ user: { username: 'operator' }, expiresAt: '2026-10-30T00:00:00.000Z' }, 201),
+    );
+    expect((await client.setupAccount('operator', 'correct-horse')).user.username).toBe('operator');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/auth/setup');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({
+      username: 'operator',
+      password: 'correct-horse',
+    });
+
+    const restoreResult = {
+      usersRestored: 1,
+      keysRestored: 2,
+      serversRestored: 3,
+      toolsRestored: 4,
+      profilesRestored: 1,
+      catalogSourcesRestored: 1,
+      secretsRestored: 2,
+      auditEntriesRestored: 10,
+      reinstallRequired: [{ serverId: 'srv_brain', name: 'brain' }],
+    };
+    fetchMock.mockResolvedValueOnce(fakeResponse({ result: restoreResult }, 201));
+    const backup = { format: 'mcp-gateway-backup' };
+    expect(await client.setupRestore(backup, 'backup-pass')).toEqual(restoreResult);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/auth/setup/restore');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ backup, password: 'backup-pass' });
+  });
+
+  it('loads settings, lists/creates/deletes backups and restores with confirm', async () => {
+    const client = new ApiClient('http://gateway.test');
+    const settings = { settings: { version: '0.6.0' }, account: { username: 'operator', sessionCount: 1 } };
+    fetchMock.mockResolvedValueOnce(fakeResponse(settings));
+    expect(await client.getSettings()).toEqual(settings);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/settings');
+
+    const backup = { id: 'b1', fileName: 'gw.mcpbak', counts: {} };
+    fetchMock.mockResolvedValueOnce(fakeResponse(backup, 201));
+    expect(await client.createBackup({ password: 'pw', includeAudit: false })).toEqual(backup);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/backups');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ password: 'pw', includeAudit: false });
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ backups: [backup] }));
+    expect(await client.listBackups()).toEqual([backup]);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/backups');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ deleted: true }));
+    expect(await client.deleteBackup('b1')).toBe(true);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/backups/b1');
+    expect(lastCall()[1].method).toBe('DELETE');
+
+    const restoreResult = { usersRestored: 1, reinstallRequired: [] };
+    fetchMock.mockResolvedValueOnce(fakeResponse({ result: restoreResult }));
+    expect(await client.restoreBackup({ backup: { format: 'mcp-gateway-backup' }, password: 'pw' })).toEqual(
+      restoreResult,
+    );
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/backups/restore');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({
+      backup: { format: 'mcp-gateway-backup' },
+      password: 'pw',
+      confirm: 'RESTORE',
+    });
+
+    const updateResult = { server: { id: 'srv_brain' }, changed: true };
+    fetchMock.mockResolvedValueOnce(fakeResponse({ result: updateResult }));
+    expect(await client.reinstallServer('srv_brain')).toEqual(updateResult);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/updates/servers/srv_brain/reinstall');
+    expect(lastCall()[1].method).toBe('POST');
+  });
+
+  it('downloads a backup blob with a filename and maps 401 errors', async () => {
+    const client = new ApiClient('http://gateway.test');
+    const blob = new Blob(['{"encrypted":true}'], { type: 'application/json' });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-disposition': 'attachment; filename="gateway-backup.mcpbak"' }),
+      blob: async () => blob,
+      text: async () => '',
+    } as unknown as Response);
+
+    const downloaded = await client.downloadBackup('b1');
+    expect(downloaded.fileName).toBe('gateway-backup.mcpbak');
+    expect(downloaded.blob).toBe(blob);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/backups/b1/download');
+    expect(lastCall()[1].credentials).toBe('include');
+
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      headers: new Headers(),
+      text: async () => JSON.stringify({ error: { code: 401, message: 'Unauthorized' } }),
+    } as unknown as Response);
+    const caught = await client.downloadBackup('b1').then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(caught).toBeInstanceOf(ApiError);
+    expect(caught).toMatchObject({ status: 401, message: 'Unauthorized' });
+  });
+});

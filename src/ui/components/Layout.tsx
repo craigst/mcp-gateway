@@ -8,6 +8,7 @@ export type PageKey =
   | 'catalog'
   | 'server'
   | 'configurations'
+  | 'settings'
   | 'vaultwarden'
   | 'rbac'
   | 'vault'
@@ -33,7 +34,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   {
     key: 'configurations',
     label: 'Configurations',
-    icon: '⚙',
+    icon: '▦',
     description: 'Reusable encrypted env/headers applied to many MCP servers.',
   },
   {
@@ -47,6 +48,12 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { key: 'audit', label: 'Audit', icon: '≡', description: 'Forensic search across JSON-RPC calls and denials.' },
   { key: 'delegation', label: 'Delegation', icon: '⇄', description: 'Sub-agent traces and escalation approval queue.' },
   { key: 'playground', label: 'Playground', icon: '⌘', description: 'Send signed JSON-RPC payloads and inspect latency.' },
+  {
+    key: 'settings',
+    label: 'Settings',
+    icon: '⚙',
+    description: 'Account, system configuration and encrypted backups.',
+  },
 ];
 
 type ConnectionState = 'checking' | 'online' | 'offline';
@@ -137,7 +144,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
           {NAV_ITEMS.map((item) => navButton(item, false))}
         </nav>
         <div className="space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
-          <p>v0.5.0 · MCP 2025-06-18</p>
+          <p>v0.6.0 · MCP 2025-06-18</p>
           <div className="rounded-lg border border-slate-800 px-2.5 py-2">
             <div className="flex items-center gap-2">
               <span

@@ -131,6 +131,7 @@ interface FakeUpdates {
     update: ReturnType<typeof vi.fn>;
     recordSource: ReturnType<typeof vi.fn>;
     backfillFromCatalog: ReturnType<typeof vi.fn>;
+    reinstall: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -157,6 +158,13 @@ function setup(): FakeUpdates {
     })),
     recordSource: vi.fn(),
     backfillFromCatalog: vi.fn(async () => ({ recorded: 2, skipped: 1, errors: [] })),
+    reinstall: vi.fn(async () => ({
+      server: { id: 'srv_example0000001', name: 'brain' },
+      before: { version: null, commit: null },
+      after: { version: '1.0.0', commit: 'c'.repeat(40) },
+      test: { ok: true, toolCount: 6, tools: ['echo'], latencyMs: 1, error: null },
+      changed: true,
+    })),
   };
 
   const api = new UpdatesApi({ config, keys, updates: updates as unknown as UpdatesApiDeps['updates'] });
@@ -229,6 +237,16 @@ describe('UpdatesApi (admin REST)', () => {
       restart: undefined,
       test: undefined,
     });
+  });
+
+  it('reinstalls one server from its tracked source', async () => {
+    const { api, masterKey, updates } = setup();
+    const response = await call(api, 'POST', '/mcp/v1/admin/updates/servers/srv_example0000001/reinstall', {
+      key: masterKey,
+    });
+    expect(response.response.status).toBe(200);
+    expect(response.response.body.result).toMatchObject({ changed: true });
+    expect(updates.reinstall).toHaveBeenCalledWith('srv_example0000001');
   });
 
   it('runs the catalog backfill route', async () => {

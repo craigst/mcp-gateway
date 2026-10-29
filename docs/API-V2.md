@@ -364,3 +364,79 @@ invisible servers are indistinguishable from unknown). Audit rows record the ser
 `initialize` now advertises `prompts` and `resources` capabilities alongside `tools`. Prompts,
 resources, instructions and capabilities are discovered automatically at server start and stored
 on the server record so the inspector always has them.
+
+## 10. v0.6 — first-run onboarding, settings & encrypted backups
+
+### First-run setup
+
+A fresh gateway with no Web UI user starts in **setup mode** (no env password needed).
+`GET /mcp/v1/auth/me` answers `200 { authenticated: false, setupRequired: true, restoreSupported: true }`
+until the operator account exists.
+
+```jsonc
+POST /mcp/v1/auth/setup              { "username": "admin", "password": "…" }
+→ 201 { "user": { "username": "admin" }, "expiresAt": "…", "setupRequired": false }
+     + Set-Cookie: mcp_session=…      // 409 once a user exists, 400 on invalid input
+
+POST /mcp/v1/auth/setup/restore      { "backup": <object | base64 envelope>, "password": "…" }
+→ { "result": RestoreResult }         // first-run only (409 after setup); restores users,
+                                      // keys, servers, profiles, catalog sources and vault
+                                      // secrets, then the operator signs in with the original
+                                      // account password
+```
+
+If `MCP_UI_PASSWORD` is set in the environment the bootstrap user is created as before and
+setup is skipped (backwards compatible).
+
+### Settings
+
+```jsonc
+GET /mcp/v1/admin/settings
+→ { "settings": {
+      "version": "0.6.0", "host": "0.0.0.0", "port": 8080,
+      "dataDir": "/data", "dbPath": "/data/gateway.db", "reposDir": "/data/repos",
+      "uiDistDir": "/app/ui/dist", "vaultEnabled": true,
+      "gitImportEnabled": true, "gitImportAllowedPrefixes": ["https://github.com/"],
+      "delegationMaxDepth": 3, "autostart": "all", "logLevel": "info",
+      "uiUsername": "admin", "userCount": 1, "sessionCount": 1, "setupRequired": false },
+    "account": { "username": "admin", "sessionCount": 1 } }
+```
+
+These are read-only views of the environment/container configuration (change them in the
+deployment env and restart), so the console documents the running setup without exposing secrets.
+
+### Password-encrypted backups
+
+A backup contains the complete gateway state — Web UI accounts (password hashes), API keys
+(hashes), servers/tools/protection, catalog sources, configuration profiles, escalation and
+delegation history, settings, optional audit rows, and **every vault secret** — serialised to
+gzip JSON and encrypted with **AES-256-GCM using a scrypt-derived key from the operator's login
+password**. The password is never stored anywhere. Restoring requires the same password.
+
+```jsonc
+POST /mcp/v1/admin/backups          { "password": "…", "includeAudit": true }
+→ 201 BackupMetadata { "id": "backup_…", "fileName": "backup_….mcpbak",
+      "createdAt": "…", "sizeBytes": 123456, "gatewayVersion": "0.6.0",
+      "includeAudit": true,
+      "counts": { "users": 1, "keys": 3, "servers": 6, "tools": 276, "profiles": 1,
+                  "catalogSources": 1, "secrets": 14, "auditEntries": 812 } }
+
+GET    /mcp/v1/admin/backups                 → { "backups": BackupMetadata[] }
+GET    /mcp/v1/admin/backups/:id/download    → the .mcpbak file (attachment)
+DELETE /mcp/v1/admin/backups/:id             → { "deleted": true }
+
+POST /mcp/v1/admin/backups/restore
+{ "backup": <object | base64 envelope>, "password": "…", "confirm": "RESTORE" }
+→ { "result": {
+      "usersRestored": 1, "keysRestored": 3, "serversRestored": 6, "toolsRestored": 276,
+      "profilesRestored": 1, "catalogSourcesRestored": 1, "secretsRestored": 14,
+      "auditEntriesRestored": 812,
+      "reinstallRequired": [ { "serverId": "srv_…", "name": "brain" } ] } }
+```
+
+Restore semantics: decrypt + validate, then atomically replace the account/key/server/tool/
+profile/catalog/audit/settings tables; vault secrets are re-encrypted into the local vault
+(requires `MCP_VAULT_SECRET`); sessions are cleared; restored servers are stopped. Repository
+checkouts are **not** included in the backup — servers whose working directory is missing are
+returned in `reinstallRequired` and can be rebuilt from their tracked source with
+`POST /mcp/v1/admin/updates/servers/:id/reinstall` (staged clone/build/swap/start/probe).

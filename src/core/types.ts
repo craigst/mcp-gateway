@@ -683,3 +683,76 @@ export interface ServerActivityPage {
   entries: AuditEntry[];
   total: number;
 }
+
+
+// ---------------------------------------------------------------------------
+// v0.6 — first-run onboarding, settings and password-encrypted backups
+// ---------------------------------------------------------------------------
+
+export interface SetupStatus {
+  setupRequired: boolean;
+  /** Present when a backup restore is possible during first-run setup. */
+  restoreSupported: boolean;
+}
+
+export interface BackupMetadata {
+  id: string;
+  fileName: string;
+  createdAt: string;
+  sizeBytes: number;
+  gatewayVersion: string;
+  includeAudit: boolean;
+  counts: {
+    users: number;
+    keys: number;
+    servers: number;
+    tools: number;
+    profiles: number;
+    catalogSources: number;
+    secrets: number;
+    auditEntries: number;
+  };
+}
+
+export interface RestoreResult {
+  usersRestored: number;
+  keysRestored: number;
+  serversRestored: number;
+  toolsRestored: number;
+  profilesRestored: number;
+  catalogSourcesRestored: number;
+  secretsRestored: number;
+  auditEntriesRestored: number;
+  /** Servers whose checked-out code is missing after restore (reinstall needed). */
+  reinstallRequired: Array<{ serverId: string; name: string }>;
+}
+
+/** Envelope stored on disk / downloaded; all payload material is encrypted. */
+export interface BackupEnvelope {
+  format: 'mcp-gateway-backup';
+  version: 1;
+  createdAt: string;
+  gatewayVersion: string;
+  kdf: { name: 'scrypt'; N: number; r: number; p: number; saltB64: string };
+  cipher: { name: 'aes-256-gcm'; ivB64: string; tagB64: string; dataB64: string };
+}
+
+export interface GatewaySettingsInfo {
+  version: string;
+  host: string;
+  port: number;
+  dataDir: string;
+  dbPath: string;
+  reposDir: string;
+  uiDistDir: string;
+  vaultEnabled: boolean;
+  gitImportEnabled: boolean;
+  gitImportAllowedPrefixes: string[];
+  delegationMaxDepth: number;
+  autostart: string;
+  logLevel: string;
+  uiUsername: string | null;
+  userCount: number;
+  sessionCount: number;
+  setupRequired: boolean;
+}

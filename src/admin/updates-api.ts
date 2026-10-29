@@ -13,15 +13,17 @@ import { ErrorCodes, GatewayError, accessDenied, invalidKey, invalidParams } fro
 import { createLogger } from '../core/logger.js';
 import type { Logger } from '../core/logger.js';
 import type { KeyService, ServerUpdateService } from '../core/ports.js';
-import type { AuthenticatedKey, UpdateCheckResult } from '../core/types.js';
+import type { AuthenticatedKey, ServerUpdateResult, UpdateCheckResult } from '../core/types.js';
 import { readJsonBody } from '../gateway/server.js';
 import type { BackfillResult } from '../updates/service.js';
 import type { AdminSubRouter } from './types.js';
 
-type UpdatesWithBackfill = ServerUpdateService & {
+type UpdatesWithExtras = ServerUpdateService & {
   /** Optional args are implemented by DefaultServerUpdateService (port stays 0-arg). */
   checkAll(serverIds?: string[]): Promise<UpdateCheckResult[]>;
   backfillFromCatalog?: () => Promise<BackfillResult>;
+  /** v0.6: rebuild a server from its tracked source after the work dir was lost. */
+  reinstall?: (serverId: string) => Promise<ServerUpdateResult>;
 };
 
 export interface UpdatesApiDeps {
@@ -60,7 +62,7 @@ export class UpdatesApi implements AdminSubRouter {
         this.requireMaster(req);
         const body = await this.readOptionalObjectBody(req);
         const serverIds = optionalStringArray(body, 'serverIds');
-        const results = await (this.deps.updates as UpdatesWithBackfill).checkAll(serverIds);
+        const results = await (this.deps.updates as UpdatesWithExtras).checkAll(serverIds);
         this.sendJson(res, 200, { results });
         return true;
       }
@@ -68,7 +70,7 @@ export class UpdatesApi implements AdminSubRouter {
       // POST /admin/updates/backfill
       if (rest.length === 1 && rest[0] === 'backfill' && method === 'POST') {
         this.requireMaster(req);
-        const updates = this.deps.updates as UpdatesWithBackfill;
+        const updates = this.deps.updates as UpdatesWithExtras;
         if (typeof updates.backfillFromCatalog !== 'function') {
           throw new GatewayError(ErrorCodes.NOT_IMPLEMENTED, 'Update source backfill is not supported', {
             httpStatus: 501,
@@ -85,6 +87,21 @@ export class UpdatesApi implements AdminSubRouter {
         this.requireMaster(req);
         const update = await this.deps.updates.check(rest[1] as string);
         this.sendJson(res, 200, { update });
+        return true;
+      }
+
+      // POST /admin/updates/servers/:id/reinstall
+      if (rest.length === 3 && rest[0] === 'servers' && rest[2] === 'reinstall' && method === 'POST') {
+        this.requireMaster(req);
+        const updates = this.deps.updates as UpdatesWithExtras;
+        if (typeof updates.reinstall !== 'function') {
+          throw new GatewayError(ErrorCodes.NOT_IMPLEMENTED, 'Server reinstall is not supported', {
+            httpStatus: 501,
+            data: { status: 'NOT_IMPLEMENTED' },
+          });
+        }
+        const result = await updates.reinstall(rest[1] as string);
+        this.sendJson(res, 200, { result });
         return true;
       }
 

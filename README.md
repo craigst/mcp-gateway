@@ -34,6 +34,8 @@ If not, the tool is invisible — not merely denied.
 | 🔄 | **Update manager** | Per-server upstream tracking (tag/commit): "update available" badges, check-all, and one-click staged updates (clone → build → swap → restart → probe) with automatic rollback on a failed build. |
 | ⚙️ | **Encrypted configuration profiles** | Save credentials/endpoints (IPs, ports, API keys, headers) once **in the AES-256 vault**, reference named secrets, and apply one profile to many MCP servers. No env files — values are decrypted only into the sub-process environment. |
 | 🔬 | **Server inspector** | Open any MCP server: every tool (with schema + live Try), prompts, resources and templates, capabilities/instructions, encrypted configuration with audited reveal, version/update/changelog, and per-server request history — ok, failed **and denied** — with the API key that used it. |
+| 🚀 | **First-run onboarding** | A fresh gateway starts in setup mode: the Web UI wizard creates the operator account, offers an optional master API key (shown once) and can restore an existing backup — no env files or manual key bootstrapping needed. |
+| 💾 | **Password-encrypted backups** | One-click backup of the whole gateway — accounts, API keys, servers, profiles, catalog sources and **every vault secret** — encrypted with scrypt + AES-256-GCM using your account password. Restore on any fresh gateway (setup wizard or Settings) with that password; servers whose code was not in the backup get a one-click **Reinstall**. |
 | 🖥️ | **Web UI console** | Dashboard, catalog manager, RBAC grid, vault, audit explorer, delegation observer, live log stream, JSON-RPC playground. |
 | 🔑 | **Built-in console login** | Username/password sessions (scrypt, HttpOnly SameSite=Strict cookie, CSRF protection). API keys are for AI/external clients only. |
 | 📊 | **Audit everything** | Every discovery/execution/denial recorded with latency, key, tool, delegation depth and payload (truncated). |
@@ -43,10 +45,16 @@ If not, the tool is invisible — not merely denied.
 
 ![Installed servers with version and update awareness](docs/screenshots/v04/installed.png)
 
+![First-run setup — create the operator account or restore a backup](docs/screenshots/v06/setup-welcome.png)
+
 ![Server inspector — activity with ok, error and denied requests](docs/screenshots/v05/activity.png)
 
 <details>
-<summary>More screenshots (inspector · configurations · update dialog · login · dashboard · catalog · Vault Warden)</summary>
+<summary>More screenshots (settings & backups · inspector · configurations · update dialog · login · dashboard · catalog · Vault Warden)</summary>
+
+| Settings & encrypted backups | Backup creation |
+|---|---|
+| ![Settings and backups](docs/screenshots/v06/backup-list.png) | ![Create backup](docs/screenshots/v06/backup-create.png) |
 
 | Inspector overview | Inspector configuration |
 |---|---|
@@ -275,6 +283,34 @@ Click a server in **Catalog → Installed** (or **Open**) to land on its inspect
   latency, payload and the exact key (`dsh-harness`, `demo-agent`, …) that used the server.
   Failed and denied requests are first-class — they are what the manager is for.
 
+## First start, onboarding & backups
+
+A fresh install needs **no pre-set password**:
+
+1. Open the console — it shows the **first-run wizard**.
+2. Create the operator account (username + password); the console signs you in.
+3. Optionally generate a **master API key for AI/external clients** (shown once), or skip.
+4. Add a catalog source / import servers from the dashboard.
+
+> Setting `MCP_UI_PASSWORD` still pre-creates an account and skips the wizard (backwards compatible);
+> leave it empty for the guided setup. `MCP_UI_USERNAME` defaults to `admin`.
+
+**Settings** (⚙ in the sidebar) centralises account/password changes, read-only system
+configuration, quick API-key creation, and **Backups**:
+
+- **Create backup** — asks for your account password, snapshots the complete gateway state
+  (accounts + hashes, API keys, servers, tools, catalog sources, configuration profiles,
+  escalations/delegations, settings, optional audit and **all vault secret values**), and
+  encrypts it with a scrypt-derived AES-256-GCM key. The password is never stored.
+- **Download / delete** local backups (mode 0600, under `data/backups`).
+- **Restore** — on a fresh gateway choose *Restore from backup* in the wizard, or use
+  Settings → Restore on a running gateway: upload the `.mcpbak`, enter the account password,
+  type `RESTORE`. Accounts keep their original password, API-key hashes keep working, vault
+  secrets are re-encrypted into the local vault, sessions are cleared and servers are stopped.
+- Servers whose repository checkout was not part of the backup are listed as **reinstall
+  required**; one click rebuilds them from their tracked upstream source (staged clone → build
+  → restart → probe).
+
 ## Use it from an agent
 
 ```bash
@@ -339,7 +375,7 @@ npm run lint           # eslint
 npm run build          # server + UI bundle
 ```
 
-The suite is **733 tests across 72 files**: unit suites per module, an integration suite that
+The suite is **800 tests across 81 files**: unit suites per module, an integration suite that
 boots a real gateway on an ephemeral port and spawns fixture MCP servers, and an end-to-end
 scenario covering vault → git import → catalog → execution → delegation → depth guard → escalation,
 plus jsdom UI tests. CI also builds the Docker image and smoke-tests `/health` inside the container.
@@ -364,7 +400,8 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 | v0.2.0 | Private GitHub catalogs, harness discovery/import, auto-manifest detection, approval-gated Vault Warden, UI marketplace | ✅ shipped |
 | v0.3.0 | Built-in username/password Web UI login, session-authenticated console + WebSocket logs, master-key rotation, persistent podman/systemd deployment | ✅ shipped |
 | v0.4.0 | Upstream update manager (checks + staged per-server updates) and encrypted configuration profiles replacing env files | ✅ shipped |
-| **v0.5.0** | **Full MCP server inspector (tools/prompts/resources/config/activity), proxied prompts & resources, audited credential reveal, per-server failed/denied request history** | ✅ **current** |
+| v0.5.0 | Full MCP server inspector (tools/prompts/resources/config/activity), proxied prompts & resources, audited credential reveal, per-server failed/denied request history | ✅ shipped |
+| **v0.6.0** | **First-run onboarding wizard, in-UI settings, password-encrypted full backups with restore & server reinstall** | ✅ **current** |
 
 ## License
 

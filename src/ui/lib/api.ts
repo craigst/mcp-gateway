@@ -9,6 +9,7 @@
 import type {
   AuditEntry,
   AuditStatus,
+  BackupMetadata,
   CatalogEntry,
   CatalogInstallResult,
   CatalogSource,
@@ -18,12 +19,14 @@ import type {
   ConfigProfileSummary,
   EscalationStatus,
   EscalationTicket,
+  GatewaySettingsInfo,
   HarnessImportInput,
   HarnessScanResult,
   HarnessSourceInfo,
   InstallTestResult,
   KeySummary,
   KeyType,
+  RestoreResult,
   RuntimeKind,
   ServerActivityPage,
   ServerGrant,
@@ -127,6 +130,36 @@ export interface LoginResponse {
 export interface SessionStatus {
   authenticated: boolean;
   user?: SessionUser;
+  /** True on a fresh gateway where no operator account exists yet. */
+  setupRequired?: boolean;
+  /** True when a first-run backup restore is possible. */
+  restoreSupported?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// v0.6 onboarding, settings & encrypted backups
+// ---------------------------------------------------------------------------
+
+export interface SettingsResponse {
+  settings: GatewaySettingsInfo;
+  account: { username: string; sessionCount: number };
+}
+
+export interface CreateBackupRequest {
+  /** Login password of the requesting operator; derives the backup key. */
+  password: string;
+  includeAudit?: boolean;
+}
+
+export interface RestoreBackupRequest {
+  /** Parsed backup envelope (never re-encrypted by the browser). */
+  backup: unknown;
+  password: string;
+}
+
+export interface DownloadBackupResult {
+  blob: Blob;
+  fileName: string;
 }
 
 export interface SimpleOkResponse {
@@ -636,6 +669,130 @@ export class ApiClient {
       body: JSON.stringify({ currentPassword, newPassword }),
     });
     return { ok: response.ok ?? true };
+  }
+
+  // -- v0.6 first-run setup ------------------------------------------------
+
+  /** Create the first operator account on a fresh gateway (starts a session). */
+  setupAccount(username: string, password: string): Promise<LoginResponse> {
+    return this.request<LoginResponse>('/mcp/v1/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+  }
+
+  /** First-run restore from an encrypted backup (no session required). */
+  async setupRestore(backup: unknown, password: string): Promise<RestoreResult> {
+    const response = await this.request<{ result: RestoreResult }>('/mcp/v1/auth/setup/restore', {
+      method: 'POST',
+      body: JSON.stringify({ backup, password }),
+    });
+    return response.result;
+  }
+
+  // -- v0.6 settings & encrypted backups -----------------------------------
+
+  getSettings(): Promise<SettingsResponse> {
+    return this.request<SettingsResponse>('/mcp/v1/admin/settings');
+  }
+
+  /** Create an encrypted backup (AES-256-GCM, scrypt key from the password). */
+  createBackup(input: CreateBackupRequest): Promise<BackupMetadata> {
+    return this.request<BackupMetadata>('/mcp/v1/admin/backups', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async listBackups(): Promise<BackupMetadata[]> {
+    const response = await this.request<{ backups?: BackupMetadata[] }>('/mcp/v1/admin/backups');
+    return response.backups ?? [];
+  }
+
+  /** Download a backup envelope as a file (blob + suggested filename). */
+  async downloadBackup(id: string): Promise<DownloadBackupResult> {
+    const path = `/mcp/v1/admin/backups/${encodeURIComponent(id)}/download`;
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.timeoutMs);
+    let response: Response;
+    try {
+      const fetchFn = this.fetchImpl ?? globalThis.fetch;
+      if (typeof fetchFn !== 'function') throw new Error('fetch is not available in this environment');
+      response = await fetchFn(`${this.baseUrl}${path}`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { Accept: 'application/octet-stream, application/json' },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (timedOut) {
+        throw new ApiError({
+          status: 0,
+          code: 'TIMEOUT',
+          message: `Backup download timed out after ${this.timeoutMs}ms`,
+        });
+      }
+      throw new ApiError({
+        status: 0,
+        code: 'NETWORK_ERROR',
+        message: error instanceof Error ? error.message : 'Backup download failed',
+        data: error,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!response.ok) {
+      let payload: unknown;
+      try {
+        const raw = await response.text();
+        payload = raw === '' ? null : (JSON.parse(raw) as unknown);
+      } catch {
+        payload = null;
+      }
+      const error = parseApiError(response.status, payload);
+      if (response.status === 401) this.notifyUnauthorized(error);
+      throw error;
+    }
+
+    const headerValue =
+      typeof response.headers?.get === 'function' ? response.headers.get('content-disposition') : null;
+    const match = headerValue === null ? null : /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(headerValue);
+    return {
+      blob: await response.blob(),
+      fileName: match?.[1] ?? `mcp-gateway-backup-${id}.mcpbak`,
+    };
+  }
+
+  async deleteBackup(id: string): Promise<boolean> {
+    const response = await this.request<{ deleted?: boolean }>(
+      `/mcp/v1/admin/backups/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    );
+    return response.deleted ?? false;
+  }
+
+  /** Decrypt and restore a backup (server requires confirm: "RESTORE"). */
+  async restoreBackup(input: RestoreBackupRequest): Promise<RestoreResult> {
+    const response = await this.request<{ result: RestoreResult }>('/mcp/v1/admin/backups/restore', {
+      method: 'POST',
+      body: JSON.stringify({ backup: input.backup, password: input.password, confirm: 'RESTORE' }),
+    }, 120_000);
+    return response.result;
+  }
+
+  /** Fetch a missing server checkout after a restore (staged rebuild). */
+  async reinstallServer(serverId: string): Promise<ServerUpdateResult> {
+    const response = await this.request<{ result: ServerUpdateResult }>(
+      `/mcp/v1/admin/updates/servers/${encodeURIComponent(serverId)}/reinstall`,
+      { method: 'POST', body: JSON.stringify({}) },
+      INSTALL_TIMEOUT_MS,
+    );
+    return response.result;
   }
 
   // -- health & metrics -----------------------------------------------------

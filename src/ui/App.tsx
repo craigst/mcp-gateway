@@ -16,6 +16,8 @@ import { AuditPage } from './pages/Audit.js';
 import { DelegationPage } from './pages/Delegation.js';
 import { PlaygroundPage } from './pages/Playground.js';
 import { ServerInspectorPage } from './pages/ServerInspector.js';
+import { SetupWizard } from './pages/Setup.js';
+import { SettingsPage } from './pages/Settings.js';
 
 const PAGE_KEYS: readonly string[] = [
   'dashboard',
@@ -27,6 +29,7 @@ const PAGE_KEYS: readonly string[] = [
   'audit',
   'delegation',
   'playground',
+  'settings',
 ];
 
 function isPageKey(value: string): value is PageKey {
@@ -59,15 +62,18 @@ function locationFromHash(): HashLocation {
 
 type SessionState =
   | { status: 'loading' }
+  | { status: 'setup'; restoreSupported: boolean }
   | { status: 'anonymous' }
   | { status: 'authenticated'; user: SessionUser };
 
 interface RenderContext {
   catalogTab: CatalogTab;
   serverId: string | null;
+  username: string;
   onCatalogTabChange: (tab: CatalogTab) => void;
   onNavigate: (page: PageKey, options?: { catalogTab?: CatalogTab }) => void;
   onOpenServer: (serverId: string) => void;
+  onReturnToLogin: () => void;
 }
 
 function renderPage(page: PageKey, context: RenderContext) {
@@ -99,6 +105,14 @@ function renderPage(page: PageKey, context: RenderContext) {
       return <VaultPage />;
     case 'audit':
       return <AuditPage onOpenServer={context.onOpenServer} />;
+    case 'settings':
+      return (
+        <SettingsPage
+          username={context.username}
+          onNavigate={context.onNavigate}
+          onReturnToLogin={context.onReturnToLogin}
+        />
+      );
     case 'delegation':
       return <DelegationPage />;
     case 'playground':
@@ -145,7 +159,9 @@ export function App() {
         setSession(
           status.authenticated && status.user !== undefined
             ? { status: 'authenticated', user: status.user }
-            : { status: 'anonymous' },
+            : status.setupRequired === true
+              ? { status: 'setup', restoreSupported: status.restoreSupported === true }
+              : { status: 'anonymous' },
         );
       },
       () => {
@@ -203,6 +219,21 @@ export function App() {
     setSession({ status: 'authenticated', user: result.user });
   }, []);
 
+  const handleSetupComplete = useCallback((user: SessionUser) => {
+    setSession({ status: 'authenticated', user });
+    setPage('dashboard');
+    setServerId(null);
+    if (typeof window !== 'undefined') window.location.hash = '#/';
+  }, []);
+
+  const handleRestoreComplete = useCallback(() => {
+    setSession({ status: 'anonymous' });
+  }, []);
+
+  const returnToLogin = useCallback(() => {
+    setSession({ status: 'anonymous' });
+  }, []);
+
   const handleSignOut = useCallback(async (): Promise<void> => {
     setSigningOut(true);
     try {
@@ -216,6 +247,18 @@ export function App() {
   }, []);
 
   if (session.status === 'loading') return <SessionSplash />;
+
+  if (session.status === 'setup') {
+    return (
+      <ToastProvider>
+        <SetupWizard
+          restoreSupported={session.restoreSupported}
+          onComplete={handleSetupComplete}
+          onRestoreComplete={handleRestoreComplete}
+        />
+      </ToastProvider>
+    );
+  }
 
   if (session.status === 'anonymous') {
     return (
@@ -237,9 +280,11 @@ export function App() {
         {renderPage(page, {
           catalogTab,
           serverId,
+          username: session.user.username,
           onCatalogTabChange: setCatalogTab,
           onNavigate: handleNavigate,
           onOpenServer: openServer,
+          onReturnToLogin: returnToLogin,
         })}
       </Layout>
     </ToastProvider>

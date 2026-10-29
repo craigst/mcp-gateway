@@ -276,15 +276,7 @@ export class DefaultServerUpdateService implements ServerUpdateService {
     if (source === null) {
       throw notFound(`Server '${serverId}' has no tracked update source`, { serverId });
     }
-    const stored = this.repository.getServer(serverId);
-    if (stored === null) throw notFound(`Server '${serverId}' was not found`, { serverId });
-    // Preserve attached config profiles even when the repository mapper does not
-    // surface `configProfileIds` yet (the column is authoritative in SQLite).
-    const server: ServerRecord = {
-      ...stored,
-      configProfileIds: this.readConfigProfileIds(serverId),
-    };
-
+    const server = this.requireLiveServer(serverId);
     const beforeVersion = resolveInstalledVersion(server) ?? source.installedVersion;
     const beforeCommit = source.installedCommit ?? resolveInstalledCommit(server.workDir);
     const wasRunning = this.supervisor.status(serverId) === 'running';
@@ -296,43 +288,130 @@ export class DefaultServerUpdateService implements ServerUpdateService {
     const preferredRef = source.updateAvailable ? source.latestRef : null;
     const effectiveRef = options.ref ?? preferredRef ?? source.requestedRef;
 
+    const context = this.resolveDeployContext(serverId, source, server);
+    const staged = await this.stageUpdate(serverId, server, effectiveRef, context);
+    return this.applyStagedUpdate(serverId, server, source, staged, {
+      effectiveRef,
+      wasRunning,
+      restart,
+      test,
+      beforeVersion,
+      beforeCommit,
+      secrets: context.secrets,
+      allowMissingWorkDir: false,
+    });
+  }
+
+  /**
+   * Re-installs a server from its tracked upstream source.
+   *
+   * Unlike `update`, the current working directory is allowed to be absent (the
+   * typical post-restore state) or unreadable: the checkout is rebuilt from the
+   * tracked repository, then promoted into the recorded work directory.
+   */
+  async reinstall(serverId: string): Promise<ServerUpdateResult> {
+    const source = this.store.get(serverId);
+    if (source === null) {
+      throw notFound(`Server '${serverId}' has no tracked update source`, { serverId });
+    }
+    const server = this.requireLiveServer(serverId);
+    const beforeVersion = resolveInstalledVersion(server) ?? source.installedVersion;
+    const beforeCommit = source.installedCommit ?? resolveInstalledCommit(server.workDir);
+    const wasRunning = this.supervisor.status(serverId) === 'running';
+    const effectiveRef = source.latestRef ?? source.requestedRef;
+
+    const context = this.resolveDeployContext(serverId, source, server);
+    const staged = await this.stageUpdate(serverId, server, effectiveRef, context);
+    return this.applyStagedUpdate(serverId, server, source, staged, {
+      effectiveRef,
+      wasRunning,
+      restart: true,
+      test: true,
+      beforeVersion,
+      beforeCommit,
+      secrets: context.secrets,
+      allowMissingWorkDir: true,
+    });
+  }
+
+  private requireLiveServer(serverId: string): ServerRecord {
+    const stored = this.repository.getServer(serverId);
+    if (stored === null) throw notFound(`Server '${serverId}' was not found`, { serverId });
+    // Preserve attached config profiles even when the repository mapper does not
+    // surface `configProfileIds` yet (the column is authoritative in SQLite).
+    return { ...stored, configProfileIds: this.readConfigProfileIds(serverId) };
+  }
+
+  private resolveDeployContext(
+    serverId: string,
+    source: ServerSourceInfo,
+    server: ServerRecord,
+  ): { token: string | null; secrets: Array<string | null | undefined> } {
     let token: string | null;
     try {
       token = this.resolveToken(source);
     } catch (error) {
       throw this.recordFailureAndScrub(serverId, error, []);
     }
-    const secrets: Array<string | null | undefined> = [token, ...Object.values(server.env ?? {})];
+    return { token, secrets: [token, ...Object.values(server.env ?? {})] };
+  }
 
-    let staged: StagedUpdate;
+  private async stageUpdate(
+    serverId: string,
+    server: ServerRecord,
+    effectiveRef: string | null,
+    context: { token: string | null; secrets: Array<string | null | undefined> },
+  ): Promise<StagedUpdate> {
     try {
-      staged = await stagedUpdateRepository({
+      return await stagedUpdateRepository({
         config: this.config,
         repository: this.repository,
         vault: this.vault,
         server,
         ref: effectiveRef,
         env: server.env,
-        token,
+        token: context.token,
         logger: this.logger,
       });
     } catch (error) {
       // The staged directory has already been cleaned by the engine; the live
       // server and its working directory are untouched.
-      throw this.recordFailureAndScrub(serverId, error, secrets);
+      throw this.recordFailureAndScrub(serverId, error, context.secrets);
     }
+  }
 
-    if (typeof server.workDir !== 'string' || server.workDir.length === 0) {
+  private async applyStagedUpdate(
+    serverId: string,
+    server: ServerRecord,
+    _source: ServerSourceInfo,
+    staged: StagedUpdate,
+    options: {
+      effectiveRef: string | null;
+      wasRunning: boolean;
+      restart: boolean;
+      test: boolean;
+      beforeVersion: string | null;
+      beforeCommit: string | null;
+      secrets: Array<string | null | undefined>;
+      allowMissingWorkDir: boolean;
+    },
+  ): Promise<ServerUpdateResult> {
+    let oldRoot: string;
+    if (typeof server.workDir === 'string' && server.workDir.length > 0) {
+      oldRoot = this.deriveRepoRoot(server.workDir, staged.subpath);
+    } else if (options.allowMissingWorkDir) {
+      // Same location the Git import engine uses for this server name.
+      oldRoot = join(this.config.reposDir, server.name);
+    } else {
       rmSync(staged.repoRoot, { recursive: true, force: true });
       throw invalidParams('Server has no working directory to update', { serverId });
     }
-    const oldRoot = this.deriveRepoRoot(server.workDir, staged.subpath);
     const backupRoot = `${oldRoot}.old-${Date.now()}`;
 
     let backupCreated = false;
     let promoted = false;
     try {
-      if (wasRunning) await this.supervisor.stop(serverId);
+      if (options.wasRunning) await this.supervisor.stop(serverId);
 
       if (existsSync(oldRoot)) {
         renameSync(oldRoot, backupRoot);
@@ -348,7 +427,7 @@ export class DefaultServerUpdateService implements ServerUpdateService {
       const persisted = this.repository.getServer(serverId) ?? updated;
       let record: ServerRecord = { ...persisted, configProfileIds: [...(updated.configProfileIds ?? [])] };
 
-      if (wasRunning || restart) {
+      if (options.wasRunning || options.restart) {
         const started = await this.supervisor.start(serverId);
         record = {
           ...record,
@@ -360,7 +439,7 @@ export class DefaultServerUpdateService implements ServerUpdateService {
       }
 
       let testResult: InstallTestResult | null = null;
-      if (test) testResult = await this.probeTools(serverId, secrets);
+      if (options.test) testResult = await this.probeTools(serverId, options.secrets);
 
       if (backupCreated) rmSync(backupRoot, { recursive: true, force: true });
 
@@ -370,24 +449,34 @@ export class DefaultServerUpdateService implements ServerUpdateService {
         installedVersion: staged.version,
         latestCommit: staged.commit,
         latestVersion: staged.version,
-        latestRef: effectiveRef ?? staged.commit,
+        latestRef: options.effectiveRef ?? staged.commit,
         updateAvailable: false,
         checkedAt,
         checkError: null,
       });
 
-      const changed = beforeVersion !== staged.version || beforeCommit !== staged.commit;
+      const changed =
+        options.beforeVersion !== staged.version || options.beforeCommit !== staged.commit;
       return {
         server: record,
-        before: { version: beforeVersion, commit: beforeCommit },
+        before: { version: options.beforeVersion, commit: options.beforeCommit },
         after: { version: staged.version, commit: staged.commit },
         test: testResult,
         changed,
       };
     } catch (error) {
       // Restore the previous install; the caller sees the scrubbed error.
-      await this.rollback(serverId, server, oldRoot, backupRoot, backupCreated, promoted, wasRunning, secrets);
-      throw this.recordFailureAndScrub(serverId, error, secrets);
+      await this.rollback(
+        serverId,
+        server,
+        oldRoot,
+        backupRoot,
+        backupCreated,
+        promoted,
+        options.wasRunning,
+        options.secrets,
+      );
+      throw this.recordFailureAndScrub(serverId, error, options.secrets);
     }
   }
 

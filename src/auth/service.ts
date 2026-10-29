@@ -9,7 +9,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { GatewayConfig } from '../core/config.js';
-import { invalidKey, invalidParams } from '../core/errors.js';
+import { ErrorCodes, GatewayError, invalidKey, invalidParams } from '../core/errors.js';
 import { newId, nowIso } from '../core/ids.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { UiAuthService, UiSession, UiUser } from '../core/ports.js';
@@ -26,7 +26,27 @@ const DUMMY_PASSWORD = 'timing-equaliser-placeholder-value';
 /** Extend a session's expiry on activity at most once per this window. */
 const SLIDING_WINDOW_MS = 5 * 60 * 1000;
 
-const GENERATED_PASSWORD_BYTES = 18; // -> 24 base64url characters
+/** First-run setup usernames: safe, display-friendly characters only. */
+const SETUP_USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/;
+
+function validateSetupUsername(raw: unknown): string {
+  if (typeof raw !== 'string') throw invalidParams('Username is required.');
+  const username = raw.trim();
+  if (username === '') throw invalidParams('Username is required.');
+  if (!SETUP_USERNAME_PATTERN.test(username)) {
+    throw invalidParams(
+      'Username must start with a letter or digit and may only contain letters, digits, ".", "_", "@" and "-".',
+    );
+  }
+  return username;
+}
+
+function setupAlreadyCompleted(): GatewayError {
+  return new GatewayError(ErrorCodes.ACCESS_DENIED, 'Setup already completed', {
+    data: { status: 'CONFLICT' },
+    httpStatus: 409,
+  });
+}
 
 interface UiUserRow {
   username: string;
@@ -48,10 +68,6 @@ interface UiSessionRow {
 
 function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');
-}
-
-function generatedPassword(): string {
-  return randomBytes(GENERATED_PASSWORD_BYTES).toString('base64url');
 }
 
 export class SqliteUiAuthService implements UiAuthService {
@@ -88,39 +104,56 @@ export class SqliteUiAuthService implements UiAuthService {
     this.db.prepare('DELETE FROM ui_sessions WHERE expires_at <= ?').run(now.toISOString());
   }
 
-  ensureBootstrapUser(): void {
+  hasUsers(): boolean {
     const countRow = this.db
       .prepare('SELECT COUNT(*) AS count FROM ui_users')
       .get() as unknown as { count?: number } | undefined;
-    if (Number(countRow?.count ?? 0) > 0) return;
+    return Number(countRow?.count ?? 0) > 0;
+  }
 
-    const configuredUsername = this.config.uiUsername;
-    const username =
-      typeof configuredUsername === 'string' && configuredUsername.trim() !== ''
-        ? configuredUsername.trim()
-        : 'admin';
+  /**
+   * Create the env-configured bootstrap user only when `uiPassword` is set.
+   * With no configured password the gateway stays in first-run setup mode: no
+   * user is created and no password is generated/logged anywhere.
+   */
+  ensureBootstrapUser(): void {
+    if (this.hasUsers()) return;
+
     const configuredPassword =
       typeof this.config.uiPassword === 'string' && this.config.uiPassword !== ''
         ? this.config.uiPassword
         : null;
-    const isGenerated = configuredPassword === null;
-    const password = configuredPassword ?? generatedPassword();
-    // Throws invalidParams for an explicitly configured password shorter than the minimum.
-    const passwordHash = hashPassword(password);
-    const timestamp = nowIso();
-
-    this.db
-      .prepare(
-        `INSERT INTO ui_users (username, password_hash, created_at, updated_at, last_login_at)
-         VALUES (?, ?, ?, ?, NULL)`,
-      )
-      .run(username, passwordHash, timestamp, timestamp);
-
-    this.logger.info('Web UI bootstrap user created', { username });
-    if (isGenerated) {
-      // Shown exactly once: this is the only moment the plaintext exists.
-      this.logger.warn('generated Web UI password — shown once', { username, password });
+    const username = this.configuredUsername();
+    if (configuredPassword === null) {
+      this.logger.info('Web UI first-run setup required', { username });
+      return;
     }
+
+    // Throws invalidParams for an explicitly configured password shorter than the minimum.
+    const passwordHash = hashPassword(configuredPassword);
+    this.insertUser(username, passwordHash);
+    this.logger.info('Web UI bootstrap user created', { username });
+  }
+
+  setup(username: string, password: string): UiSession {
+    if (this.hasUsers()) throw setupAlreadyCompleted();
+    const normalizedUsername = validateSetupUsername(username);
+    // hashPassword enforces the minimum password length (invalidParams otherwise).
+    const passwordHash = hashPassword(password);
+    this.insertUser(normalizedUsername, passwordHash);
+    this.logger.info('Web UI first-run setup completed', { username: normalizedUsername });
+    return this.createSession(normalizedUsername);
+  }
+
+  verifyUserPassword(username: string, password: string): boolean {
+    const normalizedUsername = typeof username === 'string' ? username.trim() : '';
+    const candidate = typeof password === 'string' ? password : '';
+    const user = normalizedUsername === '' ? null : this.getUser(normalizedUsername);
+
+    // Always derive once so missing users and wrong passwords cost the same.
+    const storedHash = user?.password_hash ?? this.timingEqualiserHash();
+    const matches = verifyPassword(candidate, storedHash);
+    return user !== null && candidate !== '' && matches;
   }
 
   login(username: string, password: string): UiSession {
@@ -136,26 +169,9 @@ export class SqliteUiAuthService implements UiAuthService {
       throw invalidKey('INVALID_CREDENTIALS');
     }
 
-    this.purgeExpiredSessions();
-
-    const now = new Date();
-    const createdAt = now.toISOString();
-    const expiresAt = new Date(now.getTime() + this.ttlMs).toISOString();
-    const token = randomBytes(32).toString('base64url');
-
-    this.db
-      .prepare(
-        `INSERT INTO ui_sessions
-           (id, token_hash, username, created_at, expires_at, last_seen_at, revoked_at)
-         VALUES (?, ?, ?, ?, ?, ?, NULL)`,
-      )
-      .run(newId('sess'), this.tokenHash(token), user.username, createdAt, expiresAt, createdAt);
-    this.db
-      .prepare('UPDATE ui_users SET last_login_at = ? WHERE username = ?')
-      .run(createdAt, user.username);
-
+    const session = this.createSession(user.username);
     this.logger.info('Web UI login succeeded', { username: user.username });
-    return { token, user: { username: user.username }, expiresAt };
+    return session;
   }
 
   authenticate(token: string | null | undefined): UiUser | null {
@@ -239,5 +255,46 @@ export class SqliteUiAuthService implements UiAuthService {
       )
       .get(normalizedUsername, nowIso()) as unknown as { count?: number } | undefined;
     return Number(row?.count ?? 0);
+  }
+
+  // -------------------------------------------------------------------------
+  // Internals
+  // -------------------------------------------------------------------------
+
+  private configuredUsername(): string {
+    const configured = this.config.uiUsername;
+    return typeof configured === 'string' && configured.trim() !== '' ? configured.trim() : 'admin';
+  }
+
+  private insertUser(username: string, passwordHash: string): void {
+    const timestamp = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO ui_users (username, password_hash, created_at, updated_at, last_login_at)
+         VALUES (?, ?, ?, ?, NULL)`,
+      )
+      .run(username, passwordHash, timestamp, timestamp);
+  }
+
+  private createSession(username: string): UiSession {
+    this.purgeExpiredSessions();
+
+    const now = new Date();
+    const createdAt = now.toISOString();
+    const expiresAt = new Date(now.getTime() + this.ttlMs).toISOString();
+    const token = randomBytes(32).toString('base64url');
+
+    this.db
+      .prepare(
+        `INSERT INTO ui_sessions
+           (id, token_hash, username, created_at, expires_at, last_seen_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      )
+      .run(newId('sess'), this.tokenHash(token), username, createdAt, expiresAt, createdAt);
+    this.db
+      .prepare('UPDATE ui_users SET last_login_at = ? WHERE username = ?')
+      .run(createdAt, username);
+
+    return { token, user: { username }, expiresAt };
   }
 }

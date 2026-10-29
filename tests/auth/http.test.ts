@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ErrorCodes } from '../../src/core/errors.js';
+import type { RestoreResult } from '../../src/core/types.js';
 import { AuthApi } from '../../src/auth/http.js';
 import { SqliteUiAuthService } from '../../src/auth/service.js';
 import {
@@ -152,7 +153,11 @@ describe('AuthApi.me', () => {
       headers: { cookie: `mcp_session=${token}` },
     });
     expect(result.res.statusCode).toBe(200);
-    expect(result.json()).toEqual({ authenticated: true, user: { username: TEST_USERNAME } });
+    expect(result.json()).toEqual({
+      authenticated: true,
+      user: { username: TEST_USERNAME },
+      setupRequired: false,
+    });
   });
 
   it('returns 401 without or with an invalid session', async () => {
@@ -274,6 +279,255 @@ describe('AuthApi routing', () => {
       const result = await call('GET', path);
       expect(result.handled).toBe(true);
       expect(result.res.statusCode).toBe(404);
+    }
+  });
+});
+
+describe('AuthApi first-run setup', () => {
+  interface SetupHarness {
+    db: DatabaseSync;
+    uiAuth: SqliteUiAuthService;
+    setupApi: AuthApi;
+    close(): void;
+  }
+
+  const RESTORE_RESULT: RestoreResult = {
+    usersRestored: 1,
+    keysRestored: 2,
+    serversRestored: 3,
+    toolsRestored: 4,
+    profilesRestored: 5,
+    catalogSourcesRestored: 6,
+    secretsRestored: 7,
+    auditEntriesRestored: 8,
+    reinstallRequired: [],
+  };
+
+  function makeSetupHarness(options: {
+    restore?: (input: { backup: unknown; password: string }) => Promise<RestoreResult>;
+  } = {}): SetupHarness {
+    const firstRunDb = makeDb();
+    const config = makeConfig({ uiPassword: null });
+    const firstRunAuth = new SqliteUiAuthService(firstRunDb, config, { logger: silentLogger() });
+    firstRunAuth.ensureBootstrapUser();
+    const setupApi = new AuthApi({
+      uiAuth: firstRunAuth,
+      config,
+      logger: silentLogger(),
+      ...(options.restore ? { setupRestore: options.restore } : {}),
+    });
+    return {
+      db: firstRunDb,
+      uiAuth: firstRunAuth,
+      setupApi,
+      close: () => firstRunDb.close(),
+    };
+  }
+
+  it('reports setupRequired from /me before any user exists (no auth required)', async () => {
+    const harness = makeSetupHarness();
+    try {
+      const result = await call('GET', '/mcp/v1/auth/me', {}, harness.setupApi);
+      expect(result.res.statusCode).toBe(200);
+      expect(result.json()).toEqual({
+        authenticated: false,
+        setupRequired: true,
+        restoreSupported: true,
+      });
+      expect(setCookieHeader(result.res)).toBe('');
+    } finally {
+      harness.close();
+    }
+  });
+
+  it('POST /setup creates the first user, sets a session cookie and returns 201', async () => {
+    const harness = makeSetupHarness();
+    try {
+      const result = await call(
+        'POST',
+        '/mcp/v1/auth/setup',
+        { body: { username: 'owner', password: 'first-run-password' } },
+        harness.setupApi,
+      );
+
+      expect(result.res.statusCode).toBe(201);
+      expect(result.json()).toEqual({
+        user: { username: 'owner' },
+        expiresAt: expect.any(String),
+        setupRequired: false,
+      });
+      const token = tokenFromSetCookie(setCookieHeader(result.res));
+      expect(token).not.toBeNull();
+      expect(setCookieHeader(result.res)).toContain('HttpOnly');
+      expect(harness.uiAuth.hasUsers()).toBe(true);
+      expect(harness.uiAuth.authenticate(token)).toEqual({ username: 'owner' });
+
+      // A second setup attempt is refused with 409 and changes nothing.
+      const duplicate = await call(
+        'POST',
+        '/mcp/v1/auth/setup',
+        { body: { username: 'second', password: 'second-password' } },
+        harness.setupApi,
+      );
+      expect(duplicate.res.statusCode).toBe(409);
+      expect(duplicate.json().error.code).toBe(ErrorCodes.ACCESS_DENIED);
+      expect(duplicate.json().error.message).toBe('Setup already completed');
+      expect(duplicate.json().error.data.status).toBe('CONFLICT');
+
+      // Once a user exists /me requires a session again.
+      const me = await call('GET', '/mcp/v1/auth/me', {}, harness.setupApi);
+      expect(me.res.statusCode).toBe(401);
+    } finally {
+      harness.close();
+    }
+  });
+
+  it('POST /setup validates input', async () => {
+    const harness = makeSetupHarness();
+    try {
+      const cases: unknown[] = [
+        {},
+        { username: 'owner' },
+        { password: 'first-run-password' },
+        { username: '', password: 'first-run-password' },
+        { username: 'bad name', password: 'first-run-password' },
+        { username: 'owner', password: 'short' },
+      ];
+      for (const body of cases) {
+        const result = await call('POST', '/mcp/v1/auth/setup', { body }, harness.setupApi);
+        expect(result.res.statusCode).toBe(400);
+        expect(result.json().error.code).toBe(ErrorCodes.INVALID_PARAMS);
+      }
+      expect(harness.uiAuth.hasUsers()).toBe(false);
+
+      const wrongMethod = await call('GET', '/mcp/v1/auth/setup', {}, harness.setupApi);
+      expect(wrongMethod.res.statusCode).toBe(405);
+    } finally {
+      harness.close();
+    }
+  });
+
+  it('POST /setup/restore returns 503 when no restore backend is wired', async () => {
+    const harness = makeSetupHarness();
+    try {
+      const result = await call(
+        'POST',
+        '/mcp/v1/auth/setup/restore',
+        { body: { backup: { format: 'mcp-gateway-backup' }, password: 'backup-password' } },
+        harness.setupApi,
+      );
+      expect(result.res.statusCode).toBe(503);
+      expect(result.json().error.code).toBe(ErrorCodes.NOT_IMPLEMENTED);
+      expect(setCookieHeader(result.res)).toBe('');
+    } finally {
+      harness.close();
+    }
+  });
+
+  it('POST /setup/restore delegates to the injected callback on first run', async () => {
+    const calls: Array<{ backup: unknown; password: string }> = [];
+    const harness = makeSetupHarness({
+      restore: async (input) => {
+        calls.push(input);
+        return RESTORE_RESULT;
+      },
+    });
+    try {
+      const backup = { format: 'mcp-gateway-backup', version: 1, payload: 'ciphertext' };
+      const result = await call(
+        'POST',
+        '/mcp/v1/auth/setup/restore',
+        { body: { backup, password: 'backup-password' } },
+        harness.setupApi,
+      );
+
+      expect(result.res.statusCode).toBe(200);
+      expect(result.json()).toEqual({ result: RESTORE_RESULT });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toEqual({ backup, password: 'backup-password' });
+      // Restore never issues a session; restored users log in afterwards.
+      expect(setCookieHeader(result.res)).toBe('');
+    } finally {
+      harness.close();
+    }
+  });
+
+  it('POST /setup/restore also accepts a base64 backup string', async () => {
+    const calls: Array<{ backup: unknown; password: string }> = [];
+    const harness = makeSetupHarness({
+      restore: async (input) => {
+        calls.push(input);
+        return RESTORE_RESULT;
+      },
+    });
+    try {
+      const backup = Buffer.from('ciphertext-blob').toString('base64');
+      const result = await call(
+        'POST',
+        '/mcp/v1/auth/setup/restore',
+        { body: { backup, password: 'backup-password' } },
+        harness.setupApi,
+      );
+      expect(result.res.statusCode).toBe(200);
+      expect(calls[0]?.backup).toBe(backup);
+    } finally {
+      harness.close();
+    }
+  });
+
+  it('POST /setup/restore is refused with 409 once users exist', async () => {
+    let called = false;
+    const restore = async (): Promise<RestoreResult> => {
+      called = true;
+      return RESTORE_RESULT;
+    };
+    const withUsersApi = new AuthApi({
+      uiAuth,
+      config: makeConfig(),
+      logger: silentLogger(),
+      setupRestore: restore,
+    });
+    const result = await call(
+      'POST',
+      '/mcp/v1/auth/setup/restore',
+      { body: { backup: {}, password: 'backup-password' } },
+      withUsersApi,
+    );
+    expect(result.res.statusCode).toBe(409);
+    expect(result.json().error.message).toBe('Setup already completed');
+    expect(called).toBe(false);
+  });
+
+  it('POST /setup/restore validates its body', async () => {
+    const harness = makeSetupHarness({ restore: async () => RESTORE_RESULT });
+    try {
+      const cases: unknown[] = [
+        {},
+        { backup: {} },
+        { backup: 42, password: 'backup-password' },
+        { backup: [], password: 'backup-password' },
+        { backup: {}, password: '' },
+        { backup: {}, password: 123 },
+      ];
+      for (const body of cases) {
+        const result = await call(
+          'POST',
+          '/mcp/v1/auth/setup/restore',
+          { body },
+          harness.setupApi,
+        );
+        expect(result.res.statusCode).toBe(400);
+        expect(result.json().error.code).toBe(ErrorCodes.INVALID_PARAMS);
+      }
+      const wrongMethod = await call(
+        'GET',
+        '/mcp/v1/auth/setup/restore',
+        {},
+        harness.setupApi,
+      );
+      expect(wrongMethod.res.statusCode).toBe(405);
+    } finally {
+      harness.close();
     }
   });
 });

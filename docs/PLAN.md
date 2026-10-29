@@ -301,3 +301,17 @@ Major upgrade delivering private-catalog import and approval-gated credential ac
 | Audit | Server attribution on failed/unknown/denied tool calls (previously only successful calls carried a server id); per-server stats/keys-used aggregates; every credential reveal written to the audit log (`admin.reveal`) with the value never logged. |
 | UI | `#/server/<id>` route, five inspector tabs, audit page failed/denied presets and server links. |
 | Tests | 733 tests / 72 files, including an HTTP v0.5 e2e for prompts/resources proxying, inspector composition, audited reveal and ok/error/denied activity. |
+
+
+---
+
+## v0.6 upgrade (shipped)
+
+| Area | Delivered |
+|---|---|
+| First-run onboarding | No env password required: fresh gateways start in setup mode; the Web UI wizard creates the operator account, offers an optional master API key (shown once) and supports restoring an existing backup. `MCP_UI_PASSWORD` remains as a backwards-compatible pre-seeded account. `GET /auth/me` exposes setup state; `POST /auth/setup` / `/auth/setup/restore`. |
+| Settings | New Settings page: account + change password, read-only runtime configuration (`GET /admin/settings`), quick API-key creation, and backups. |
+| Encrypted backups | `BackupService` snapshots accounts (hashes), API keys (hashes), servers/tools, catalog sources, configuration profiles, escalations/delegations, settings, optional audit and every vault secret; gzip JSON encrypted with scrypt (N=16384) + AES-256-GCM using the operator's account password. Local files 0600 under `data/backups`, list/download/delete, and transactional restore (fresh-gateway or admin) that re-encrypts vault secrets locally, clears sessions and reports `reinstallRequired`. |
+| Reinstall | A restored server whose checkout was not backed up can be rebuilt from its tracked source and restarted/probed (`POST /admin/updates/servers/:id/reinstall`). |
+| UI | Setup wizard (create/restore + optional API key), Settings page (account/system/keys/backups, create+auto-download, restore with reinstall actions), session-safe redirects. |
+| Tests | 800 tests / 81 files, including a full HTTP e2e: fresh setup → populated state → encrypted backup → restore into a second fresh gateway with the same password → login with restored credentials → reinstall. |

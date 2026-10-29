@@ -8,6 +8,7 @@ import type {
   CatalogRepository,
   CatalogService,
   DelegationService,
+  BackupService,
   ConfigProfileService,
   EscalationService,
   GitImportService,
@@ -46,6 +47,10 @@ import { ConfigProfilesApi } from './admin/config-profiles-api.js';
 import { DefaultServerUpdateService } from './updates/index.js';
 import { UpdatesApi } from './admin/updates-api.js';
 import { ServerInspectorService } from './inspector/index.js';
+import { SettingsApi } from './admin/settings-api.js';
+import { DefaultBackupService } from './backup/index.js';
+import { BackupApi } from './admin/backup-api.js';
+import { invalidParams } from './core/errors.js';
 import { InspectorApi } from './admin/inspector-api.js';
 
 export interface GatewayServices {
@@ -62,6 +67,7 @@ export interface GatewayServices {
   configProfiles: ConfigProfileService;
   updates: ServerUpdateService;
   inspector: ServerInspectorService;
+  backup: BackupService;
   router: JsonRpcRouter;
   admin: AdminApi;
 }
@@ -98,12 +104,36 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
   const policy = new RbacPolicyEngine({ logger: createLogger('policy', config.logLevel) });
   const uiAuth = new SqliteUiAuthService(db, config, { logger: createLogger('auth', config.logLevel) });
   uiAuth.ensureBootstrapUser();
-  const authApi = new AuthApi({ uiAuth, config, logger });
   const authenticate = (req: import('node:http').IncomingMessage) => authenticateRequest(req, keys, uiAuth);
+  const settingsApi = new SettingsApi({ config, keys, db, auth: uiAuth, authenticate, logger });
   const catalog = new DefaultCatalogService(repository, policy);
   const escalations = new SqliteEscalationService(db, { logger });
   const vault = new SqliteVaultService(db, config.vaultSecret, { logger });
   const git = new GitImportServiceImpl({ config, repository, vault, logger });
+
+  // v0.6: password-encrypted backups + first-run restore.
+  const backup = new DefaultBackupService({ db, config, vault, logger });
+  const parseBackupEnvelope = (raw: unknown): import('./core/types.js').BackupEnvelope => {
+    if (typeof raw === 'string') {
+      const text = raw.trim();
+      try {
+        const decoded = Buffer.from(text, 'base64').toString('utf8');
+        return JSON.parse(decoded) as import('./core/types.js').BackupEnvelope;
+      } catch {
+        return JSON.parse(text) as import('./core/types.js').BackupEnvelope;
+      }
+    }
+    if (raw !== null && typeof raw === 'object') return raw as import('./core/types.js').BackupEnvelope;
+    throw invalidParams('backup must be an envelope object or base64 string');
+  };
+  const authApi = new AuthApi({
+    uiAuth,
+    config,
+    logger,
+    setupRestore: async ({ backup: raw, password }) =>
+      backup.restoreFirstRun({ envelope: parseBackupEnvelope(raw), password }),
+  });
+  const backupApi = new BackupApi({ config, keys, auth: uiAuth, backup, authenticate, logger });
   const delegation = new DefaultDelegationService({
     db,
     config,
@@ -234,6 +264,8 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     configProfilesApi,
     updatesApi,
     inspectorApi,
+    settingsApi,
+    backupApi,
     logger,
   });
   const server = new GatewayHttpServer({ config, router, admin, keys, uiAuth, authApi, supervisor, audit, logger });
@@ -258,6 +290,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     configProfiles,
     updates,
     inspector,
+    backup,
     router,
     admin,
   };

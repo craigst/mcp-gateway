@@ -107,6 +107,7 @@ export interface MockResponse {
   writableEnded: boolean;
   headers: Record<string, string | number | string[]>;
   payload: string;
+  writeHead(status: number, headers?: Record<string, string | number | string[]>): void;
   setHeader(name: string, value: string | number | string[]): void;
   getHeader(name: string): string | number | string[] | undefined;
   end(chunk?: string | Buffer): void;
@@ -121,6 +122,12 @@ export function mockResponse(): MockResponse {
     writableEnded: false,
     headers: {},
     payload: '',
+    writeHead(status, headers = {}) {
+      response.statusCode = status;
+      for (const [name, value] of Object.entries(headers)) {
+        response.headers[name.toLowerCase()] = value;
+      }
+    },
     setHeader(name, value) {
       response.headers[name.toLowerCase()] = value;
     },

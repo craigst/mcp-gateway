@@ -13,6 +13,8 @@
  */
 import type {
   ApiKeyRecord,
+  BackupEnvelope,
+  BackupMetadata,
   AuthenticatedKey,
   AuditEntry,
   AuditStatus,
@@ -25,6 +27,7 @@ import type {
   ConfigProfileInput,
   ConfigProfileSummary,
   CreateKeyInput,
+  GatewaySettingsInfo,
   DelegationResult,
   DelegationTarget,
   EscalationStatus,
@@ -39,6 +42,7 @@ import type {
   PromptDescriptor,
   ResourceDescriptor,
   ServerRecord,
+  RestoreResult,
   ServerSourceInfo,
   ServerStatus,
   ServerUpdateResult,
@@ -448,8 +452,14 @@ export interface UiPrincipal extends UiUser {
 }
 
 export interface UiAuthService {
-  /** Creates/updates the configured bootstrap user if the table is empty. */
+  /** Creates the configured bootstrap user when the table is empty and a password was configured. */
   ensureBootstrapUser(): void;
+  /** True when no Web UI user exists yet (first-run setup required). */
+  hasUsers(): boolean;
+  /** Create the FIRST user (only when none exists) and return a session. */
+  setup(username: string, password: string): UiSession;
+  /** Verify an existing user's password (used to derive backup keys). */
+  verifyUserPassword(username: string, password: string): boolean;
   /** Verify credentials and create a session. Throws on invalid credentials. */
   login(username: string, password: string): UiSession;
   /** Resolve a raw session token to a user (sliding expiry); null when invalid. */
@@ -518,4 +528,30 @@ export interface ConfigProfileService extends ConfigProfileResolver {
    * server, then clear the envFile path. Values never touch SQLite in plaintext.
    */
   migrateEnvFile(serverId: string, name?: string): Promise<ConfigProfileSummary>;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.6 — password-encrypted backups
+// ---------------------------------------------------------------------------
+
+export interface BackupCreateOptions {
+  /** Login password of the requesting operator; derives the backup key. */
+  password: string;
+  includeAudit?: boolean;
+}
+
+export interface BackupService {
+  create(options: BackupCreateOptions): BackupMetadata;
+  list(): BackupMetadata[];
+  read(id: string): { metadata: BackupMetadata; envelope: BackupEnvelope };
+  remove(id: string): void;
+  /** Decrypt and apply a backup. `confirm` must equal "RESTORE". */
+  restore(input: { envelope: BackupEnvelope; password: string; confirm: string }): RestoreResult;
+  /** First-run restore: allowed only when no UI users exist. */
+  restoreFirstRun(input: { envelope: BackupEnvelope; password: string }): RestoreResult;
+}
+
+export interface GatewaySettingsService {
+  info(): GatewaySettingsInfo;
 }
