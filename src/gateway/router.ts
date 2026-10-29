@@ -6,6 +6,7 @@ import type {
   ApprovalService,
   AuditService,
   CatalogService,
+  ComputerUseService,
   DelegationService,
   EscalationService,
   KeyService,
@@ -34,11 +35,13 @@ export interface RouterDeps {
   audit: AuditService;
   /** Optional tool-approval gating (v0.2). */
   approvals?: ApprovalService;
+  /** Optional computer-use availability gate (v0.9). */
+  computerUse?: ComputerUseService;
   logger?: Logger;
 }
 
 const PROTOCOL_VERSION = '2025-06-18';
-const GATEWAY_VERSION = '0.8.0';
+const GATEWAY_VERSION = '0.9.0';
 
 /**
  * JSON-RPC method dispatch. Authorization, audit recording and escalation
@@ -153,6 +156,29 @@ export class JsonRpcRouter {
           const decision = this.deps.policy.evaluateCall(key, tool, args);
           if (!decision.allowed) {
             throw await this.deny(ctx, tool, decision);
+          }
+
+          // v0.9: operator availability for computer use. A paused computer
+          // refuses the call outright, before approvals or upstream dispatch —
+          // a queued click would land on whatever is under it later.
+          const computerUse = this.deps.computerUse?.checkCall(tool, args);
+          if (computerUse && !computerUse.allowed) {
+            throw new GatewayError(
+              ErrorCodes.ACCESS_DENIED,
+              computerUse.message ?? 'Computer use is currently unavailable.',
+              {
+                data: {
+                  status: 'COMPUTER_UNAVAILABLE',
+                  reason: computerUse.reason ?? 'COMPUTER_USE_PAUSED',
+                  tool_id: tool.id,
+                  server_id: tool.serverId,
+                  details: {
+                    computer_id: computerUse.computerId ?? null,
+                    resume_at: computerUse.until ?? null,
+                  },
+                },
+              },
+            );
           }
 
           const approvals = this.deps.approvals;

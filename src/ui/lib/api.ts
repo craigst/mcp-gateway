@@ -14,6 +14,12 @@ import type {
   CatalogInstallResult,
   CatalogSource,
   CatalogSourceKind,
+  ComputerUseActivityResponse,
+  ComputerUseAvailabilityInput,
+  ComputerUseComputerInfo,
+  ComputerUseComputersResponse,
+  ComputerUseOverview,
+  ComputerUseSettingsInput,
   ConfigProfileApplyResult,
   ConfigProfileInput,
   ConfigProfileSummary,
@@ -1326,6 +1332,79 @@ export class ApiClient {
       { method: 'POST', body: JSON.stringify(input) },
     );
     return response.reveal;
+  }
+
+  // -- v0.9 computer use (Computer Broker) ----------------------------------
+
+  /** Settings, broker health, availability, managed server and tool policy. */
+  getComputerUseOverview(): Promise<ComputerUseOverview> {
+    return this.request<ComputerUseOverview>('/mcp/v1/admin/computer-use');
+  }
+
+  /** Broker fleet snapshot: per-computer state, connector, control and availability. */
+  listComputerUseComputers(): Promise<ComputerUseComputersResponse> {
+    return this.request<ComputerUseComputersResponse>('/mcp/v1/admin/computer-use/computers');
+  }
+
+  /** Persist broker connection settings; the token is write-only. */
+  updateComputerUseSettings(input: ComputerUseSettingsInput): Promise<ComputerUseOverview> {
+    return this.request<ComputerUseOverview>('/mcp/v1/admin/computer-use/settings', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Pause/resume agent computer use globally or for a single computer. */
+  setComputerUseAvailability(input: ComputerUseAvailabilityInput): Promise<ComputerUseOverview> {
+    return this.request<ComputerUseOverview>('/mcp/v1/admin/computer-use/availability', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Reconnect to the broker, re-register the managed server and refresh its tools. */
+  syncComputerUse(): Promise<ComputerUseOverview> {
+    return this.request<ComputerUseOverview>(
+      '/mcp/v1/admin/computer-use/sync',
+      { method: 'POST', body: JSON.stringify({}) },
+      60_000,
+    );
+  }
+
+  private async computerUseComputerAction(
+    computerId: string,
+    action: 'start' | 'stop',
+  ): Promise<ComputerUseComputerInfo> {
+    const response = await this.request<{ computer: ComputerUseComputerInfo }>(
+      `/mcp/v1/admin/computer-use/computers/${encodeURIComponent(computerId)}/${action}`,
+      { method: 'POST', body: JSON.stringify({}) },
+      60_000,
+    );
+    return response.computer;
+  }
+
+  startComputerUseComputer(computerId: string): Promise<ComputerUseComputerInfo> {
+    return this.computerUseComputerAction(computerId, 'start');
+  }
+
+  stopComputerUseComputer(computerId: string): Promise<ComputerUseComputerInfo> {
+    return this.computerUseComputerAction(computerId, 'stop');
+  }
+
+  /**
+   * Same-origin JPEG frame URL for an `<img src>`. Returns a relative (or
+   * base-prefixed) URL; append a cache-buster timer to force a refresh.
+   */
+  computerUseFrameUrl(computerId: string, maxWidth = 480): string {
+    return `${this.baseUrl}/mcp/v1/admin/computer-use/computers/${encodeURIComponent(computerId)}/frame${buildQuery({ maxWidth })}`;
+  }
+
+  /** Recent audit rows for the managed computer-use server. */
+  async getComputerUseActivity(limit = 50): Promise<AuditEntry[]> {
+    const response = await this.request<ComputerUseActivityResponse>(
+      `/mcp/v1/admin/computer-use/activity${buildQuery({ limit })}`,
+    );
+    return response.activity ?? [];
   }
 
   // -- vault ----------------------------------------------------------------

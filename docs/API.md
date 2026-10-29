@@ -1,4 +1,4 @@
-# Gateway API Contract (v0.8.0)
+# Gateway API Contract (v0.9.0)
 
 All JSON bodies are `application/json`. Auth is `Authorization: Bearer <key>` unless noted.
 Admin routes require a **master** key, except audit, delegations, escalations and tools which
@@ -37,7 +37,7 @@ Accepts a single request or a batch (max 20). `id` is echoed verbatim. Notificat
 // result
 {
   "protocolVersion": "2025-06-18",
-  "serverInfo": { "name": "mcp-gateway", "version": "0.8.0" },
+  "serverInfo": { "name": "mcp-gateway", "version": "0.9.0" },
   "capabilities": { "tools": { "listChanged": true }, "logging": {} },
   "_meta": { "gateway": { "key_id": "key_...", "key_type": "agent", "delegation_max_depth": 3 } }
 }
@@ -109,7 +109,7 @@ Depth > `MCP_DELEGATION_MAX_DEPTH` → `-32003`.
 
 | Route | Auth | Response |
 |---|---|---|
-| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.8.0", "uptimeMs": 1234 }` |
+| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.9.0", "uptimeMs": 1234 }` |
 | `GET /mcp/v1/metrics` | any key | `MetricsSnapshot` (see `src/core/ports.ts`) |
 
 ## 3. Admin API
@@ -186,6 +186,77 @@ On invalid key the socket closes with code `4401`.
 
 ## 5. Web UI routes (SPA, served from `ui/dist`)
 
-`/` overview · `/catalog` · `/rbac` · `/vault` · `/audit` · `/delegation` · `/playground`
+`/` overview · `/catalog` · `/computer-use` · `/rbac` · `/vault` · `/audit` · `/delegation` · `/playground`
 
 Unknown non-API paths fall back to `index.html`.
+
+## 6. Computer use (v0.9)
+
+Admin routes are mounted under `/mcp/v1/admin/computer-use` and are **master-only** (Bearer
+master key or an authenticated console session). The broker bearer token is used server-side
+only: `POST /settings` accepts it write-only, and no response ever returns it. Allowed/error
+responses use the standard envelope above. Response types are declared in the
+`v0.9 — computer use` block of `src/core/types.ts`; the feature guide, availability
+semantics, tool catalogue and runbook are in [`COMPUTER-USE.md`](./COMPUTER-USE.md).
+
+| Method | Route | Body | Result |
+|---|---|---|---|
+| `GET` | `/` | — | `ComputerUseOverview` (settings, broker health, availability, managed server, tools, counts) |
+| `GET` | `/computers` | — | `ComputerUseComputersResponse` (fleet + merged availability + `liveUrl`) |
+| `POST` | `/settings` | `ComputerUseSettingsInput` | `ComputerUseOverview` (persists URL/CA/enabled + write-only token, restarts the managed server) |
+| `POST` | `/availability` | `ComputerUseAvailabilityInput` | `ComputerUseOverview` |
+| `POST` | `/sync` | — | `ComputerUseOverview` (reconnect, re-register, refresh tools) |
+| `POST` | `/computers/:id/start` | — | `{ "computer": ComputerUseComputerInfo }` |
+| `POST` | `/computers/:id/stop` | — | `{ "computer": ComputerUseComputerInfo }` |
+| `GET` | `/computers/:id/frame?maxWidth=480` | — | image bytes (`content-type` from broker, `cache-control: private, no-store`, `x-frame-time`); `maxWidth` clamped 160–1600 |
+| `GET` | `/activity?limit=50` | — | `{ "activity": AuditEntry[] }`; `limit` clamped 1–500 |
+
+### Settings
+
+```jsonc
+POST /mcp/v1/admin/computer-use/settings
+{ "brokerUrl": "https://127.0.0.1:7443", "publicBrokerUrl": "https://broker.example.com",
+  "caFile": "/certs/broker-ca.pem", "token": "…", "enabled": true }
+// → 200 ComputerUseOverview; secrets are never echoed:
+//   settings.tokenConfigured / settings.tokenSource ("env" | "vault")
+//   server { id: "srv_computer_use", name: "computer-use", status, toolCount }
+```
+
+`brokerUrl`/`publicBrokerUrl` must be absolute `http(s)` base URLs (no path/query/fragment);
+`caFile` is validated for existence when saved; `token: ""`/`null` clears the **vault** token
+(an env-supplied token cannot be cleared and must be unset on the environment).
+
+### Availability
+
+```jsonc
+// Global pause with auto-resume (ISO `until` must be in the future), or per-computer pause:
+POST /mcp/v1/admin/computer-use/availability
+{ "scope": "global", "available": false, "reason": "INC-1234 maintenance",
+  "until": "2026-10-30T02:00:00.000Z" }
+{ "scope": "computer", "computerId": "cc-1a2b", "available": true }
+// → 200 ComputerUseOverview
+```
+
+A paused computer-use call is refused before approvals/upstream dispatch with
+`-32001 ACCESS_DENIED`, `data: { status: "COMPUTER_UNAVAILABLE", reason:
+"COMPUTER_USE_PAUSED" | "COMPUTER_PAUSED", server_id, tool_id, details: { computer_id,
+resume_at } }` and an audit row with `status: "denied"`. Calls are never queued.
+
+### Fleet, frames and activity
+
+```jsonc
+GET /mcp/v1/admin/computer-use/computers
+// → { broker: ComputerUseBrokerInfo, availability: ComputerUseAvailability,
+//     computers: ComputerUseComputerInfo[] }
+//   ComputerUseComputerInfo includes state, desktop, connector, control lease,
+//   availability and liveUrl ( <publicBrokerUrl>/#/d/<computerId> ).
+
+GET /mcp/v1/admin/computer-use/computers/cc-1a2b/frame?maxWidth=480
+// → 200 image/jpeg — proxied server-side; no broker credential reaches the browser.
+
+POST /mcp/v1/admin/computer-use/sync
+// → 200 ComputerUseOverview
+
+GET /mcp/v1/admin/computer-use/activity?limit=50
+// → { "activity": AuditEntry[] }
+```

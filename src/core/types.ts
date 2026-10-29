@@ -185,7 +185,9 @@ export type PolicyDenialReason =
   | 'KEY_EXPIRED'
   | 'KEY_PAUSED'
   | 'SERVER_PAUSED'
-  | 'TOOL_PAUSED';
+  | 'TOOL_PAUSED'
+  | 'COMPUTER_USE_PAUSED'
+  | 'COMPUTER_PAUSED';
 
 export interface AuthorizationDecision {
   allowed: boolean;
@@ -918,4 +920,165 @@ export interface KeyActivityPage {
 export interface KeyAccessView {
   key: KeySummary;
   grants: KeyGrantView[];
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.9 — computer use (Computer Broker integration)
+// ---------------------------------------------------------------------------
+
+/**
+ * Operator-controlled availability for agent computer use.
+ *
+ * Availability is *operational* state, not a grant: a paused computer stays
+ * visible to a permitted key, and every call is refused with a structured
+ * `COMPUTER_USE_PAUSED` reason (never queued). A pause with `until` in the
+ * future auto-resumes on read; an expired pause is not a pause.
+ */
+export interface ComputerUseAvailability {
+  available: boolean;
+  /** `paused` is the stored state; `available` accounts for expiry. */
+  state: 'available' | 'paused';
+  reason: string | null;
+  /** ISO timestamp when the pause auto-resumes, or null for open-ended. */
+  until: string | null;
+  updatedAt: string | null;
+  /** Operator or API-key name that last changed availability. */
+  updatedBy: string | null;
+}
+
+export interface ComputerUseComputerAvailability extends ComputerUseAvailability {
+  computerId: string;
+}
+
+/** Connection configuration reported to the console (never secret values). */
+export interface ComputerUseSettingsInfo {
+  /** Server-side broker base URL used by the gateway (e.g. https://127.0.0.1:7443). */
+  brokerUrl: string | null;
+  /** Browser-facing broker base URL used for "open live desktop" links. */
+  publicBrokerUrl: string | null;
+  /** Optional CA bundle path for the broker's self-signed certificate. */
+  caFile: string | null;
+  tokenConfigured: boolean;
+  tokenSource: 'env' | 'vault' | null;
+  /** Whether the managed `computer-use` MCP server is registered/started. */
+  enabled: boolean;
+  updatedAt: string | null;
+}
+
+export interface ComputerUseSettingsInput {
+  brokerUrl?: string | null;
+  publicBrokerUrl?: string | null;
+  caFile?: string | null;
+  /** Write-only bearer token; empty string / null clears the stored vault token. */
+  token?: string | null;
+  enabled?: boolean;
+}
+
+export interface ComputerUseBrokerInfo {
+  configured: boolean;
+  reachable: boolean;
+  url: string | null;
+  version: string | null;
+  tls: boolean;
+  computers: number | null;
+  devices: number | null;
+  connectorsOnline: number | null;
+  checkedAt: string | null;
+  error: string | null;
+}
+
+export interface ComputerUseManagedServerInfo {
+  id: string | null;
+  name: string;
+  status: ServerStatus | 'absent';
+  toolCount: number;
+  lastError: string | null;
+}
+
+export interface ComputerUseToolInfo {
+  name: string;
+  description: string;
+  highPrivilege: boolean;
+  approvalRequired: boolean;
+  readOnly: boolean;
+}
+
+export interface ComputerUseCounts {
+  computers: number;
+  available: number;
+  paused: number;
+  ready: number;
+  connectorsOnline: number;
+}
+
+export interface ComputerUseOverview {
+  settings: ComputerUseSettingsInfo;
+  broker: ComputerUseBrokerInfo;
+  availability: ComputerUseAvailability;
+  server: ComputerUseManagedServerInfo;
+  tools: ComputerUseToolInfo[];
+  counts: ComputerUseCounts;
+}
+
+export interface ComputerUseDesktopInfo {
+  viewer: string;
+  width: number | null;
+  height: number | null;
+}
+
+export interface ComputerUseConnectorInfo {
+  state: string;
+  version: string | null;
+  lastSeen: string | null;
+}
+
+export interface ComputerUseControlInfo {
+  held: boolean;
+  holder: string | null;
+  heldSince: string | null;
+  expiresAt: string | null;
+}
+
+export interface ComputerUseComputerInfo {
+  id: string;
+  name: string;
+  template: string;
+  provider: string;
+  state: string;
+  viewer: string;
+  error: string | null;
+  createdAt: string | null;
+  ttlAt: string | null;
+  desktop: ComputerUseDesktopInfo;
+  connector: ComputerUseConnectorInfo | null;
+  control: ComputerUseControlInfo;
+  availability: ComputerUseAvailability;
+  /** Link to the broker's own live desktop UI, when a public URL is configured. */
+  liveUrl: string | null;
+}
+
+export interface ComputerUseComputersResponse {
+  broker: ComputerUseBrokerInfo;
+  availability: ComputerUseAvailability;
+  computers: ComputerUseComputerInfo[];
+}
+
+export type ComputerUseAvailabilityInput =
+  | {
+      scope: 'global';
+      available: boolean;
+      reason?: string | null;
+      until?: string | null;
+    }
+  | {
+      scope: 'computer';
+      computerId: string;
+      available: boolean;
+      reason?: string | null;
+      until?: string | null;
+    };
+
+export interface ComputerUseActivityResponse {
+  activity: AuditEntry[];
 }

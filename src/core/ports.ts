@@ -33,6 +33,11 @@ import type {
   ConfigProfileApplyResult,
   ConfigProfileInput,
   ConfigProfileSummary,
+  ComputerUseAvailabilityInput,
+  ComputerUseComputerInfo,
+  ComputerUseComputersResponse,
+  ComputerUseOverview,
+  ComputerUseSettingsInput,
   CreateKeyInput,
   GatewaySettingsInfo,
   DelegationResult,
@@ -614,4 +619,89 @@ export interface KeyActivityService {
   access(keyId: string): KeyAccessView;
   /** Audit activity and usage stats for one key. */
   activity(keyId: string, filter?: KeyActivityFilter): KeyActivityPage;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.9 — computer use (Computer Broker integration)
+// ---------------------------------------------------------------------------
+
+export interface ComputerUseBrokerHealth {
+  ok: boolean;
+  version: string | null;
+  computers: number | null;
+  devices: number | null;
+  connectorsOnline: number | null;
+  tls: boolean;
+}
+
+/** One broker computer, normalised from the broker's loose JSON snapshot. */
+export interface BrokerComputerSnapshot {
+  id: string;
+  name: string;
+  template: string;
+  provider: string;
+  state: string;
+  viewer: string;
+  error: string | null;
+  createdAt: string | null;
+  ttlAt: string | null;
+  desktop: { viewer: string; width: number | null; height: number | null };
+  connector: { state: string; version: string | null; lastSeen: string | null } | null;
+  control: { held: boolean; holder: string | null; heldSince: string | null; expiresAt: string | null };
+}
+
+export interface ComputerUseFrameResult {
+  data: Buffer;
+  contentType: string;
+  frameTime: string | null;
+}
+
+/**
+ * Server-side client for one Computer Broker. Only the broker's documented
+ * HTTP surface is used; the token never leaves the gateway process.
+ */
+export interface ComputerUseBrokerPort {
+  readonly baseUrl: string;
+  health(): Promise<ComputerUseBrokerHealth>;
+  listComputers(): Promise<BrokerComputerSnapshot[]>;
+  getComputer(computerId: string): Promise<BrokerComputerSnapshot>;
+  startComputer(computerId: string): Promise<BrokerComputerSnapshot>;
+  stopComputer(computerId: string): Promise<BrokerComputerSnapshot>;
+  frame(computerId: string, maxWidth: number): Promise<ComputerUseFrameResult>;
+  /** JSON-RPC request against the broker's MCP endpoint (`POST /mcp`). */
+  rpc(method: string, params?: unknown, timeoutMs?: number): Promise<unknown>;
+}
+
+/** Availability verdict enforced by the router before any computer-use call. */
+export interface ComputerUseCallDecision {
+  allowed: boolean;
+  reason?: 'COMPUTER_USE_PAUSED' | 'COMPUTER_PAUSED';
+  message?: string;
+  computerId?: string | null;
+  until?: string | null;
+}
+
+export interface ComputerUseService {
+  /** Managed MCP server id (null until the broker is configured). */
+  readonly serverId: string | null;
+  readonly managedServerName: string;
+  /** Ensure the managed server exists; start it when configured + enabled. */
+  initialize(): Promise<void>;
+  /** Reconfigure the broker client, re-register the server and refresh tools. */
+  sync(): Promise<ComputerUseOverview>;
+  overview(): Promise<ComputerUseOverview>;
+  listComputers(): Promise<ComputerUseComputersResponse>;
+  updateSettings(input: ComputerUseSettingsInput): Promise<ComputerUseOverview>;
+  setAvailability(input: ComputerUseAvailabilityInput, updatedBy?: string): Promise<ComputerUseOverview>;
+  startComputer(computerId: string): Promise<ComputerUseComputerInfo>;
+  stopComputer(computerId: string): Promise<ComputerUseComputerInfo>;
+  frame(computerId: string, maxWidth: number): Promise<ComputerUseFrameResult>;
+  /** Recent audit rows for the managed computer-use server. */
+  activity(limit: number): Promise<AuditEntry[]>;
+  /** Router gate: refusal is returned, never thrown (the router owns audit). */
+  checkCall(tool: ToolDescriptor, args: Record<string, unknown>): ComputerUseCallDecision;
+  /** Built-in MCP client factory for the supervisor (null for other servers). */
+  createClient(serverId: string): McpClient | null;
+  dispose(): Promise<void>;
 }

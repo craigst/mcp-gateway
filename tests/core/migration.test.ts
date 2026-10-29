@@ -28,7 +28,7 @@ describe('schema migration', () => {
     const db = openDatabase(tempDbPath());
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(6);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(7);
 
     expect(columnNames(db, 'servers')).toEqual(
       expect.arrayContaining([
@@ -107,7 +107,7 @@ describe('schema migration', () => {
     migrate(db);
 
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(version.user_version).toBe(6);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
     expect(columnNames(db, 'servers')).toEqual(
       expect.arrayContaining([
         'env_file',
@@ -169,7 +169,7 @@ describe('schema migration', () => {
     migrate(db);
 
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(version.user_version).toBe(6);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
     expect(columnNames(db, 'servers')).toEqual(expect.arrayContaining(['config_profile_ids']));
     const row = db.prepare('SELECT config_profile_ids FROM servers WHERE id = ?').get('srv_v3') as {
       config_profile_ids: string;
@@ -207,7 +207,7 @@ describe('schema migration', () => {
     migrate(db);
 
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(version.user_version).toBe(6);
+    expect(version.user_version).toBe(SCHEMA_VERSION);
     expect(columnNames(db, 'api_keys')).toEqual(expect.arrayContaining(['paused_at']));
     const row = db.prepare('SELECT * FROM api_keys WHERE id = ?').get('key_v5') as Record<string, unknown>;
     expect(row.name).toBe('legacy');

@@ -35,6 +35,7 @@ If not, the tool is invisible — not merely denied.
 | ⚙️ | **Encrypted configuration profiles** | Save credentials/endpoints (IPs, ports, API keys, headers) once **in the AES-256 vault**, reference named secrets, and apply one profile to many MCP servers. No env files — values are decrypted only into the sub-process environment. |
 | 🔬 | **Server inspector** | Open any MCP server: every tool (with schema + live Try), prompts, resources and templates, capabilities/instructions, encrypted configuration with audited reveal, version/update/changelog, and per-server request history — ok, failed **and denied** — with the API key that used it. |
 | 🛡️ | **API key console** | Click any key in RBAC: see **its own activity** (requests, tools/servers used, ok/error/denied, latency), **rename it for the bot it belongs to**, and **pause access** — the whole key, one MCP server, or individual tools — from simple toggles, then resume just as easily. |
+| 🖥️ | **Computer use** | Fronts a self-hosted **Computer Broker** as a managed `computer-use` MCP server: computer list/status/screenshot/windows, click/type/key/scroll/open-app and device exec/files/terminal — with per-key RBAC, audit, approval-gated destructive tools and console pause/resume. |
 | 🔑 | **Vaultwarden as the default password/API manager** | Configure your Vaultwarden server (URL, client id/secret, master password) in the UI — the gateway materialises the connector config securely, browses/reveals items, and can inject API keys into MCP servers by reference. **1Password** (Connect host + API token, or service-account token with the `op` CLI) is a first-class alternative; the built-in AES vault is the fallback. |
 | 🚀 | **First-run onboarding** | A fresh gateway starts in setup mode: the Web UI wizard creates the operator account, offers an optional master API key (shown once) and can restore an existing backup — no env files or manual key bootstrapping needed. |
 | 💾 | **Password-encrypted backups** | One-click backup of the whole gateway — accounts, API keys, servers, profiles, catalog sources and **every vault secret** — encrypted with scrypt + AES-256-GCM using your account password. Restore on any fresh gateway (setup wizard or Settings) with that password; servers whose code was not in the backup get a one-click **Reinstall**. |
@@ -179,6 +180,45 @@ Dangerous Vaultwarden tools are approval-gated: an agent call returns
 `-32004 ESCALATION_REQUIRED`, a human approves it in **Vault Warden**, the gateway executes
 the stored call once and stores the result, and the agent retrieves it with the ticket.
 Deliveries are short-lived `0600` file paths — secret values never enter the model context.
+
+## Computer use
+
+The gateway can front a self-hosted **Computer Broker** — the external service that runs
+virtual desktops and device connectors — as a managed built-in MCP server named
+`computer-use`. Agents call computer tools through `/mcp/v1` exactly like any other server,
+so per-key RBAC, guardrails, approvals and audit apply unchanged; the broker keeps the
+desktops and talks to the gateway over its own HTTPS MCP endpoint (`/mcp`).
+
+**Configure the broker.** Set `MCP_COMPUTER_BROKER_URL` (server-side URL, e.g.
+`https://127.0.0.1:7443`) and, for a mkcert/self-signed certificate, point
+`MCP_COMPUTER_BROKER_CA` at a PEM CA bundle — in Docker, mount it read-only
+(`./certs/broker-ca.pem:/certs/broker-ca.pem:ro`). The bearer token can come from
+`MCP_COMPUTER_BROKER_TOKEN` (an env token takes precedence over the vault), but the preferred
+path is **Computer Use → Settings** in the console, which stores it in the encrypted vault;
+the token is never written to the server row and never returned by the API. The integration
+only activates once a broker URL and a token resolve; leave the URL unset (or set
+`MCP_COMPUTER_USE_ENABLED=false`) to keep it disabled.
+
+**Manage availability.** The console adds a Computer use page with a fleet view (live frame
+previews and a link to the broker's own live desktop UI) and availability switches: pause
+**all** computer use or a **single computer**, optionally with a reason and an ISO `until`
+auto-resume. Pausing is operational, not RBAC: grants stay intact and a paused computer is
+refused with `-32001 ACCESS_DENIED` (`COMPUTER_USE_PAUSED` / `COMPUTER_PAUSED`), never
+queued; an expired pause is not a pause. Taking or releasing the broker's live-control lease
+stays in the broker UI.
+
+**Tools and privilege.** Read-only tools (`list_templates`, `list_computers`,
+`computer_status`, `computer_screenshot`, `computer_windows`, `list_devices`,
+`device_file_list`, `device_file_read`, `device_terminal_read`) are visible to a granted key.
+Input tools (`computer_click`, `computer_move`, `computer_type`, `computer_key`,
+`computer_scroll`, `computer_open_app`, `create_computer`, `start_computer`,
+`stop_computer`, `device_terminal_open`, `device_terminal_send`, `device_terminal_close`)
+are **high privilege** and hidden unless explicitly granted; `destroy_computer` and
+`device_exec` are high privilege **and approval-required** (`-32004 ESCALATION_REQUIRED`,
+approved in the console). Frames are proxied by the gateway (the broker token never reaches
+the browser) and every call — allowed or refused — is audited.
+
+Full guide: [`docs/COMPUTER-USE.md`](./docs/COMPUTER-USE.md).
 
 ## Run persistently with rootless podman (Linux)
 
@@ -413,7 +453,7 @@ src/
   admin/       REST management API
   ui/          React + Tailwind console (built to ui/dist)
 tests/         unit · integration · e2e · fixtures
-docs/          PLAN.md · API.md · MANIFEST.md · extracted spec
+docs/          PLAN.md · API.md · COMPUTER-USE.md · MANIFEST.md · extracted spec
 ```
 
 ## Testing
@@ -425,7 +465,7 @@ npm run lint           # eslint
 npm run build          # server + UI bundle
 ```
 
-The suite is **916 tests across 95 files**: unit suites per module, an integration suite that
+The suite is **944 tests across 99 files**: unit suites per module, an integration suite that
 boots a real gateway on an ephemeral port and spawns fixture MCP servers, and an end-to-end
 scenario covering vault → git import → catalog → execution → delegation → depth guard → escalation,
 plus jsdom UI tests. CI also builds the Docker image and smoke-tests `/health` inside the container.
@@ -453,7 +493,8 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 | v0.5.0 | Full MCP server inspector (tools/prompts/resources/config/activity), proxied prompts & resources, audited credential reveal, per-server failed/denied request history | ✅ shipped |
 | v0.6.0 | First-run onboarding wizard, in-UI settings, password-encrypted full backups with restore & server reinstall | ✅ shipped |
 | v0.7.0 | Vaultwarden as the default password/API manager, 1Password option, unified Secrets page and password-manager references in configuration profiles | ✅ shipped |
-| **v0.8.0** | **RBAC API-key console: per-key activity, rename for bot references, pause/resume whole keys, MCP servers or individual tools** | ✅ **current** |
+| v0.8.0 | RBAC API-key console: per-key activity, rename for bot references, pause/resume whole keys, MCP servers or individual tools | ✅ shipped |
+| **v0.9.0** | **Computer use: managed `computer-use` MCP server fronting a self-hosted Computer Broker, console fleet view with live frames, global and per-computer availability with reason/auto-resume, approval-gated destructive calls** | ✅ **current** |
 
 ## License
 

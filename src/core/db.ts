@@ -18,7 +18,7 @@ export function openDatabase(dbPath: string): DatabaseSync {
   return db;
 }
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export function migrate(db: DatabaseSync): void {
   db.exec(`
@@ -207,6 +207,33 @@ export function migrate(db: DatabaseSync): void {
       token_secret_name TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    -- v0.9: computer use (Computer Broker integration). One row holds the broker
+    -- connection metadata and the global availability switch; the operator token
+    -- is never stored here (env or the encrypted vault only).
+    CREATE TABLE IF NOT EXISTS computer_use_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      broker_url TEXT,
+      public_broker_url TEXT,
+      ca_file TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      agents_available INTEGER NOT NULL DEFAULT 1,
+      paused_reason TEXT,
+      paused_until TEXT,
+      availability_updated_at TEXT,
+      availability_updated_by TEXT,
+      updated_at TEXT
+    );
+
+    -- v0.9: per-computer availability overrides (absence = available).
+    CREATE TABLE IF NOT EXISTS computer_use_availability (
+      computer_id TEXT PRIMARY KEY,
+      available INTEGER NOT NULL DEFAULT 1,
+      reason TEXT,
+      until TEXT,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT
     );
   `);
 

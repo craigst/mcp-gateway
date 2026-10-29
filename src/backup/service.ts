@@ -49,7 +49,9 @@ type BackupTable =
   | 'catalog_sources'
   | 'escalations'
   | 'delegation_traces'
-  | 'settings';
+  | 'settings'
+  | 'computer_use_settings'
+  | 'computer_use_availability';
 
 /** FK-safe delete order (children first; audit is conditional). */
 const CLEAR_ORDER: readonly string[] = [
@@ -61,6 +63,8 @@ const CLEAR_ORDER: readonly string[] = [
   'escalations',
   'delegation_traces',
   'settings',
+  'computer_use_availability',
+  'computer_use_settings',
   'ui_sessions',
   'ui_users',
   'api_keys',
@@ -79,6 +83,8 @@ const INSERT_ORDER: readonly BackupTable[] = [
   'escalations',
   'delegation_traces',
   'settings',
+  'computer_use_settings',
+  'computer_use_availability',
 ];
 
 export interface DefaultBackupServiceDeps {
@@ -101,6 +107,8 @@ export interface BackupPayload {
   escalations: SqlRow[];
   delegationTraces: SqlRow[];
   settings: SqlRow[];
+  computerUseSettings: SqlRow[];
+  computerUseAvailability: SqlRow[];
   /** `null` when the backup was created without audit history. */
   audit: SqlRow[] | null;
   vaultSecrets: Array<{ name: string; value: string }>;
@@ -389,6 +397,8 @@ export class DefaultBackupService implements BackupService {
       escalations: tableRows('escalations'),
       delegationTraces: tableRows('delegation_traces'),
       settings: tableRows('settings'),
+      computerUseSettings: tableRows('computer_use_settings'),
+      computerUseAvailability: tableRows('computer_use_availability'),
       audit: includeAudit ? tableRows('audit_log') : null,
       vaultSecrets,
     };
@@ -425,6 +435,8 @@ export class DefaultBackupService implements BackupService {
       escalations: asRows(raw.escalations),
       delegationTraces: asRows(raw.delegationTraces),
       settings: asRows(raw.settings),
+      computerUseSettings: asRows(raw.computerUseSettings),
+      computerUseAvailability: asRows(raw.computerUseAvailability),
       audit,
       vaultSecrets,
     };
@@ -519,6 +531,10 @@ function payloadFieldFor(table: BackupTable): keyof BackupPayload {
       return 'delegationTraces';
     case 'settings':
       return 'settings';
+    case 'computer_use_settings':
+      return 'computerUseSettings';
+    case 'computer_use_availability':
+      return 'computerUseAvailability';
     default: {
       const exhaustive: never = table;
       throw new Error(`Unsupported backup table: ${String(exhaustive)}`);

@@ -7,6 +7,7 @@ import { ToastProvider } from './components/Toasts.js';
 import { LoginPage } from './pages/Login.js';
 import { DashboardPage } from './pages/Dashboard.js';
 import { CatalogPage } from './pages/Catalog.js';
+import { ComputerUsePage } from './pages/computer-use/ComputerUsePage.js';
 import { ConfigurationsPage } from './pages/Configurations.js';
 import type { CatalogTab } from './pages/Catalog.js';
 import { SecretsPage } from './pages/secrets/SecretsPage.js';
@@ -22,6 +23,7 @@ import { SettingsPage } from './pages/Settings.js';
 const PAGE_KEYS: readonly string[] = [
   'dashboard',
   'catalog',
+  'computer-use',
   'configurations',
   'secrets',
   'rbac',
@@ -118,6 +120,8 @@ function renderPage(page: PageKey, context: RenderContext) {
       );
     case 'configurations':
       return <ConfigurationsPage onNavigate={context.onNavigate} />;
+    case 'computer-use':
+      return <ComputerUsePage />;
     case 'secrets':
       return <SecretsPage onNavigate={context.onNavigate} />;
     case 'rbac':

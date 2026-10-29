@@ -7,6 +7,8 @@ import type {
   AuditService,
   CatalogRepository,
   CatalogService,
+  ComputerUseBrokerPort,
+  ComputerUseService,
   DelegationService,
   BackupService,
   ConfigProfileService,
@@ -56,6 +58,8 @@ import { DefaultCredentialProviderService } from './credentials/index.js';
 import { CredentialsApi } from './admin/credentials-api.js';
 import { invalidParams } from './core/errors.js';
 import { InspectorApi } from './admin/inspector-api.js';
+import { DefaultComputerUseService } from './computer_use/index.js';
+import { ComputerUseApi } from './admin/computer-use-api.js';
 
 export interface GatewayServices {
   keys: KeyService;
@@ -73,6 +77,8 @@ export interface GatewayServices {
   inspector: ServerInspectorService;
   backup: BackupService;
   credentials: CredentialProviderService;
+  /** v0.9: Computer Broker fronted as the managed `computer-use` MCP server. */
+  computerUse: ComputerUseService;
   router: JsonRpcRouter;
   admin: AdminApi;
 }
@@ -94,6 +100,12 @@ export interface ContainerOptions {
   delegationTargets?: DelegationTarget[];
   /** Override the home directory used for provider files (tests). */
   credentialHomeDir?: string;
+  /** Test seam: replace the Computer Broker HTTP client (no network). */
+  computerUseBrokerFactory?: (input: {
+    baseUrl: string;
+    token: string | null;
+    caFile: string | null;
+  }) => ComputerUseBrokerPort;
 }
 
 /**
@@ -184,11 +196,15 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
   // resolve them lazily through holders.
   const profileHolder: { service: DefaultConfigProfileService | null } = { service: null };
   const credentialHolder: { service: DefaultCredentialProviderService | null } = { service: null };
+  // v0.9: the computer-use service supplies the in-process MCP client for its
+  // managed server; the holder breaks the supervisor <-> service cycle.
+  const computerUseHolder: { service: DefaultComputerUseService | null } = { service: null };
   const supervisor = new DefaultSupervisor({
     repository,
     config,
     vault,
     logger,
+    clientFactory: (record) => computerUseHolder.service?.createClient(record.id) ?? null,
     profileResolver: (serverId) =>
       profileHolder.service?.resolveForServer(serverId) ?? { env: {}, headers: {}, credentialRefs: [] },
     credentialResolver: async (refs) => {
@@ -269,6 +285,27 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
   const catalogApi = new CatalogApi({ config, keys, catalog: pluginCatalog, logger, authenticate });
   const masterKeys = new MasterKeyControl({ keys, logger });
 
+  // v0.9: computer use. The broker is configured from env on first boot or from
+  // the console (URL/CA in SQLite, token in the encrypted vault).
+  const computerUse = new DefaultComputerUseService({
+    config,
+    db,
+    repository,
+    supervisor,
+    vault,
+    audit,
+    logger: createLogger('computer-use', config.logLevel),
+    brokerFactory: options.computerUseBrokerFactory,
+  });
+  computerUseHolder.service = computerUse;
+  const computerUseApi = new ComputerUseApi({
+    config,
+    keys,
+    computerUse,
+    authenticate,
+    logger: createLogger('admin.computer-use', config.logLevel),
+  });
+
   const router = new JsonRpcRouter({
     config,
     keys,
@@ -279,6 +316,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     delegation,
     audit,
     approvals,
+    computerUse,
     logger,
   });
   const admin = new AdminApi({
@@ -305,6 +343,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     backupApi,
     credentialsApi,
     keyActivity,
+    computerUseApi,
     logger,
   });
   const server = new GatewayHttpServer({ config, router, admin, keys, uiAuth, authApi, supervisor, audit, logger });
@@ -331,6 +370,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     inspector,
     backup,
     credentials,
+    computerUse,
     router,
     admin,
   };
@@ -350,11 +390,14 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
           message: error instanceof Error ? error.message : String(error),
         });
       }
+      // v0.9: register/start the managed computer-use server (never blocks boot).
+      await computerUse.initialize();
       await autostartServers(supervisor, repository, config.autostart, logger);
       return address;
     },
     stop: async () => {
       await server.stop();
+      await computerUse.dispose();
       await supervisor.shutdown();
       db.close();
     },

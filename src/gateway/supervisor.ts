@@ -37,6 +37,12 @@ export interface SupervisorOptions {
   profileResolver?: (serverId: string) => ProfileRuntimeConfig | Promise<ProfileRuntimeConfig>;
   /** Resolves external password-manager references at process start. */
   credentialResolver?: (refs: CredentialRef[]) => Promise<Record<string, string>>;
+  /**
+   * Built-in, in-process MCP clients (v0.9 computer use). Returning a client
+   * skips process spawn / HTTP transport for that server; null means "use the
+   * normal transport for this record".
+   */
+  clientFactory?: (record: ServerRecord) => McpClient | null;
   logger?: Logger;
 }
 
@@ -148,6 +154,13 @@ export class DefaultSupervisor implements Supervisor {
   }
 
   private async createClient(record: ServerRecord, onLog: (line: SubServerLogLine) => void): Promise<McpClient> {
+    // Built-in integrations (v0.9 computer use) provide their own in-process
+    // client: no spawn, no remote transport, no token persisted on the record.
+    const builtin = this.options.clientFactory?.(record) ?? null;
+    if (builtin) {
+      this.pushLog(record.id, 'system', `using built-in client for '${record.name}'`);
+      return builtin;
+    }
     const profileRuntime = await this.resolveProfileRuntime(record);
     const profileHeaders = profileRuntime.headers;
     if (record.transport === 'stdio') {

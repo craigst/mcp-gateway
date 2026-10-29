@@ -4,6 +4,27 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 
 const LOG_LEVELS: readonly string[] = ['debug', 'info', 'warn', 'error', 'silent'];
 
+/**
+ * Computer Broker (computer use) configuration.
+ *
+ * The broker is an external, self-hosted service (`broker/mcp.py` exposes
+ * Streamable-HTTP MCP at `/mcp`). The gateway fronts it as a managed MCP
+ * server named `computer-use`; the operator token is never persisted with the
+ * server row — it comes from this env config or the encrypted vault.
+ */
+export interface ComputerUseConfig {
+  /** Master switch (MCP_COMPUTER_USE_ENABLED, default true). */
+  enabled: boolean;
+  /** Server-side broker base URL, e.g. https://127.0.0.1:7443. */
+  brokerUrl: string | null;
+  /** Optional bearer token for the broker agent API (env bootstrap). */
+  brokerToken: string | null;
+  /** Browser-facing broker base URL for "open live desktop" links. */
+  publicBrokerUrl: string | null;
+  /** Optional PEM CA bundle for the broker's self-signed certificate. */
+  caFile: string | null;
+}
+
 export interface GatewayConfig {
   host: string;
   port: number;
@@ -35,6 +56,8 @@ export interface GatewayConfig {
   /** Set Secure on the session cookie when served over HTTPS. */
   uiCookieSecure?: boolean;
   publicBaseUrl: string;
+  /** Computer use (Computer Broker integration); absent means disabled/unconfigured. */
+  computerUse?: ComputerUseConfig;
 }
 
 function intFromEnv(value: string | undefined, fallback: number): number {
@@ -89,5 +112,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
     uiSessionTtlMs: intFromEnv(env.MCP_UI_SESSION_TTL_MS, 12 * 60 * 60 * 1000),
     uiCookieSecure: env.MCP_UI_COOKIE_SECURE === 'true',
     publicBaseUrl: env.MCP_PUBLIC_BASE_URL ?? `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`,
+    computerUse: loadComputerUse(env),
   };
+}
+
+/**
+ * Reads the MCP_COMPUTER_* block. `enabled` defaults to true so that a broker
+ * URL (plus token) is enough to switch the feature on. Setting
+ * MCP_COMPUTER_USE_ENABLED=false (or disabling it in the console) removes the
+ * managed `computer-use` server row entirely, so its tools disappear from
+ * discovery and cannot be called.
+ */
+function loadComputerUse(env: NodeJS.ProcessEnv): ComputerUseConfig {
+  const brokerUrl = trimOrNull(env.MCP_COMPUTER_BROKER_URL);
+  const publicBrokerUrl = trimOrNull(env.MCP_COMPUTER_BROKER_PUBLIC_URL) ?? brokerUrl;
+  return {
+    enabled: env.MCP_COMPUTER_USE_ENABLED !== 'false',
+    brokerUrl,
+    brokerToken: trimOrNull(env.MCP_COMPUTER_BROKER_TOKEN),
+    publicBrokerUrl,
+    caFile: trimOrNull(env.MCP_COMPUTER_BROKER_CA),
+  };
+}
+
+function trimOrNull(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
 }

@@ -64,6 +64,8 @@ export interface AdminDeps {
   backupApi?: AdminSubRouter;
   settingsApi?: AdminSubRouter;
   credentialsApi?: AdminSubRouter;
+  /** v0.9: Computer Broker fleet + agent availability management. */
+  computerUseApi?: AdminSubRouter;
   /** Per-key access view and activity (v0.8). */
   keyActivity?: KeyActivityService;
   logger?: Logger;
@@ -126,6 +128,8 @@ export class AdminApi {
           return (await this.deps.credentialsApi?.handle(req, res, url)) ?? false;
         case 'config-profiles':
           return (await this.deps.configProfilesApi?.handle(req, res, url)) ?? false;
+        case 'computer-use':
+          return (await this.deps.computerUseApi?.handle(req, res, url)) ?? false;
         default:
           return false;
       }
