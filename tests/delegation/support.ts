@@ -69,6 +69,7 @@ export function makeKey(overrides: Partial<AuthenticatedKey> = {}): Authenticate
     escalationAllowed: false,
     expiresAt: null,
     revokedAt: null,
+    pausedAt: null,
     createdAt: '2026-10-29T00:00:00.000Z',
     lastUsedAt: null,
     metadata: {},

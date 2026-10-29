@@ -34,6 +34,7 @@ const masterKey: KeySummary = {
   escalationAllowed: true,
   expiresAt: null,
   revokedAt: null,
+  pausedAt: null,
   createdAt: '2026-10-01T09:00:00.000Z',
   lastUsedAt: null,
 };
@@ -48,6 +49,7 @@ const agentKey: KeySummary = {
   escalationAllowed: true,
   expiresAt: null,
   revokedAt: null,
+  pausedAt: null,
   createdAt: '2026-10-02T09:00:00.000Z',
   lastUsedAt: null,
 };

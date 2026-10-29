@@ -21,6 +21,7 @@ import type {
 } from './core/ports.js';
 import type { DelegationTarget } from './core/types.js';
 import { SqliteKeyService } from './rbac/keys.js';
+import { SqliteKeyActivityService } from './rbac/key-activity.js';
 import { RbacPolicyEngine } from './rbac/policy.js';
 import { SqliteEscalationService } from './rbac/escalations.js';
 import { SqliteCatalogRepository } from './catalog/repository.js';
@@ -171,6 +172,14 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     },
   });
 
+  const keyActivity = new SqliteKeyActivityService({
+    db,
+    repository,
+    keys,
+    audit,
+    logger: createLogger('rbac.key-activity', config.logLevel),
+  });
+
   // The supervisor needs profiles/credentials and both need the supervisor:
   // resolve them lazily through holders.
   const profileHolder: { service: DefaultConfigProfileService | null } = { service: null };
@@ -295,6 +304,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     settingsApi,
     backupApi,
     credentialsApi,
+    keyActivity,
     logger,
   });
   const server = new GatewayHttpServer({ config, router, admin, keys, uiAuth, authApi, supervisor, audit, logger });

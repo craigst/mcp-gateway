@@ -328,3 +328,17 @@ Major upgrade delivering private-catalog import and approval-gated credential ac
 | API keys by reference | Config profiles accept `credentialRef {provider,itemId,field}` rows (metadata only, no vault write); the supervisor resolves references at process start through the selected provider and injects env/headers (`profile env < credential refs < server env`). |
 | Compatibility | Backups include provider configuration (gateway vault) and profile references; existing encrypted/vault-ref profile entries unchanged; `#/vaultwarden` still resolves to Secrets. |
 | Tests | 861 tests / 88 files, incl. an HTTP e2e: configure Vaultwarden (mcp.env/0600 + connector list/reveal), 1Password fake Connect (list/reveal/default), gateway vault reveal, and a profile credentialRef injected into a sub-server. |
+
+
+---
+
+## v0.8 upgrade (shipped)
+
+| Area | Delivered |
+|---|---|
+| Key detail | Click any RBAC key to open a detail drawer: inline rename for bot references, type/prefix/status badges (paused/revoked/expired), created/last-used/expiry, pause/resume, revoke. |
+| Key activity | Per-key audit history + usage stats (total/ok/error/denied, last used, avg/p50/p95, distinct servers/tools, server/tool breakdown) with status presets, server/tool filters, payload expansion and pagination (`GET /admin/keys/:id/activity`). |
+| Pause access | Key-level pause refuses authentication (`KEY_PAUSED`); per-grant `paused` denies the whole MCP server (`SERVER_PAUSED`); per-tool `pausedTools` denies individual tools (`TOOL_PAUSED`). `GET /admin/keys/:id/access` feeds the toggle UI; `PATCH /admin/keys/:id`, `/pause`, `/resume` apply changes while preserving granted tool lists, high-privilege grants and guardrails. |
+| Audit | Denied pause attempts are recorded per key with the pause reason; activity tiles/filters expose them. |
+| Schema | v6: `api_keys.paused_at` (self-healing migration). |
+| Tests | 916 tests / 95 files, incl. an HTTP e2e: rename → activity stats/filters → pause key refused → resume → pause server grant → pause single tool → denied visible in activity → restore access. |

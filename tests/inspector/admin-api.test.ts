@@ -248,6 +248,7 @@ describe('InspectorApi (admin REST)', () => {
         escalationAllowed: false,
         expiresAt: null,
         revokedAt: null,
+        pausedAt: null,
         createdAt: new Date().toISOString(),
         lastUsedAt: null,
         metadata: {},

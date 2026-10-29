@@ -18,6 +18,7 @@ const key: AuthenticatedKey = {
   escalationAllowed: true,
   expiresAt: null,
   revokedAt: null,
+  pausedAt: null,
   createdAt: '2026-01-01T00:00:00.000Z',
   lastUsedAt: null,
   metadata: {},

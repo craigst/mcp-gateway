@@ -38,7 +38,7 @@ export interface RouterDeps {
 }
 
 const PROTOCOL_VERSION = '2025-06-18';
-const GATEWAY_VERSION = '0.7.0';
+const GATEWAY_VERSION = '0.8.0';
 
 /**
  * JSON-RPC method dispatch. Authorization, audit recording and escalation
@@ -60,6 +60,7 @@ export class JsonRpcRouter {
     let errorCode: number | null = null;
     let serverId: string | null = null;
     let toolId: string | null = null;
+    let denialReason: string | null = null;
 
     try {
       const params = asObject(request.params);
@@ -100,7 +101,8 @@ export class JsonRpcRouter {
         case 'tools/list': {
           const requestedServer = optionalString(params.serverId, 'serverId');
           const listed = this.deps.catalog.listTools(key, requestedServer ? { serverId: requestedServer } : undefined);
-          const tools = listed.tools.map((tool) => ({
+          const visibleTools = listed.tools.filter((tool) => !this.deps.policy.isServerPaused(key, tool.server_id));
+          const tools = visibleTools.map((tool) => ({
             name: tool.name,
             description: tool.description,
             inputSchema: tool.inputSchema,
@@ -115,7 +117,10 @@ export class JsonRpcRouter {
           const limit = clampInt(params.limit, 1, 100, 20);
           const requestedServer = optionalString(params.serverId, 'serverId');
           if (requestedServer) {
-            if (!this.deps.policy.isServerPermitted(key, requestedServer)) {
+            if (
+              !this.deps.policy.isServerPermitted(key, requestedServer) ||
+              this.deps.policy.isServerPaused(key, requestedServer)
+            ) {
               // Do not disclose whether the server exists.
               return { tools: [], total: 0, censored: true };
             }
@@ -127,7 +132,11 @@ export class JsonRpcRouter {
         }
 
         case 'servers/list_permitted':
-          return { servers: this.deps.catalog.listPermittedServers(key) };
+          return {
+            servers: this.deps.catalog
+              .listPermittedServers(key)
+              .filter((server) => !this.deps.policy.isServerPaused(key, server.id)),
+          };
 
         case 'tools/call': {
           const name = requiredString(params.name, 'name');
@@ -328,6 +337,8 @@ export class JsonRpcRouter {
       const gatewayError = asGatewayError(error);
       status = gatewayError.code === ErrorCodes.ACCESS_DENIED ? 'denied' : 'error';
       errorCode = gatewayError.code;
+      const reason = (gatewayError.data as { reason?: unknown } | undefined)?.reason;
+      if (typeof reason === 'string') denialReason = reason;
       if (status === 'error' && gatewayError.code === ErrorCodes.INTERNAL_ERROR) {
         this.logger.error('jsonrpc method failed', { method: request.method, error: gatewayError.message });
       }
@@ -346,7 +357,10 @@ export class JsonRpcRouter {
             errorCode,
             delegationDepth: ctx.delegationDepth,
             parentId: ctx.parentAuditId,
-            payload: request.params ?? null,
+            payload:
+              denialReason === null
+                ? (request.params ?? null)
+                : { ...(asObject(request.params ?? {})), denial_reason: denialReason },
           });
         } catch (auditError) {
           this.logger.warn('audit record failed', { error: String(auditError) });
@@ -365,7 +379,12 @@ export class JsonRpcRouter {
   }
 
   private visibleServers(key: AuthenticatedKey): ServerRecord[] {
-    return this.deps.catalog.repository.listServers().filter((server) => this.deps.policy.isServerPermitted(key, server.id));
+    return this.deps.catalog.repository
+      .listServers()
+      .filter(
+        (server) =>
+          this.deps.policy.isServerPermitted(key, server.id) && !this.deps.policy.isServerPaused(key, server.id),
+      );
   }
 
   private resolveCapabilityServer(
@@ -375,7 +394,13 @@ export class JsonRpcRouter {
   ): ServerRecord {
     if (requestedServer) {
       const server = this.deps.catalog.repository.getServer(requestedServer);
-      if (!server || !this.deps.policy.isServerPermitted(key, requestedServer)) throw toolNotFound();
+      if (
+        !server ||
+        !this.deps.policy.isServerPermitted(key, requestedServer) ||
+        this.deps.policy.isServerPaused(key, requestedServer)
+      ) {
+        throw toolNotFound();
+      }
       return server;
     }
     const match = this.visibleServers(key).find(predicate);

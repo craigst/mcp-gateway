@@ -45,23 +45,38 @@ interface HashLocation {
   catalogTab: CatalogTab | null;
   /** Set when the hash is `#/server/<id>`. */
   serverId: string | null;
+  /** Set when the hash is `#/rbac/<keyId>`. */
+  keyId: string | null;
 }
 
 function locationFromHash(): HashLocation {
-  if (typeof window === 'undefined') return { page: 'dashboard', catalogTab: null, serverId: null };
+  if (typeof window === 'undefined') return { page: 'dashboard', catalogTab: null, serverId: null, keyId: null };
   const raw = window.location.hash.replace(/^#\/?/, '').trim();
   const [pathPart = '', queryPart = ''] = raw.split('?');
   const segments = pathPart.split('/').filter((segment) => segment.length > 0);
   const tab = new URLSearchParams(queryPart).get('tab');
   if (segments[0] === 'server' && segments[1] !== undefined) {
-    return { page: 'server', catalogTab: null, serverId: decodeURIComponent(segments[1]) };
+    return {
+      page: 'server',
+      catalogTab: null,
+      serverId: decodeURIComponent(segments[1]),
+      keyId: null,
+    };
   }
   // Backwards-compatible alias: the Vault Warden page is now Secrets.
   if (segments[0] === 'vaultwarden') {
-    return { page: 'secrets', catalogTab: null, serverId: null };
+    return { page: 'secrets', catalogTab: null, serverId: null, keyId: null };
+  }
+  if (segments[0] === 'rbac' && segments[1] !== undefined) {
+    return {
+      page: 'rbac',
+      catalogTab: null,
+      serverId: null,
+      keyId: decodeURIComponent(segments[1]),
+    };
   }
   const page = isPageKey(segments[0] ?? '') ? (segments[0] as PageKey) : 'dashboard';
-  return { page, catalogTab: isCatalogTab(tab) ? tab : null, serverId: null };
+  return { page, catalogTab: isCatalogTab(tab) ? tab : null, serverId: null, keyId: null };
 }
 
 type SessionState =
@@ -73,10 +88,12 @@ type SessionState =
 interface RenderContext {
   catalogTab: CatalogTab;
   serverId: string | null;
+  keyId: string | null;
   username: string;
   onCatalogTabChange: (tab: CatalogTab) => void;
   onNavigate: (page: PageKey, options?: { catalogTab?: CatalogTab }) => void;
   onOpenServer: (serverId: string) => void;
+  onOpenKey: (keyId: string | null) => void;
   onReturnToLogin: () => void;
 }
 
@@ -104,7 +121,7 @@ function renderPage(page: PageKey, context: RenderContext) {
     case 'secrets':
       return <SecretsPage onNavigate={context.onNavigate} />;
     case 'rbac':
-      return <RbacPage />;
+      return <RbacPage initialKeyId={context.keyId} onKeyOpenChange={context.onOpenKey} />;
     case 'vault':
       return <VaultPage />;
     case 'audit':
@@ -154,6 +171,7 @@ export function App() {
   const [page, setPage] = useState<PageKey>(initial.page);
   const [catalogTab, setCatalogTab] = useState<CatalogTab>(initial.catalogTab ?? 'installed');
   const [serverId, setServerId] = useState<string | null>(initial.serverId);
+  const [keyId, setKeyId] = useState<string | null>(initial.keyId);
 
   useEffect(() => {
     let cancelled = false;
@@ -188,6 +206,7 @@ export function App() {
       const next = locationFromHash();
       setPage(next.page);
       setServerId(next.serverId);
+      setKeyId(next.keyId);
       if (next.catalogTab !== null) setCatalogTab(next.catalogTab);
     };
     window.addEventListener('hashchange', onHashChange);
@@ -197,14 +216,24 @@ export function App() {
   const navigate = useCallback((next: PageKey) => {
     setPage(next);
     setServerId(null);
+    setKeyId(null);
     if (typeof window !== 'undefined') window.location.hash = `#/${next}`;
   }, []);
 
   const openServer = useCallback((id: string) => {
     setServerId(id);
     setPage('server');
+    setKeyId(null);
     if (typeof window !== 'undefined') {
       window.location.hash = `#/server/${encodeURIComponent(id)}`;
+    }
+  }, []);
+
+  const openKey = useCallback((id: string | null) => {
+    setKeyId(id);
+    setPage('rbac');
+    if (typeof window !== 'undefined') {
+      window.location.hash = id === null ? '#/rbac' : `#/rbac/${encodeURIComponent(id)}`;
     }
   }, []);
 
@@ -212,6 +241,7 @@ export function App() {
     if (options?.catalogTab !== undefined) setCatalogTab(options.catalogTab);
     setPage(next);
     setServerId(null);
+    setKeyId(null);
     if (typeof window !== 'undefined') {
       window.location.hash = options?.catalogTab
         ? `#/${next}?tab=${options.catalogTab}`
@@ -284,10 +314,12 @@ export function App() {
         {renderPage(page, {
           catalogTab,
           serverId,
+          keyId,
           username: session.user.username,
           onCatalogTabChange: setCatalogTab,
           onNavigate: handleNavigate,
           onOpenServer: openServer,
+          onOpenKey: openKey,
           onReturnToLogin: returnToLogin,
         })}
       </Layout>

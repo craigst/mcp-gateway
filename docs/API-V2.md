@@ -488,3 +488,47 @@ Configuration profiles can reference provider items instead of storing values:
 At server start the supervisor resolves each reference through the credential provider and injects
 the value into the sub-process environment/headers (profile env < credential refs < server env).
 References are metadata only in the gateway database; the value stays in Vaultwarden/1Password.
+
+## 12. v0.8 — RBAC key detail: rename, pause access & activity
+
+Key summaries now include `pausedAt` (null when active), and server grants can be paused as a
+whole (`paused`) or per tool (`pausedTools`).
+
+```jsonc
+PATCH /mcp/v1/admin/keys/:id
+{ "name": "n8n-production-bot",          // human-friendly bot reference
+  "paused": false,
+  "serverGrants": [{ "serverId": "srv_…", "tools": ["n8n_workflow_list"], "paused": false,
+                     "pausedTools": ["n8n_workflow_run"] }] }
+→ { "key": KeySummary }
+
+POST /mcp/v1/admin/keys/:id/pause    // refuses every call this key makes (KEY_PAUSED)
+POST /mcp/v1/admin/keys/:id/resume   → { "key": KeySummary }
+
+GET /mcp/v1/admin/keys/:id/access
+→ { "key": KeySummary,
+    "grants": [{ "serverId": "srv_…", "serverName": "n8n", "serverStatus": "running",
+                 "paused": false,
+                 "tools": [{ "name": "n8n_workflow_list", "description": "…",
+                             "highPrivilege": false, "approvalRequired": false,
+                             "granted": true, "paused": false, "available": true }] }] }
+
+GET /mcp/v1/admin/keys/:id/activity?status=error&serverId=&toolId=&limit=50&offset=0
+→ { "key": KeySummary,
+    "stats": { "total": 812, "ok": 790, "error": 12, "denied": 10,
+               "lastUsedAt": "…", "avgLatencyMs": 14.2, "p50LatencyMs": 9, "p95LatencyMs": 61,
+               "distinctServers": 3, "distinctTools": 12,
+               "serverUsage": [{ "serverId": "srv_…", "name": "n8n", "count": 800 }],
+               "toolUsage": [{ "toolId": "srv_…:n8n_workflow_list", "name": "n8n_workflow_list",
+                               "count": 420, "lastUsedAt": "…" }] },
+    "entries": [AuditEntry, …], "total": 12 }
+```
+
+Enforcement:
+
+- a **paused key** fails authentication with `-32001 ACCESS_DENIED` and
+  `data.reason = "KEY_PAUSED"` ("This API key is paused. Resume it in the console.").
+- a **paused server grant** denies calls to that server with `SERVER_PAUSED`; a **paused tool**
+  denies only that tool with `TOOL_PAUSED`. To agents the response stays indistinguishable from
+  an ungranted tool/server (same `-32001`), but the audit row records the pause reason so the
+  console shows exactly why a request was denied.

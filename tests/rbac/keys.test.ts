@@ -104,6 +104,7 @@ describe('SqliteKeyService.issue', () => {
             message: 'no destructive SQL',
           },
         ],
+        pausedTools: null,
       },
     ]);
     expect(stored?.delegationAllowed).toBe(true);
@@ -316,7 +317,7 @@ describe('SqliteKeyService input contract', () => {
     };
     const issued = keys.issue(input);
     expect(issued.key.serverGrants).toEqual([
-      { serverId: 'srv_x', tools: [], highPrivilegeTools: null, guardrails: [] },
+      { serverId: 'srv_x', tools: [], highPrivilegeTools: null, guardrails: [], pausedTools: null },
     ]);
     expect(typeof issued.plaintext).toBe('string');
     expect(Date.parse(issued.key.createdAt)).not.toBeNaN();

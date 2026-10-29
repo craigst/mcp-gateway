@@ -18,7 +18,7 @@ export function openDatabase(dbPath: string): DatabaseSync {
   return db;
 }
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export function migrate(db: DatabaseSync): void {
   db.exec(`
@@ -38,6 +38,7 @@ export function migrate(db: DatabaseSync): void {
       escalation_allowed INTEGER NOT NULL DEFAULT 0,
       expires_at TEXT,
       revoked_at TEXT,
+      paused_at TEXT,
       created_at TEXT NOT NULL,
       last_used_at TEXT,
       metadata TEXT NOT NULL DEFAULT '{}'
@@ -222,6 +223,7 @@ export function migrate(db: DatabaseSync): void {
   ensureColumn(db, 'servers', 'instructions', 'TEXT');
   ensureColumn(db, 'servers', 'prompts_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'servers', 'resources_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'api_keys', 'paused_at', 'TEXT');
   ensureColumn(db, 'escalations', 'ticket_type', "TEXT NOT NULL DEFAULT 'scope'");
   ensureColumn(db, 'escalations', 'tool_arguments', 'TEXT');
   ensureColumn(db, 'escalations', 'result_json', 'TEXT');

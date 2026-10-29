@@ -48,6 +48,10 @@ export class RbacPolicyEngine implements PolicyEngine {
     return key.serverGrants.find((grant) => grant.serverId === serverId) ?? null;
   }
 
+  isServerPaused(key: AuthenticatedKey, serverId: string): boolean {
+    return this.grantFor(key, serverId)?.paused === true;
+  }
+
   isServerPermitted(key: AuthenticatedKey, serverId: string): boolean {
     if (this.isMaster(key)) return true;
     return this.grantFor(key, serverId) !== null;
@@ -68,6 +72,17 @@ export class RbacPolicyEngine implements PolicyEngine {
     args: Record<string, unknown>,
   ): AuthorizationDecision {
     const grant = this.grantFor(key, tool.serverId);
+
+    // Pauses are availability restrictions layered on top of the grants. They are
+    // reported with their own reasons but answered with the same -32001 envelope
+    // as any other scope denial (the gateway maps the reason into `data.reason`).
+    if (grant?.paused === true) {
+      return {
+        allowed: false,
+        reason: 'SERVER_PAUSED',
+        detail: `Server '${tool.serverId}' is paused for this key.`,
+      };
+    }
 
     if (!this.isMaster(key)) {
       if (!grant) {
@@ -96,6 +111,15 @@ export class RbacPolicyEngine implements PolicyEngine {
           detail: `Tool '${tool.name}' is not whitelisted for this key.`,
         };
       }
+    }
+
+    // The tool is otherwise granted/visible, but an operator paused it for this key.
+    if (grant && namesTool(grant.pausedTools, tool)) {
+      return {
+        allowed: false,
+        reason: 'TOOL_PAUSED',
+        detail: `Tool '${tool.name}' is paused for this key.`,
+      };
     }
 
     // Guardrails attached to an explicit grant always apply, including for master keys.

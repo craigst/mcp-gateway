@@ -29,8 +29,12 @@ import type {
   HarnessScanResult,
   HarnessSourceInfo,
   InstallTestResult,
+  KeyAccessView,
+  KeyActivityFilter,
+  KeyActivityPage,
   KeySummary,
   KeyType,
+  UpdateKeyInput,
   RestoreResult,
   RuntimeKind,
   ServerActivityPage,
@@ -856,6 +860,50 @@ export class ApiClient {
       body: JSON.stringify({}),
     });
     return response.key;
+  }
+
+  /** Patch a key (rename, key-level pause, grant changes, expiry). */
+  async updateKey(id: string, input: UpdateKeyInput): Promise<KeySummary> {
+    const response = await this.request<{ key: KeySummary }>(`/mcp/v1/admin/keys/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+    return response.key;
+  }
+
+  async pauseKey(id: string): Promise<KeySummary> {
+    const response = await this.request<{ key: KeySummary }>(
+      `/mcp/v1/admin/keys/${encodeURIComponent(id)}/pause`,
+      { method: 'POST', body: JSON.stringify({}) },
+    );
+    return response.key;
+  }
+
+  async resumeKey(id: string): Promise<KeySummary> {
+    const response = await this.request<{ key: KeySummary }>(
+      `/mcp/v1/admin/keys/${encodeURIComponent(id)}/resume`,
+      { method: 'POST', body: JSON.stringify({}) },
+    );
+    return response.key;
+  }
+
+  /** Paginated audit activity for one API key (summary + entries + total). */
+  getKeyActivity(id: string, filters: KeyActivityFilter = {}): Promise<KeyActivityPage> {
+    const query = buildQuery({
+      status: filters.status,
+      serverId: filters.serverId,
+      toolId: filters.toolId,
+      limit: filters.limit,
+      offset: filters.offset,
+    });
+    return this.request<KeyActivityPage>(
+      `/mcp/v1/admin/keys/${encodeURIComponent(id)}/activity${query}`,
+    );
+  }
+
+  /** Effective per-server/tool access view for a key (granted/paused/available). */
+  getKeyAccess(id: string): Promise<KeyAccessView> {
+    return this.request<KeyAccessView>(`/mcp/v1/admin/keys/${encodeURIComponent(id)}/access`);
   }
 
   /**

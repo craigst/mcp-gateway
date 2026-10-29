@@ -26,6 +26,7 @@ import {
   type KeyType,
   type ServerGrant,
   type ToolGuardrail,
+  type UpdateKeyInput,
 } from '../core/types.js';
 
 export interface KeyServiceOptions {
@@ -45,6 +46,7 @@ interface ApiKeyRow {
   escalation_allowed: number;
   expires_at: string | null;
   revoked_at: string | null;
+  paused_at: string | null;
   created_at: string;
   last_used_at: string | null;
   metadata: string;
@@ -62,6 +64,7 @@ function mapKeyRow(row: ApiKeyRow): ApiKeyRecord {
     escalationAllowed: intToBool(row.escalation_allowed),
     expiresAt: row.expires_at ?? null,
     revokedAt: row.revoked_at ?? null,
+    pausedAt: row.paused_at ?? null,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at ?? null,
     metadata: parseJson<Record<string, unknown>>(row.metadata, {}),
@@ -80,6 +83,7 @@ function toAuthenticatedKey(record: ApiKeyRecord, plaintext?: string): Authentic
     escalationAllowed: record.escalationAllowed,
     expiresAt: record.expiresAt,
     revokedAt: record.revokedAt,
+    pausedAt: record.pausedAt,
     createdAt: record.createdAt,
     lastUsedAt: record.lastUsedAt,
     metadata: record.metadata,
@@ -104,12 +108,20 @@ function validateKeyType(raw: unknown): KeyType {
 
 function validateStringArray(raw: unknown, label: string): string[] {
   if (!Array.isArray(raw)) throw invalidParams(`${label} must be an array of tool identifiers.`);
-  return raw.map((value, index) => {
+  const values: string[] = [];
+  const seen = new Set<string>();
+  raw.forEach((value, index) => {
     if (typeof value !== 'string' || value.trim() === '') {
       throw invalidParams(`${label}[${index}] must be a non-empty string.`);
     }
-    return value.trim();
+    const normalized = value.trim();
+    if (seen.has(normalized)) {
+      throw invalidParams(`${label}[${index}] duplicates '${normalized}'.`);
+    }
+    seen.add(normalized);
+    values.push(normalized);
   });
+  return values;
 }
 
 function validateGuardrails(raw: unknown, label: string): ToolGuardrail[] {
@@ -179,6 +191,7 @@ function validateGuardrails(raw: unknown, label: string): ToolGuardrail[] {
 function validateServerGrants(raw: unknown): ServerGrant[] {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) throw invalidParams('serverGrants must be an array.');
+  const seenServerIds = new Set<string>();
   return raw.map((grant, index) => {
     const where = `serverGrants[${index}]`;
     if (grant === null || typeof grant !== 'object' || Array.isArray(grant)) {
@@ -188,6 +201,14 @@ function validateServerGrants(raw: unknown): ServerGrant[] {
     if (typeof candidate.serverId !== 'string' || candidate.serverId.trim() === '') {
       throw invalidParams(`${where}.serverId is required.`);
     }
+    const serverId = candidate.serverId.trim();
+    if (seenServerIds.has(serverId)) {
+      throw invalidParams(`${where}.serverId '${serverId}' is duplicated.`);
+    }
+    seenServerIds.add(serverId);
+    if (candidate.paused !== undefined && typeof candidate.paused !== 'boolean') {
+      throw invalidParams(`${where}.paused must be a boolean.`);
+    }
     const tools =
       candidate.tools === undefined || candidate.tools === null
         ? null
@@ -196,11 +217,17 @@ function validateServerGrants(raw: unknown): ServerGrant[] {
       candidate.highPrivilegeTools === undefined || candidate.highPrivilegeTools === null
         ? null
         : validateStringArray(candidate.highPrivilegeTools, `${where}.highPrivilegeTools`);
+    const pausedTools =
+      candidate.pausedTools === undefined || candidate.pausedTools === null
+        ? null
+        : validateStringArray(candidate.pausedTools, `${where}.pausedTools`);
     return {
-      serverId: candidate.serverId.trim(),
+      serverId,
       tools,
       highPrivilegeTools,
       guardrails: validateGuardrails(candidate.guardrails, `${where}.guardrails`),
+      ...(candidate.paused === true ? { paused: true } : {}),
+      pausedTools,
     };
   });
 }
@@ -276,6 +303,7 @@ export class SqliteKeyService implements KeyService {
       escalationAllowed: input.escalationAllowed,
       expiresAt: input.expiresAt,
       revokedAt: null,
+      pausedAt: null,
       createdAt,
       lastUsedAt: null,
       metadata: input.metadata,
@@ -396,6 +424,74 @@ export class SqliteKeyService implements KeyService {
     this.db.prepare('UPDATE api_keys SET revoked_at = ? WHERE id = ?').run(revokedAt, id);
     this.logger.warn('api key revoked', { keyId: id });
     return { ...record, revokedAt };
+  }
+
+  update(id: string, input: UpdateKeyInput): ApiKeyRecord {
+    const record = this.get(id);
+    if (!record) throw invalidParams(`API key '${id}' was not found.`);
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+      throw invalidParams('Key update body must be an object.');
+    }
+
+    let name = record.name;
+    if (input.name !== undefined) {
+      if (typeof input.name !== 'string') throw invalidParams('name must be a string.');
+      const trimmed = input.name.trim();
+      if (trimmed === '') throw invalidParams('Key name is required.');
+      if (trimmed.length > 120) throw invalidParams('Key name must be at most 120 characters.');
+      name = trimmed;
+    }
+
+    let pausedAt = record.pausedAt;
+    if (input.paused !== undefined) {
+      if (typeof input.paused !== 'boolean') throw invalidParams('paused must be a boolean.');
+      // Idempotent: pausing an already-paused key keeps the original timestamp.
+      pausedAt = input.paused ? (record.pausedAt ?? nowIso()) : null;
+    }
+
+    const serverGrants =
+      input.serverGrants === undefined ? record.serverGrants : validateServerGrants(input.serverGrants);
+
+    let expiresAt = record.expiresAt;
+    if (input.expiresAt !== undefined) {
+      if (input.expiresAt === null) {
+        expiresAt = null;
+      } else if (typeof input.expiresAt !== 'string' || Number.isNaN(Date.parse(input.expiresAt))) {
+        throw invalidParams('expiresAt must be a valid ISO-8601 timestamp or null.');
+      } else {
+        expiresAt = new Date(input.expiresAt).toISOString();
+      }
+    }
+
+    this.db
+      .prepare(
+        'UPDATE api_keys SET name = ?, server_grants = ?, expires_at = ?, paused_at = ? WHERE id = ?',
+      )
+      .run(name, toJson(serverGrants), expiresAt, pausedAt, id);
+
+    this.logger.info('api key updated', { keyId: id, paused: pausedAt !== null });
+    return { ...record, name, serverGrants, expiresAt, pausedAt };
+  }
+
+  pause(id: string): ApiKeyRecord {
+    const record = this.get(id);
+    if (!record) throw invalidParams(`API key '${id}' was not found.`);
+    const pausedAt = record.pausedAt ?? nowIso();
+    if (record.pausedAt === null) {
+      this.db.prepare('UPDATE api_keys SET paused_at = ? WHERE id = ?').run(pausedAt, id);
+      this.logger.warn('api key paused', { keyId: id });
+    }
+    return { ...record, pausedAt };
+  }
+
+  resume(id: string): ApiKeyRecord {
+    const record = this.get(id);
+    if (!record) throw invalidParams(`API key '${id}' was not found.`);
+    if (record.pausedAt !== null) {
+      this.db.prepare('UPDATE api_keys SET paused_at = NULL WHERE id = ?').run(id);
+      this.logger.info('api key resumed', { keyId: id });
+    }
+    return { ...record, pausedAt: null };
   }
 
   purgeExpired(now: Date = new Date()): number {

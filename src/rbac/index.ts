@@ -12,3 +12,7 @@ export {
 } from './guardrails.js';
 export { RbacPolicyEngine, type RbacPolicyEngineOptions } from './policy.js';
 export { SqliteEscalationService, type EscalationServiceOptions } from './escalations.js';
+export {
+  SqliteKeyActivityService,
+  type KeyActivityServiceDeps,
+} from './key-activity.js';

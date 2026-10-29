@@ -28,7 +28,7 @@ describe('schema migration', () => {
     const db = openDatabase(tempDbPath());
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
     expect(version.user_version).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(5);
+    expect(SCHEMA_VERSION).toBe(6);
 
     expect(columnNames(db, 'servers')).toEqual(
       expect.arrayContaining([
@@ -44,6 +44,7 @@ describe('schema migration', () => {
     expect(columnNames(db, 'escalations')).toEqual(
       expect.arrayContaining(['ticket_type', 'tool_arguments', 'result_json', 'consumed_at']),
     );
+    expect(columnNames(db, 'api_keys')).toEqual(expect.arrayContaining(['paused_at']));
     for (const table of ['catalog_sources', 'ui_users', 'ui_sessions', 'server_sources', 'config_profiles']) {
       const found = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
@@ -106,7 +107,7 @@ describe('schema migration', () => {
     migrate(db);
 
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(version.user_version).toBe(5);
+    expect(version.user_version).toBe(6);
     expect(columnNames(db, 'servers')).toEqual(
       expect.arrayContaining([
         'env_file',
@@ -168,12 +169,75 @@ describe('schema migration', () => {
     migrate(db);
 
     const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(version.user_version).toBe(5);
+    expect(version.user_version).toBe(6);
     expect(columnNames(db, 'servers')).toEqual(expect.arrayContaining(['config_profile_ids']));
     const row = db.prepare('SELECT config_profile_ids FROM servers WHERE id = ?').get('srv_v3') as {
       config_profile_ids: string;
     };
     expect(row.config_profile_ids).toBe('[]');
+    db.close();
+  });
+
+  it('adds paused_at when upgrading a v5 database', () => {
+    const path = tempDbPath();
+    const db = new DatabaseSync(path);
+    db.exec(`
+      CREATE TABLE api_keys (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        key_type TEXT NOT NULL CHECK (key_type IN ('agent','dev','sub','sup','master')),
+        key_hash TEXT NOT NULL UNIQUE,
+        key_prefix TEXT NOT NULL,
+        server_grants TEXT NOT NULL DEFAULT '[]',
+        delegation_allowed INTEGER NOT NULL DEFAULT 0,
+        escalation_allowed INTEGER NOT NULL DEFAULT 0,
+        expires_at TEXT,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}'
+      );
+      PRAGMA user_version = 5;
+    `);
+    db.prepare(
+      `INSERT INTO api_keys (id,name,key_type,key_hash,key_prefix,created_at)
+       VALUES ('key_v5','legacy','agent','deadbeef','mcp_ag_dead','2026-01-01T00:00:00.000Z')`,
+    ).run();
+
+    migrate(db);
+
+    const version = db.prepare('PRAGMA user_version').get() as { user_version: number };
+    expect(version.user_version).toBe(6);
+    expect(columnNames(db, 'api_keys')).toEqual(expect.arrayContaining(['paused_at']));
+    const row = db.prepare('SELECT * FROM api_keys WHERE id = ?').get('key_v5') as Record<string, unknown>;
+    expect(row.name).toBe('legacy');
+    expect(row.paused_at).toBeNull();
+    db.close();
+  });
+
+  it('self-heals a v6-stamped database that is missing api_keys.paused_at', () => {
+    const path = tempDbPath();
+    const db = new DatabaseSync(path);
+    db.exec(`
+      CREATE TABLE api_keys (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        key_type TEXT NOT NULL CHECK (key_type IN ('agent','dev','sub','sup','master')),
+        key_hash TEXT NOT NULL UNIQUE,
+        key_prefix TEXT NOT NULL,
+        server_grants TEXT NOT NULL DEFAULT '[]',
+        delegation_allowed INTEGER NOT NULL DEFAULT 0,
+        escalation_allowed INTEGER NOT NULL DEFAULT 0,
+        expires_at TEXT,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}'
+      );
+      PRAGMA user_version = 6;
+    `);
+    migrate(db);
+    expect(columnNames(db, 'api_keys')).toEqual(expect.arrayContaining(['paused_at']));
     db.close();
   });
 

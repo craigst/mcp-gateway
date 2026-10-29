@@ -11,7 +11,7 @@
  * same-origin when the browser supplies an `Origin` header (CSRF defence).
  */
 import type { IncomingMessage } from 'node:http';
-import { accessDenied, invalidKey } from '../core/errors.js';
+import { ErrorCodes, GatewayError, accessDenied, invalidKey } from '../core/errors.js';
 import { nowIso } from '../core/ids.js';
 import type { KeyService, UiAuthService } from '../core/ports.js';
 import type { AuthenticatedKey } from '../core/types.js';
@@ -39,6 +39,17 @@ export function isSessionRequest(req: IncomingMessage): boolean {
   return readSessionToken(headerValue(req.headers.cookie)) !== null;
 }
 
+/** A paused key cannot be used until an operator resumes it in the console. */
+function assertKeyNotPaused(key: AuthenticatedKey): AuthenticatedKey {
+  if (key.pausedAt !== null) {
+    throw new GatewayError(ErrorCodes.ACCESS_DENIED, 'This API key is paused. Resume it in the console.', {
+      data: { status: 'ACCESS_DENIED', reason: 'KEY_PAUSED' },
+      httpStatus: 403,
+    });
+  }
+  return key;
+}
+
 /** Synthetic principal for a logged-in browser: master key scoped to the session user. */
 export function sessionPrincipal(username: string): AuthenticatedKey {
   return {
@@ -51,6 +62,7 @@ export function sessionPrincipal(username: string): AuthenticatedKey {
     escalationAllowed: true,
     expiresAt: null,
     revokedAt: null,
+    pausedAt: null,
     createdAt: nowIso(),
     lastUsedAt: null,
     metadata: { via: 'session' },
@@ -97,12 +109,12 @@ export function authenticateRequest(
     const match = BEARER_PATTERN.exec(authorization.trim());
     const token = match?.[1]?.trim() ?? '';
     if (token === '') throw invalidKey();
-    return keys.authenticate(token);
+    return assertKeyNotPaused(keys.authenticate(token));
   }
 
   const apiKeyHeader = headerValue(req.headers[API_KEY_HEADER]);
   if (apiKeyHeader !== null && apiKeyHeader.trim() !== '') {
-    return keys.authenticate(apiKeyHeader.trim());
+    return assertKeyNotPaused(keys.authenticate(apiKeyHeader.trim()));
   }
 
   const sessionToken = readSessionToken(headerValue(req.headers.cookie));

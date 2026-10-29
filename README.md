@@ -34,6 +34,7 @@ If not, the tool is invisible — not merely denied.
 | 🔄 | **Update manager** | Per-server upstream tracking (tag/commit): "update available" badges, check-all, and one-click staged updates (clone → build → swap → restart → probe) with automatic rollback on a failed build. |
 | ⚙️ | **Encrypted configuration profiles** | Save credentials/endpoints (IPs, ports, API keys, headers) once **in the AES-256 vault**, reference named secrets, and apply one profile to many MCP servers. No env files — values are decrypted only into the sub-process environment. |
 | 🔬 | **Server inspector** | Open any MCP server: every tool (with schema + live Try), prompts, resources and templates, capabilities/instructions, encrypted configuration with audited reveal, version/update/changelog, and per-server request history — ok, failed **and denied** — with the API key that used it. |
+| 🛡️ | **API key console** | Click any key in RBAC: see **its own activity** (requests, tools/servers used, ok/error/denied, latency), **rename it for the bot it belongs to**, and **pause access** — the whole key, one MCP server, or individual tools — from simple toggles, then resume just as easily. |
 | 🔑 | **Vaultwarden as the default password/API manager** | Configure your Vaultwarden server (URL, client id/secret, master password) in the UI — the gateway materialises the connector config securely, browses/reveals items, and can inject API keys into MCP servers by reference. **1Password** (Connect host + API token, or service-account token with the `op` CLI) is a first-class alternative; the built-in AES vault is the fallback. |
 | 🚀 | **First-run onboarding** | A fresh gateway starts in setup mode: the Web UI wizard creates the operator account, offers an optional master API key (shown once) and can restore an existing backup — no env files or manual key bootstrapping needed. |
 | 💾 | **Password-encrypted backups** | One-click backup of the whole gateway — accounts, API keys, servers, profiles, catalog sources and **every vault secret** — encrypted with scrypt + AES-256-GCM using your account password. Restore on any fresh gateway (setup wizard or Settings) with that password; servers whose code was not in the backup get a one-click **Reinstall**. |
@@ -48,12 +49,18 @@ If not, the tool is invisible — not merely denied.
 
 ![First-run setup — create the operator account or restore a backup](docs/screenshots/v06/setup-welcome.png)
 
+![API key detail — activity, rename and per-server/tool pause switches](docs/screenshots/v08/key-access.png)
+
 ![Settings → Credentials — Vaultwarden default, 1Password option, gateway fallback](docs/screenshots/v07/settings-credentials.png)
 
 ![Server inspector — activity with ok, error and denied requests](docs/screenshots/v05/activity.png)
 
 <details>
-<summary>More screenshots (credentials & secrets · settings & backups · inspector · configurations · update dialog · login · dashboard · catalog)</summary>
+<summary>More screenshots (API key activity · credentials & secrets · settings & backups · inspector · configurations · update dialog · login · dashboard · catalog)</summary>
+
+| API key activity | RBAC keys |
+|---|---|
+| ![Key activity](docs/screenshots/v08/key-activity.png) | ![RBAC keys](docs/screenshots/v08/rbac-keys.png) |
 
 | Secrets — 1Password items | Secrets — Vaultwarden items |
 |---|---|
@@ -290,6 +297,21 @@ Click a server in **Catalog → Installed** (or **Open**) to land on its inspect
   latency, payload and the exact key (`dsh-harness`, `demo-agent`, …) that used the server.
   Failed and denied requests are first-class — they are what the manager is for.
 
+## API key console: activity, rename & pause access
+
+Every key in **RBAC** is clickable. The detail drawer shows the key exactly as the bot uses it:
+
+- **Activity** — the key's own request history with summary tiles (total, ok, error, denied,
+  last used, p95), All / Failed / Denied / OK presets, server and tool filters, and payload/latency
+  details. See which MCP servers and tools a bot actually used.
+- **Rename** — click the pencil next to the name and give it a reference you recognise
+  (`n8n-production-bot`, `dsh-harness`, …); the list updates immediately.
+- **Pause access** — the key-level **Pause** refuses every call (`KEY_PAUSED`), or use the
+  **Access** tab to pause a **whole MCP server grant** or **individual tools** with switches.
+  Pausing keeps the grant intact; **Resume** restores it instantly. Denied attempts appear in the
+  key's activity (and the audit log records the pause reason), so you can verify the pause worked.
+- Revoke and expiry remain available; all calls stay audited per key.
+
 ## Password & API-key management (Vaultwarden default, 1Password option)
 
 **Settings → Credentials** chooses where the gateway resolves credentials from. The default is
@@ -403,7 +425,7 @@ npm run lint           # eslint
 npm run build          # server + UI bundle
 ```
 
-The suite is **861 tests across 88 files**: unit suites per module, an integration suite that
+The suite is **916 tests across 95 files**: unit suites per module, an integration suite that
 boots a real gateway on an ephemeral port and spawns fixture MCP servers, and an end-to-end
 scenario covering vault → git import → catalog → execution → delegation → depth guard → escalation,
 plus jsdom UI tests. CI also builds the Docker image and smoke-tests `/health` inside the container.
@@ -430,7 +452,8 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 | v0.4.0 | Upstream update manager (checks + staged per-server updates) and encrypted configuration profiles replacing env files | ✅ shipped |
 | v0.5.0 | Full MCP server inspector (tools/prompts/resources/config/activity), proxied prompts & resources, audited credential reveal, per-server failed/denied request history | ✅ shipped |
 | v0.6.0 | First-run onboarding wizard, in-UI settings, password-encrypted full backups with restore & server reinstall | ✅ shipped |
-| **v0.7.0** | **Vaultwarden as the default password/API manager, 1Password option, unified Secrets page and password-manager references in configuration profiles** | ✅ **current** |
+| v0.7.0 | Vaultwarden as the default password/API manager, 1Password option, unified Secrets page and password-manager references in configuration profiles | ✅ shipped |
+| **v0.8.0** | **RBAC API-key console: per-key activity, rename for bot references, pause/resume whole keys, MCP servers or individual tools** | ✅ **current** |
 
 ## License
 

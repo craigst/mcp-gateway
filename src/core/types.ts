@@ -109,6 +109,10 @@ export interface ServerGrant {
   highPrivilegeTools?: string[] | null;
   /** Argument guardrails applied to calls made under this grant. */
   guardrails?: ToolGuardrail[];
+  /** Temporarily pause the whole server grant without deleting it. */
+  paused?: boolean;
+  /** Individual tool ids temporarily paused within this grant. */
+  pausedTools?: string[] | null;
 }
 
 export interface ApiKeyRecord {
@@ -124,6 +128,8 @@ export interface ApiKeyRecord {
   escalationAllowed: boolean;
   expiresAt: string | null;
   revokedAt: string | null;
+  /** When set the key is paused: authentication is refused until resumed. */
+  pausedAt: string | null;
   createdAt: string;
   lastUsedAt: string | null;
   metadata: Record<string, unknown>;
@@ -145,6 +151,7 @@ export interface KeySummary {
   escalationAllowed: boolean;
   expiresAt: string | null;
   revokedAt: string | null;
+  pausedAt: string | null;
   createdAt: string;
   lastUsedAt: string | null;
 }
@@ -175,7 +182,10 @@ export type PolicyDenialReason =
   | 'DELEGATION_NOT_PERMITTED'
   | 'ESCALATION_NOT_PERMITTED'
   | 'KEY_REVOKED'
-  | 'KEY_EXPIRED';
+  | 'KEY_EXPIRED'
+  | 'KEY_PAUSED'
+  | 'SERVER_PAUSED'
+  | 'TOOL_PAUSED';
 
 export interface AuthorizationDecision {
   allowed: boolean;
@@ -839,4 +849,73 @@ export interface CredentialRef {
   provider: CredentialProviderId;
   itemId: string;
   field?: string | null;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.8 — RBAC key detail: rename, pause access, per-key activity
+// ---------------------------------------------------------------------------
+
+export interface UpdateKeyInput {
+  name?: string;
+  paused?: boolean;
+  serverGrants?: ServerGrant[];
+  expiresAt?: string | null;
+}
+
+export interface KeyGrantToolView {
+  name: string;
+  description: string;
+  highPrivilege: boolean;
+  approvalRequired: boolean;
+  /** Included in the key's tool whitelist for this server. */
+  granted: boolean;
+  /** Temporarily paused inside this grant. */
+  paused: boolean;
+  /** Present on the server and callable. */
+  available: boolean;
+}
+
+export interface KeyGrantView {
+  serverId: string;
+  serverName: string;
+  serverStatus: string;
+  /** Whole server grant paused. */
+  paused: boolean;
+  tools: KeyGrantToolView[];
+}
+
+export interface KeyUsageStats {
+  total: number;
+  ok: number;
+  error: number;
+  denied: number;
+  lastUsedAt: string | null;
+  avgLatencyMs: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+  distinctServers: number;
+  distinctTools: number;
+  serverUsage: Array<{ serverId: string; name: string; count: number }>;
+  toolUsage: Array<{ toolId: string; name: string; count: number; lastUsedAt: string | null }>;
+}
+
+export interface KeyActivityFilter {
+  status?: 'ok' | 'error' | 'denied';
+  serverId?: string;
+  toolId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface KeyActivityPage {
+  key: KeySummary;
+  stats: KeyUsageStats;
+  entries: AuditEntry[];
+  total: number;
+}
+
+export interface KeyAccessView {
+  key: KeySummary;
+  grants: KeyGrantView[];
 }

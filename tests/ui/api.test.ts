@@ -1075,3 +1075,67 @@ describe('ApiClient v0.7 credential providers', () => {
     });
   });
 });
+
+describe('ApiClient v0.8 key detail, pause & activity', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function lastCall(): [string, RequestInit] {
+    return fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string, RequestInit];
+  }
+
+  it('renames, pauses and resumes a key', async () => {
+    const client = new ApiClient('http://gateway.test');
+    const key = { id: 'key_1', name: 'renamed', pausedAt: null };
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ key }));
+    expect(await client.updateKey('key_1', { name: 'renamed' })).toEqual(key);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/keys/key_1');
+    expect(lastCall()[1].method).toBe('PATCH');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ name: 'renamed' });
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ key: { ...key, pausedAt: '2026-10-29T20:00:00.000Z' } }));
+    expect(await client.pauseKey('key_1')).toMatchObject({ pausedAt: '2026-10-29T20:00:00.000Z' });
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/keys/key_1/pause');
+    expect(lastCall()[1].method).toBe('POST');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ key }));
+    expect(await client.resumeKey('key_1')).toEqual(key);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/keys/key_1/resume');
+  });
+
+  it('loads key access and paginated activity with filters', async () => {
+    const client = new ApiClient('http://gateway.test');
+    const access = { key: { id: 'key_1' }, grants: [] };
+    fetchMock.mockResolvedValueOnce(fakeResponse(access));
+    expect(await client.getKeyAccess('key_1')).toEqual(access);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/keys/key_1/access');
+
+    const activity = { key: { id: 'key_1' }, stats: { total: 3 }, entries: [], total: 3 };
+    fetchMock.mockResolvedValueOnce(fakeResponse(activity));
+    expect(
+      await client.getKeyActivity('key_1', {
+        status: 'denied',
+        serverId: 'srv_echo',
+        toolId: 'srv_echo:echo',
+        limit: 25,
+        offset: 50,
+      }),
+    ).toEqual(activity);
+    expect(lastCall()[0]).toBe(
+      'http://gateway.test/mcp/v1/admin/keys/key_1/activity?status=denied&serverId=srv_echo&toolId=srv_echo%3Aecho&limit=25&offset=50',
+    );
+
+    fetchMock.mockResolvedValueOnce(fakeResponse(activity));
+    await client.getKeyActivity('key_1');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/keys/key_1/activity');
+  });
+});

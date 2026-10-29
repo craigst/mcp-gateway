@@ -43,6 +43,9 @@ import type {
   HarnessScanResult,
   HarnessSourceInfo,
   IssuedKey,
+  KeyAccessView,
+  KeyActivityFilter,
+  KeyActivityPage,
   JsonSchema,
   PermittedServerSummary,
   PolicyDenialReason,
@@ -57,6 +60,7 @@ import type {
   ToolDescriptor,
   ToolGuardrail,
   ToolSearchResult,
+  UpdateKeyInput,
   VaultSecretMetadata,
 } from './types.js';
 
@@ -73,6 +77,12 @@ export interface KeyService {
   get(id: string): ApiKeyRecord | null;
   list(): ApiKeyRecord[];
   revoke(id: string): ApiKeyRecord;
+  /** Rename, pause/resume or replace grants for a key. */
+  update(id: string, input: UpdateKeyInput): ApiKeyRecord;
+  /** Pause authentication for a key (keeps grants intact). */
+  pause(id: string): ApiKeyRecord;
+  /** Resume a paused key. */
+  resume(id: string): ApiKeyRecord;
   /** Removes expired keys; returns count. */
   purgeExpired(now?: Date): number;
 }
@@ -80,6 +90,8 @@ export interface KeyService {
 export interface PolicyEngine {
   /** Server-level grant check (zero-trust visibility). */
   isServerPermitted(key: AuthenticatedKey, serverId: string): boolean;
+  /** True when the key's grant for this server is temporarily paused. */
+  isServerPaused(key: AuthenticatedKey, serverId: string): boolean;
   /** Tool visibility: server grant + whitelist + high-privilege masking. */
   isToolPermitted(key: AuthenticatedKey, tool: ToolDescriptor): boolean;
   /** Full call check: visibility + argument guardrails. */
@@ -590,4 +602,16 @@ export interface CredentialProviderService {
   resolveRefs(refs: CredentialRef[]): Promise<Record<string, string>>;
   /** Materialise provider configuration into sub-server files at boot (Vaultwarden mcp.env). */
   initialize(): Promise<void>;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.8 — per-key access view + activity
+// ---------------------------------------------------------------------------
+
+export interface KeyActivityService {
+  /** Granted servers/tools with paused/available flags for the RBAC editor. */
+  access(keyId: string): KeyAccessView;
+  /** Audit activity and usage stats for one key. */
+  activity(keyId: string, filter?: KeyActivityFilter): KeyActivityPage;
 }

@@ -54,6 +54,7 @@ const keySummary: KeySummary = {
   escalationAllowed: true,
   expiresAt: null,
   revokedAt: null,
+  pausedAt: null,
   createdAt: '2026-10-29T17:00:00.000Z',
   lastUsedAt: null,
 };

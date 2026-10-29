@@ -269,6 +269,7 @@ describe('UpdatesApi (admin REST)', () => {
       escalationAllowed: true,
       expiresAt: null,
       revokedAt: null,
+      pausedAt: null,
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
       metadata: {},

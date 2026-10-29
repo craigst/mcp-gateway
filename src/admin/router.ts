@@ -10,6 +10,7 @@ import type {
   DelegationService,
   EscalationService,
   GitImportService,
+  KeyActivityService,
   KeyService,
   PolicyEngine,
   Supervisor,
@@ -19,18 +20,21 @@ import type {
   AuthenticatedKey,
   ApiKeyRecord,
   EscalationStatus,
+  KeyActivityFilter,
   KeySummary,
   KeyType,
   RuntimeKind,
   ServerRecord,
   ServerGrant,
   TransportKind,
+  UpdateKeyInput,
 } from '../core/types.js';
 import { KEY_TYPES } from '../core/types.js';
 import { readJsonBody } from '../gateway/server.js';
 import { MasterKeyControl } from './master-keys.js';
 import type { AdminSubRouter } from './types.js';
 
+const DEFAULT_ACTIVITY_LIMIT = 50;
 const RUNTIMES: RuntimeKind[] = ['node', 'python', 'binary', 'remote-agent'];
 const TRANSPORTS: TransportKind[] = ['stdio', 'http', 'sse', 'websocket'];
 
@@ -60,6 +64,8 @@ export interface AdminDeps {
   backupApi?: AdminSubRouter;
   settingsApi?: AdminSubRouter;
   credentialsApi?: AdminSubRouter;
+  /** Per-key access view and activity (v0.8). */
+  keyActivity?: KeyActivityService;
   logger?: Logger;
 }
 
@@ -82,7 +88,7 @@ export class AdminApi {
     try {
       switch (area) {
         case 'keys':
-          await this.handleKeys(req, res, rest);
+          await this.handleKeys(req, res, rest, url);
           return true;
         case 'servers':
           await this.handleServers(req, res, rest);
@@ -135,7 +141,12 @@ export class AdminApi {
   // Keys
   // -------------------------------------------------------------------------
 
-  private async handleKeys(req: IncomingMessage, res: ServerResponse, rest: string[]): Promise<void> {
+  private async handleKeys(
+    req: IncomingMessage,
+    res: ServerResponse,
+    rest: string[],
+    url: URL,
+  ): Promise<void> {
     this.requireKey(req, ['master']);
     const method = req.method ?? 'GET';
 
@@ -187,6 +198,66 @@ export class AdminApi {
     if (rest.length === 2 && rest[1]! === 'revoke' && method === 'POST') {
       const record = this.deps.keys.revoke(rest[0]!);
       this.sendJson(res, 200, { key: toKeySummary(record) });
+      return;
+    }
+    if (rest.length === 1 && method === 'PATCH') {
+      if (!this.deps.keys.get(rest[0]!)) {
+        throw new GatewayError(ErrorCodes.TOOL_NOT_FOUND, 'Key not found', { httpStatus: 404 });
+      }
+      const body = await readJsonBody(req, this.deps.config.requestBodyLimitBytes);
+      this.assertObject(body);
+      const input: UpdateKeyInput = {};
+      if (body.name !== undefined) input.name = body.name as string;
+      if (body.paused !== undefined) input.paused = body.paused as boolean;
+      if (body.serverGrants !== undefined) input.serverGrants = body.serverGrants as ServerGrant[];
+      if (body.expiresAt !== undefined) input.expiresAt = body.expiresAt as string | null;
+      const record = this.deps.keys.update(rest[0]!, input);
+      this.sendJson(res, 200, { key: toKeySummary(record) });
+      return;
+    }
+    if (rest.length === 2 && rest[1]! === 'pause' && method === 'POST') {
+      if (!this.deps.keys.get(rest[0]!)) {
+        throw new GatewayError(ErrorCodes.TOOL_NOT_FOUND, 'Key not found', { httpStatus: 404 });
+      }
+      const record = this.deps.keys.pause(rest[0]!);
+      this.sendJson(res, 200, { key: toKeySummary(record) });
+      return;
+    }
+    if (rest.length === 2 && rest[1]! === 'resume' && method === 'POST') {
+      if (!this.deps.keys.get(rest[0]!)) {
+        throw new GatewayError(ErrorCodes.TOOL_NOT_FOUND, 'Key not found', { httpStatus: 404 });
+      }
+      const record = this.deps.keys.resume(rest[0]!);
+      this.sendJson(res, 200, { key: toKeySummary(record) });
+      return;
+    }
+    if (rest.length === 2 && rest[1]! === 'access' && method === 'GET') {
+      const keyActivity = this.deps.keyActivity;
+      if (!keyActivity) {
+        throw new GatewayError(ErrorCodes.NOT_IMPLEMENTED, 'Key access inspection is not available', {
+          httpStatus: 503,
+        });
+      }
+      this.sendJson(res, 200, keyActivity.access(rest[0]!));
+      return;
+    }
+    if (rest.length === 2 && rest[1]! === 'activity' && method === 'GET') {
+      const keyActivity = this.deps.keyActivity;
+      if (!keyActivity) {
+        throw new GatewayError(ErrorCodes.NOT_IMPLEMENTED, 'Key activity is not available', {
+          httpStatus: 503,
+        });
+      }
+      const filter: KeyActivityFilter = {};
+      const status = url.searchParams.get('status');
+      if (status !== null && status !== '') filter.status = status as KeyActivityFilter['status'];
+      const serverId = url.searchParams.get('serverId');
+      if (serverId !== null && serverId !== '') filter.serverId = serverId;
+      const toolId = url.searchParams.get('toolId');
+      if (toolId !== null && toolId !== '') filter.toolId = toolId;
+      if (url.searchParams.has('limit')) filter.limit = numberParam(url, 'limit', DEFAULT_ACTIVITY_LIMIT);
+      if (url.searchParams.has('offset')) filter.offset = numberParam(url, 'offset', 0);
+      this.sendJson(res, 200, keyActivity.activity(rest[0]!, filter));
       return;
     }
     throw new GatewayError(ErrorCodes.METHOD_NOT_FOUND, 'Unknown key endpoint', { httpStatus: 404 });
@@ -569,6 +640,7 @@ function toKeySummary(record: KeySummary | ApiKeyRecord): KeySummary {
     escalationAllowed: record.escalationAllowed,
     expiresAt: record.expiresAt,
     revokedAt: record.revokedAt,
+    pausedAt: record.pausedAt,
     createdAt: record.createdAt,
     lastUsedAt: record.lastUsedAt,
   };

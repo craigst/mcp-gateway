@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, formatApiError } from '../lib/api.js';
 import type { MasterKeyRegeneration } from '../lib/api.js';
 import { useAsyncData } from '../lib/hooks.js';
@@ -9,6 +9,7 @@ import {
   validateKeyForm,
 } from '../lib/rbac.js';
 import type { KeyFormErrors, ScopeRow, ScopeTool } from '../lib/rbac.js';
+import { KeyDetail } from './rbac/KeyDetail.js';
 import { formatTimestamp } from '../lib/format.js';
 import { KEY_TYPES } from '../../core/types.js';
 import type { KeySummary, KeyType, ServerGrant, ServerRecord } from '../../core/types.js';
@@ -76,7 +77,19 @@ const EMPTY_FORM: CreateFormState = {
 function keyStatus(key: KeySummary): string {
   if (key.revokedAt !== null) return 'revoked';
   if (key.expiresAt !== null && new Date(key.expiresAt).getTime() < Date.now()) return 'expired';
+  if (key.pausedAt !== null) return 'paused';
   return 'active';
+}
+
+function keyStatusTone(status: string): 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'accent' {
+  return status === 'paused' ? 'warning' : badgeToneForStatus(status);
+}
+
+export interface RbacPageProps {
+  /** Deep link `#/rbac/<id>`: open this key's detail drawer. */
+  initialKeyId?: string | null;
+  /** Keep the URL hash in sync when a detail drawer opens/closes. */
+  onKeyOpenChange?: (keyId: string | null) => void;
 }
 
 function selectionFor(selection: Record<string, ServerSelection>, serverId: string): ServerSelection {
@@ -105,7 +118,7 @@ function buildGrantsFromSelection(matrix: ScopeRow[], selection: Record<string, 
 }
 
 /** RBAC scope grid: key inventory, one-click provisioning with per-tool grants, revocation. */
-export function RbacPage() {
+export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps = {}) {
   const toast = useToast();
   const keys = useAsyncData(() => api.listKeys(), []);
   const servers = useAsyncData(() => api.listServers(), []);
@@ -129,10 +142,25 @@ export function RbacPage() {
   const [revokeBusy, setRevokeBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const [detailKey, setDetailKey] = useState<KeySummary | null>(null);
+  const [quickBusyId, setQuickBusyId] = useState<string | null>(null);
+
   const serverList: ServerRecord[] = servers.status === 'ready' ? servers.data : [];
   const keyList: KeySummary[] = keys.status === 'ready' ? keys.data : [];
   const masterKeys = keyList.filter((key) => key.keyType === 'master');
   const activeMasterKeys = masterKeys.filter((key) => keyStatus(key) === 'active').length;
+
+  // Deep link support: `#/rbac/<id>` opens the detail drawer once the list loads.
+  const previousKeyId = useRef<string | null>(initialKeyId);
+  useEffect(() => {
+    if (initialKeyId === null || initialKeyId === '') {
+      if (previousKeyId.current !== null) setDetailKey(null);
+    } else if (detailKey?.id !== initialKeyId) {
+      const found = keyList.find((key) => key.id === initialKeyId);
+      if (found !== undefined) setDetailKey(found);
+    }
+    previousKeyId.current = initialKeyId;
+  }, [initialKeyId, keyList, detailKey?.id]);
   const scopeTools: ScopeTool[] =
     tools.status === 'ready'
       ? (tools.data.tools ?? []).map((tool) => ({
@@ -224,6 +252,31 @@ export function RbacPage() {
       setActionError(formatApiError(error));
     } finally {
       setRevokeBusy(false);
+    }
+  };
+
+  const openKeyDetail = (key: KeySummary): void => {
+    setDetailKey(key);
+    onKeyOpenChange?.(key.id);
+  };
+
+  const closeKeyDetail = (): void => {
+    setDetailKey(null);
+    onKeyOpenChange?.(null);
+  };
+
+  const quickTogglePause = async (key: KeySummary): Promise<void> => {
+    setQuickBusyId(key.id);
+    setActionError(null);
+    try {
+      const updated = key.pausedAt === null ? await api.pauseKey(key.id) : await api.resumeKey(key.id);
+      toast('success', `“${updated.name}” ${updated.pausedAt === null ? 'resumed' : 'paused'}.`);
+      keys.reload();
+      if (detailKey?.id === updated.id) setDetailKey(updated);
+    } catch (error) {
+      setActionError(formatApiError(error));
+    } finally {
+      setQuickBusyId(null);
     }
   };
 
@@ -344,8 +397,15 @@ export function RbacPage() {
                   key: 'name',
                   header: 'Key',
                   render: (key) => (
-                    <div>
-                      <p className="font-medium text-slate-200">{key.name}</p>
+                    <div className="min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => openKeyDetail(key)}
+                        className="text-left font-medium text-slate-200 underline-offset-2 transition-colors hover:text-sky-300 hover:underline"
+                        title={`Open detail for ${key.name}`}
+                      >
+                        {key.name}
+                      </button>
                       <p className="font-mono text-[11px] text-slate-500">{key.id}</p>
                     </div>
                   ),
@@ -393,24 +453,42 @@ export function RbacPage() {
                   ),
                 },
                 {
+                  key: 'lastUsed',
+                  header: 'Last used',
+                  render: (key) => (
+                    <span className="text-xs text-slate-500">
+                      {key.lastUsedAt === null ? 'never' : formatTimestamp(key.lastUsedAt)}
+                    </span>
+                  ),
+                },
+                {
                   key: 'status',
                   header: 'Status',
                   render: (key) => {
                     const status = keyStatus(key);
-                    return <Badge tone={badgeToneForStatus(status)}>{status}</Badge>;
+                    return <Badge tone={keyStatusTone(status)}>{status}</Badge>;
                   },
                 },
                 {
                   key: 'actions',
                   header: 'Actions',
                   render: (key) => (
-                    <DangerButton
-                      onClick={() => setRevokeTarget(key)}
-                      disabled={key.revokedAt !== null}
-                      className="px-2 py-1 text-[11px]"
-                    >
-                      Revoke
-                    </DangerButton>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <GhostButton onClick={() => openKeyDetail(key)}>Detail</GhostButton>
+                      <GhostButton
+                        onClick={() => void quickTogglePause(key)}
+                        disabled={key.revokedAt !== null || quickBusyId !== null}
+                      >
+                        {quickBusyId === key.id ? 'Working…' : key.pausedAt === null ? 'Pause' : 'Resume'}
+                      </GhostButton>
+                      <DangerButton
+                        onClick={() => setRevokeTarget(key)}
+                        disabled={key.revokedAt !== null}
+                        className="px-2 py-1 text-[11px]"
+                      >
+                        Revoke
+                      </DangerButton>
+                    </div>
                   ),
                 },
               ]}
@@ -651,6 +729,18 @@ export function RbacPage() {
             : undefined
         }
       />
+
+      {detailKey !== null && (
+        <KeyDetail
+          key={detailKey.id}
+          keyRecord={detailKey}
+          onClose={closeKeyDetail}
+          onChanged={(updated) => {
+            setDetailKey(updated);
+            keys.reload();
+          }}
+        />
+      )}
     </div>
   );
 }
