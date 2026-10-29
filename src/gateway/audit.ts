@@ -34,11 +34,14 @@ export class SqliteAuditService implements AuditService {
   private lastCpu = process.cpuUsage();
   private lastCpuTs = Date.now();
   private cpuPercent = 0;
+  private readonly startedAt: number;
 
   constructor(
     private readonly db: DatabaseSync,
     private readonly options: AuditServiceOptions = {},
-  ) {}
+  ) {
+    this.startedAt = options.startedAt ?? Date.now();
+  }
 
   record(entry: {
     requestId: string | null;
@@ -157,7 +160,7 @@ export class SqliteAuditService implements AuditService {
     const servers = this.options.serverCounts?.() ?? { running: 0, total: 0 };
 
     return {
-      uptimeMs: Date.now() - (this.options.startedAt ?? Date.now()),
+      uptimeMs: Date.now() - this.startedAt,
       requests: { total, ok, denied, error },
       requestsPerMinute: Number(minuteRow?.count ?? 0),
       errorRate: total === 0 ? 0 : Number(((error + denied) / total).toFixed(4)),

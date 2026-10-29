@@ -31,6 +31,25 @@ If not, the tool is invisible — not merely denied.
 | 📊 | **Audit everything** | Every discovery/execution/denial recorded with latency, key, tool, delegation depth and payload (truncated). |
 | 🧪 | **Real tests** | Vitest unit + integration + E2E against live stdio sub-processes; CI builds the Docker image and smoke-tests `/health`. |
 
+## Console
+
+![Gateway dashboard — live telemetry, request mix and sub-server status](docs/screenshots/dashboard.png)
+
+<details>
+<summary>More screenshots (RBAC grid · catalog manager · audit explorer · playground)</summary>
+
+| RBAC scope grid | Catalog manager |
+|---|---|
+| ![RBAC](docs/screenshots/rbac.png) | ![Catalog](docs/screenshots/catalog.png) |
+
+| Audit explorer | JSON-RPC playground |
+|---|---|
+| ![Audit](docs/screenshots/audit.png) | ![Playground](docs/screenshots/playground.png) |
+
+</details>
+
+Screenshots come from a seeded local instance (`echo` + `analytics-mcp` sub-servers, scoped keys, one denied high-privilege call).
+
 ## Architecture
 
 ```
@@ -143,8 +162,10 @@ npm run lint           # eslint
 npm run build          # server + UI bundle
 ```
 
-The suite boots a real gateway on an ephemeral port, spawns the fixture MCP server,
-issues scoped keys through the admin API and asserts the censorship matrix end to end.
+The suite is **317 tests across 21 files**: unit suites per module, an integration suite that
+boots a real gateway on an ephemeral port and spawns fixture MCP servers, and an end-to-end
+scenario covering vault → git import → catalog → execution → delegation → depth guard → escalation,
+plus jsdom UI tests. CI also builds the Docker image and smoke-tests `/health` inside the container.
 
 ## Security
 
