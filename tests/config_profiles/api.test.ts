@@ -300,3 +300,134 @@ describe('ConfigProfilesApi migrate-env-file', () => {
     ).toBe(400);
   });
 });
+
+describe('ConfigProfilesApi credential references', () => {
+  it('accepts credentialRef entries and masks them in responses', async () => {
+    harness.vault.setSecret('SHARED_TOKEN', 'shared-value');
+    const created = await call('POST', BASE, {
+      body: {
+        name: 'Mixed credential sources',
+        entries: [
+          { key: 'API_URL', value: 'https://api.example.test' },
+          { key: 'SHARED_TOKEN', secretRef: 'SHARED_TOKEN' },
+          {
+            key: 'VW_KEY',
+            credentialRef: { provider: 'vaultwarden', itemId: 'vw-1', field: 'password' },
+          },
+        ],
+        headers: [
+          { key: 'X-Key', credentialRef: { provider: 'onepassword', itemId: 'op-2' } },
+        ],
+      },
+    });
+
+    expect(created.res.statusCode).toBe(201);
+    const profile = created.json().profile;
+    expect(profile.entries).toEqual([
+      { key: 'API_URL', source: 'encrypted', ref: null },
+      { key: 'SHARED_TOKEN', source: 'vault-ref', ref: 'SHARED_TOKEN' },
+      {
+        key: 'VW_KEY',
+        source: 'credential-ref',
+        ref: null,
+        provider: 'vaultwarden',
+        itemId: 'vw-1',
+        field: 'password',
+      },
+    ]);
+    expect(profile.headers).toEqual([
+      {
+        key: 'X-Key',
+        source: 'credential-ref',
+        ref: null,
+        provider: 'onepassword',
+        itemId: 'op-2',
+        field: null,
+      },
+    ]);
+
+    // Metadata only: no vault entry was created for the external reference, and no
+    // configuration value leaks through the API.
+    expect(harness.vault.getSecret(profileEnvSecretName(profile.id, 'VW_KEY'))).toBeNull();
+    expect(created.res.payload).not.toContain('shared-value');
+    expect(created.res.payload).not.toContain('https://api.example.test');
+
+    const listed = await call('GET', BASE);
+    expect(listed.json().profiles).toHaveLength(1);
+    expect(listed.json().profiles[0].headers[0]).toMatchObject({
+      source: 'credential-ref',
+      provider: 'onepassword',
+      itemId: 'op-2',
+    });
+  });
+
+  it('keeps credential provider metadata for key-only update rows', async () => {
+    const created = await call('POST', BASE, {
+      body: {
+        name: 'Keep ref',
+        entries: [
+          {
+            key: 'VW_KEY',
+            credentialRef: { provider: 'vaultwarden', itemId: 'vw-1', field: 'password' },
+          },
+        ],
+      },
+    });
+    const profileId = created.json().profile.id as string;
+
+    const updated = await call('PUT', `${BASE}/${profileId}`, {
+      body: { name: 'Keep ref', entries: [{ key: 'VW_KEY' }] },
+    });
+    expect(updated.res.statusCode).toBe(200);
+    expect(updated.json().profile.entries).toEqual([
+      {
+        key: 'VW_KEY',
+        source: 'credential-ref',
+        ref: null,
+        provider: 'vaultwarden',
+        itemId: 'vw-1',
+        field: 'password',
+      },
+    ]);
+  });
+
+  it('validates credential references at the API boundary', async () => {
+    const badRefs: unknown[] = [
+      { provider: 'bitwarden', itemId: 'x' },
+      { provider: 'vaultwarden', itemId: '' },
+      { provider: 'vaultwarden' },
+      { provider: 'gateway', itemId: 'x', field: 42 },
+      'vaultwarden:x',
+    ];
+    for (const credentialRef of badRefs) {
+      const result = await call('POST', BASE, {
+        body: { name: 'Bad ref', entries: [{ key: 'API_KEY', credentialRef }] },
+      });
+      expect(result.res.statusCode).toBe(400);
+      expect(result.json().error.code).toBe(ErrorCodes.INVALID_PARAMS);
+    }
+  });
+
+  it('resolves credential refs for an applied server', async () => {
+    const server = addEnvServer(harness);
+    const created = await call('POST', BASE, {
+      body: {
+        name: 'Applied ref',
+        entries: [
+          { key: 'EXTERNAL_TOKEN', credentialRef: { provider: 'gateway', itemId: 'gw-1' } },
+        ],
+      },
+    });
+    const profileId = created.json().profile.id as string;
+
+    const applied = await call('POST', `${BASE}/${profileId}/apply`, {
+      body: { serverIds: [server.id], restart: false },
+    });
+    expect(applied.res.statusCode).toBe(200);
+    expect(applied.json().results[0]).toMatchObject({ applied: true, error: null });
+    expect(serverProfileIds(harness, server.id)).toEqual([profileId]);
+    expect(harness.service.resolveForServer(server.id).credentialRefs).toEqual([
+      { key: 'EXTERNAL_TOKEN', target: 'env', provider: 'gateway', itemId: 'gw-1', field: null },
+    ]);
+  });
+});

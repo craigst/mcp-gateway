@@ -11,6 +11,9 @@ const { apiMock } = vi.hoisted(() => ({
     login: vi.fn(),
     logout: vi.fn(),
     onUnauthorized: vi.fn(),
+    getCredentialProviders: vi.fn(),
+    listCredentialItems: vi.fn(),
+    revealCredential: vi.fn(),
   },
 }));
 
@@ -115,6 +118,32 @@ beforeEach(() => {
   apiMock.getHealth.mockResolvedValue({ status: 'ok', version: '0.2.0', uptimeMs: 1000 });
   apiMock.getSession.mockResolvedValue({ authenticated: true, user: { username: 'operator' } });
   apiMock.onUnauthorized.mockReturnValue(() => {});
+  apiMock.getCredentialProviders.mockResolvedValue({
+    providers: [
+      {
+        id: 'vaultwarden',
+        name: 'Vaultwarden',
+        kind: 'password-manager',
+        configured: true,
+        isDefault: true,
+        available: true,
+        state: 'connected',
+        message: 'connected',
+        details: {},
+      },
+    ],
+    descriptors: [
+      { id: 'vaultwarden', name: 'Vaultwarden', description: 'Default', docsHint: '', fields: [] },
+    ],
+    defaultProvider: 'vaultwarden',
+  });
+  apiMock.listCredentialItems.mockResolvedValue([]);
+  apiMock.revealCredential.mockResolvedValue({
+    provider: 'vaultwarden',
+    itemId: 'alias',
+    field: 'password',
+    value: 'secret',
+  });
   apiMock.getVaultWarden.mockResolvedValue(installedOverview);
   apiMock.resolveEscalation.mockResolvedValue({
     escalation: { ...approveTicket, status: 'approved' },
@@ -161,6 +190,7 @@ describe('VaultWarden route', () => {
     window.location.hash = '#/vaultwarden';
     render(<App />);
 
+    expect((await screen.findAllByText('Secrets')).length).toBeGreaterThan(0);
     expect((await screen.findAllByText('Vault Warden')).length).toBeGreaterThan(0);
     expect(await screen.findByText('Pending credential requests')).toBeTruthy();
     expect(apiMock.getVaultWarden).toHaveBeenCalledTimes(1);

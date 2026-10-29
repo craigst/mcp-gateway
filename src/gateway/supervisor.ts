@@ -2,7 +2,15 @@ import { readFileSync } from 'node:fs';
 import { GatewayError, ErrorCodes } from '../core/errors.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { GatewayConfig } from '../core/config.js';
-import type { CatalogRepository, McpClient, RawToolDefinition, SubServerLogLine, Supervisor, VaultService } from '../core/ports.js';
+import type {
+  CatalogRepository,
+  McpClient,
+  RawToolDefinition,
+  SubServerLogLine,
+  Supervisor,
+  VaultService,
+} from '../core/ports.js';
+import type { CredentialRef } from '../core/types.js';
 import type { ServerRecord, ServerStatus, ToolDescriptor } from '../core/types.js';
 import { HttpMcpClient } from './transport/http.js';
 import { StdioMcpClient } from './transport/stdio.js';
@@ -18,6 +26,7 @@ interface ManagedServer {
 export interface ProfileRuntimeConfig {
   env: Record<string, string>;
   headers: Record<string, string>;
+  credentialRefs?: CredentialRef[];
 }
 
 export interface SupervisorOptions {
@@ -25,7 +34,9 @@ export interface SupervisorOptions {
   config: GatewayConfig;
   vault?: VaultService;
   /** Resolves attached configuration profiles (env/headers/envFile) per server. */
-  profileResolver?: (serverId: string) => ProfileRuntimeConfig;
+  profileResolver?: (serverId: string) => ProfileRuntimeConfig | Promise<ProfileRuntimeConfig>;
+  /** Resolves external password-manager references at process start. */
+  credentialResolver?: (refs: CredentialRef[]) => Promise<Record<string, string>>;
   logger?: Logger;
 }
 
@@ -101,11 +112,47 @@ export class DefaultSupervisor implements Supervisor {
     }
   }
 
+  /**
+   * Resolve attached configuration profiles for a server, including external
+   * password-manager references (Vaultwarden / 1Password) that are fetched at
+   * process start rather than stored in the gateway database.
+   */
+  private async resolveProfileRuntime(
+    record: ServerRecord,
+  ): Promise<{ env: Record<string, string>; headers: Record<string, string> }> {
+    const profile = await this.options.profileResolver?.(record.id);
+    const env: Record<string, string> = { ...(profile?.env ?? {}) };
+    const headers: Record<string, string> = { ...(profile?.headers ?? {}) };
+    const credentialRefs = profile?.credentialRefs ?? [];
+    if (credentialRefs.length > 0) {
+      if (!this.options.credentialResolver) {
+        throw new GatewayError(
+          ErrorCodes.INVALID_PARAMS,
+          'Configuration profiles reference external credentials but no credential provider is wired',
+        );
+      }
+      const resolved = await this.options.credentialResolver(credentialRefs);
+      for (const ref of credentialRefs) {
+        // Providers may key results by plain env/header name; prefer the
+        // target-qualified key so env and header refs with the same name stay distinct.
+        const value = resolved[`${ref.target}:${ref.key}`] ?? resolved[ref.key];
+        if (value === undefined) {
+          throw new GatewayError(ErrorCodes.INVALID_PARAMS, `Could not resolve ${ref.provider} credential for ${ref.key}`);
+        }
+        if (ref.target === 'header') headers[ref.key] = value;
+        else env[ref.key] = value;
+      }
+      this.pushLog(record.id, 'system', `resolved ${credentialRefs.length} external credential reference(s)`);
+    }
+    return { env, headers };
+  }
+
   private async createClient(record: ServerRecord, onLog: (line: SubServerLogLine) => void): Promise<McpClient> {
+    const profileRuntime = await this.resolveProfileRuntime(record);
+    const profileHeaders = profileRuntime.headers;
     if (record.transport === 'stdio') {
       if (!record.command) throw new GatewayError(ErrorCodes.INVALID_PARAMS, `Server '${record.name}' has no command`);
-      const profile = this.options.profileResolver?.(record.id);
-      const env: Record<string, string> = { ...(profile?.env ?? {}) };
+      const env: Record<string, string> = { ...profileRuntime.env };
       if (record.envFile) {
         Object.assign(env, readEnvFile(record.envFile));
         this.pushLog(record.id, 'system', `loaded env file ${record.envFile}`);
@@ -131,7 +178,7 @@ export class DefaultSupervisor implements Supervisor {
     const client = new HttpMcpClient({
       serverId: record.id,
       url: record.url,
-      headers: { ...(this.options.profileResolver?.(record.id)?.headers ?? {}), ...(record.headers ?? {}) },
+      headers: { ...profileHeaders, ...(record.headers ?? {}) },
       requestTimeoutMs: this.options.config.defaultToolTimeoutMs,
     });
     return client;

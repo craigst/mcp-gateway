@@ -315,3 +315,16 @@ Major upgrade delivering private-catalog import and approval-gated credential ac
 | Reinstall | A restored server whose checkout was not backed up can be rebuilt from its tracked source and restarted/probed (`POST /admin/updates/servers/:id/reinstall`). |
 | UI | Setup wizard (create/restore + optional API key), Settings page (account/system/keys/backups, create+auto-download, restore with reinstall actions), session-safe redirects. |
 | Tests | 800 tests / 81 files, including a full HTTP e2e: fresh setup → populated state → encrypted backup → restore into a second fresh gateway with the same password → login with restored credentials → reinstall. |
+
+
+---
+
+## v0.7 upgrade (shipped)
+
+| Area | Delivered |
+|---|---|
+| Credential providers | `CredentialProviderService` with three providers: **Vaultwarden** (default; values encrypted in the gateway vault, connector `mcp.env` materialised 0700/0600, existing `vaultwarden-mcp` tools used for status/list/reveal), **1Password** (Connect host + token, or service-account token via `op` CLI), and the built-in **gateway** AES vault. Default provider setting, configure/clear/test, item search, audited reveal (`admin.credential.reveal`, value never logged). |
+| Secrets UI | Sidebar **Secrets** page with provider tabs (default selected), search, item metadata and audited reveal/copy; Vaultwarden approvals/access-log panels retained. Settings → Credentials config cards generated from provider descriptors. |
+| API keys by reference | Config profiles accept `credentialRef {provider,itemId,field}` rows (metadata only, no vault write); the supervisor resolves references at process start through the selected provider and injects env/headers (`profile env < credential refs < server env`). |
+| Compatibility | Backups include provider configuration (gateway vault) and profile references; existing encrypted/vault-ref profile entries unchanged; `#/vaultwarden` still resolves to Secrets. |
+| Tests | 861 tests / 88 files, incl. an HTTP e2e: configure Vaultwarden (mcp.env/0600 + connector list/reveal), 1Password fake Connect (list/reveal/default), gateway vault reveal, and a profile credentialRef injected into a sub-server. |

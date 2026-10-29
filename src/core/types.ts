@@ -565,9 +565,13 @@ export interface ServerUpdateResult {
  */
 export interface ConfigProfileValue {
   key: string;
-  source: 'encrypted' | 'vault-ref';
+  source: 'encrypted' | 'vault-ref' | 'credential-ref';
   /** Vault secret name when source is `vault-ref`. */
   ref: string | null;
+  /** Credential provider + item reference when source is `credential-ref`. */
+  provider?: CredentialProviderId;
+  itemId?: string;
+  field?: string | null;
 }
 
 export interface ConfigProfile {
@@ -588,6 +592,12 @@ export interface ConfigProfileInputValue {
   value?: string;
   /** Reference to an existing gateway vault secret by name. */
   secretRef?: string;
+  /** Reference to an item in an external password manager (Vaultwarden/1Password). */
+  credentialRef?: {
+    provider: CredentialProviderId;
+    itemId: string;
+    field?: string | null;
+  };
 }
 
 export interface ConfigProfileInput {
@@ -626,8 +636,12 @@ export interface InspectorEnvEntry {
 
 export interface InspectorProfileEntry {
   key: string;
-  source: 'encrypted' | 'vault-ref';
+  source: 'encrypted' | 'vault-ref' | 'credential-ref';
   ref: string | null;
+  /** External password-manager reference (source `credential-ref`). */
+  provider?: string;
+  itemId?: string;
+  field?: string | null;
 }
 
 export interface InspectorProfile {
@@ -755,4 +769,74 @@ export interface GatewaySettingsInfo {
   userCount: number;
   sessionCount: number;
   setupRequired: boolean;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.7 — credential providers (Vaultwarden default, 1Password option)
+// ---------------------------------------------------------------------------
+
+export type CredentialProviderId = 'vaultwarden' | 'onepassword' | 'gateway';
+
+export interface CredentialFieldSpec {
+  key: string;
+  label: string;
+  secret: boolean;
+  required: boolean;
+  placeholder?: string;
+  hint?: string;
+}
+
+export interface CredentialProviderDescriptor {
+  id: CredentialProviderId;
+  name: string;
+  description: string;
+  fields: CredentialFieldSpec[];
+  docsHint: string;
+}
+
+export type CredentialProviderState = 'connected' | 'not-configured' | 'error' | 'unavailable';
+
+export interface CredentialProviderStatus {
+  id: CredentialProviderId;
+  name: string;
+  kind: 'password-manager' | 'builtin';
+  configured: boolean;
+  isDefault: boolean;
+  available: boolean;
+  state: CredentialProviderState;
+  message: string;
+  details: Record<string, unknown>;
+}
+
+export interface CredentialItem {
+  provider: CredentialProviderId;
+  /** Provider-specific opaque id (Vaultwarden alias/name, 1Password item id, vault secret name). */
+  id: string;
+  name: string;
+  username: string | null;
+  category: string | null;
+  urls: string[];
+  fields: string[];
+}
+
+export interface CredentialItemQuery {
+  search?: string;
+  limit?: number;
+}
+
+export interface CredentialRevealResult {
+  provider: CredentialProviderId;
+  itemId: string;
+  field: string | null;
+  value: string;
+}
+
+export interface CredentialRef {
+  /** Env var / header name the resolved value is injected under. */
+  key: string;
+  target: 'env' | 'header';
+  provider: CredentialProviderId;
+  itemId: string;
+  field?: string | null;
 }

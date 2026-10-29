@@ -1,11 +1,15 @@
 /**
- * SQLite persistence for reusable configuration profiles (v0.4).
+ * SQLite persistence for reusable configuration profiles (v0.4 / v0.7).
  *
  * SQLite stores only metadata and *references* — never configuration values:
- *   env_json         JSON array of { key, source, ref } for environment entries
- *   headers_json     JSON array of { key, source, ref } for header entries
+ *   env_json         JSON array of { key, source, ref, provider?, itemId?, field? }
+ *   headers_json     same shape for header entries
  *   secret_keys_json JSON array of profile-owned vault secret names (cleanup list)
  *   env_file         always NULL (env files are intentionally unsupported)
+ *
+ * `source` is 'encrypted' (profile-owned vault value), 'vault-ref' (existing named
+ * gateway vault secret) or 'credential-ref' (external password-manager item, whose
+ * provider/itemId/field are metadata only and never touch the vault).
  *
  * Server attachment lives on `servers.config_profile_ids` (JSON array). The catalog
  * repository does not (yet) project that column, so this store reads/writes it
@@ -16,7 +20,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { parseJson, toJson } from '../core/db.js';
 import { invalidParams } from '../core/errors.js';
 import { nowIso } from '../core/ids.js';
-import type { ConfigProfile, ConfigProfileValue } from '../core/types.js';
+import type { ConfigProfile, ConfigProfileValue, CredentialProviderId } from '../core/types.js';
 
 interface ConfigProfileRow {
   id: string;
@@ -45,6 +49,16 @@ export interface NewConfigProfileRecord {
   ownedSecretNames: string[];
 }
 
+const CREDENTIAL_PROVIDERS: readonly CredentialProviderId[] = [
+  'vaultwarden',
+  'onepassword',
+  'gateway',
+];
+
+function isCredentialProvider(value: unknown): value is CredentialProviderId {
+  return typeof value === 'string' && (CREDENTIAL_PROVIDERS as readonly string[]).includes(value);
+}
+
 function parseValueEntries(raw: string): ConfigProfileValue[] {
   const parsed = parseJson<unknown>(raw, []);
   if (!Array.isArray(parsed)) return [];
@@ -55,6 +69,17 @@ function parseValueEntries(raw: string): ConfigProfileValue[] {
     const key = record.key;
     const source = record.source;
     if (typeof key !== 'string' || key === '') continue;
+
+    if (source === 'credential-ref') {
+      const provider = record.provider;
+      const itemId = record.itemId;
+      if (!isCredentialProvider(provider)) continue;
+      if (typeof itemId !== 'string' || itemId === '') continue;
+      const field = typeof record.field === 'string' && record.field !== '' ? record.field : null;
+      entries.push({ key, source: 'credential-ref', ref: null, provider, itemId, field });
+      continue;
+    }
+
     if (source !== 'encrypted' && source !== 'vault-ref') continue;
     const ref = typeof record.ref === 'string' && record.ref !== '' ? record.ref : null;
     entries.push({ key, source, ref });
@@ -95,11 +120,23 @@ function toPublic(profile: StoredConfigProfile): ConfigProfile {
 
 function encodeEntries(entries: ConfigProfileValue[]): string {
   return toJson(
-    entries.map((entry) => ({
-      key: entry.key,
-      source: entry.source,
-      ref: entry.source === 'vault-ref' ? entry.ref : null,
-    })),
+    entries.map((entry) => {
+      if (entry.source === 'credential-ref') {
+        return {
+          key: entry.key,
+          source: 'credential-ref',
+          ref: null,
+          provider: entry.provider ?? null,
+          itemId: entry.itemId ?? null,
+          field: entry.field ?? null,
+        };
+      }
+      return {
+        key: entry.key,
+        source: entry.source,
+        ref: entry.source === 'vault-ref' ? entry.ref : null,
+      };
+    }),
   );
 }
 

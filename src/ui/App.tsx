@@ -9,7 +9,7 @@ import { DashboardPage } from './pages/Dashboard.js';
 import { CatalogPage } from './pages/Catalog.js';
 import { ConfigurationsPage } from './pages/Configurations.js';
 import type { CatalogTab } from './pages/Catalog.js';
-import { VaultWardenPage } from './pages/VaultWarden.js';
+import { SecretsPage } from './pages/secrets/SecretsPage.js';
 import { RbacPage } from './pages/Rbac.js';
 import { VaultPage } from './pages/Vault.js';
 import { AuditPage } from './pages/Audit.js';
@@ -23,7 +23,7 @@ const PAGE_KEYS: readonly string[] = [
   'dashboard',
   'catalog',
   'configurations',
-  'vaultwarden',
+  'secrets',
   'rbac',
   'vault',
   'audit',
@@ -55,6 +55,10 @@ function locationFromHash(): HashLocation {
   const tab = new URLSearchParams(queryPart).get('tab');
   if (segments[0] === 'server' && segments[1] !== undefined) {
     return { page: 'server', catalogTab: null, serverId: decodeURIComponent(segments[1]) };
+  }
+  // Backwards-compatible alias: the Vault Warden page is now Secrets.
+  if (segments[0] === 'vaultwarden') {
+    return { page: 'secrets', catalogTab: null, serverId: null };
   }
   const page = isPageKey(segments[0] ?? '') ? (segments[0] as PageKey) : 'dashboard';
   return { page, catalogTab: isCatalogTab(tab) ? tab : null, serverId: null };
@@ -97,8 +101,8 @@ function renderPage(page: PageKey, context: RenderContext) {
       );
     case 'configurations':
       return <ConfigurationsPage onNavigate={context.onNavigate} />;
-    case 'vaultwarden':
-      return <VaultWardenPage onNavigate={context.onNavigate} />;
+    case 'secrets':
+      return <SecretsPage onNavigate={context.onNavigate} />;
     case 'rbac':
       return <RbacPage />;
     case 'vault':

@@ -440,3 +440,51 @@ profile/catalog/audit/settings tables; vault secrets are re-encrypted into the l
 checkouts are **not** included in the backup — servers whose working directory is missing are
 returned in `reinstallRequired` and can be rebuilt from their tracked source with
 `POST /mcp/v1/admin/updates/servers/:id/reinstall` (staged clone/build/swap/start/probe).
+
+## 11. v0.7 — credential providers (Vaultwarden default, 1Password option)
+
+The gateway can use an external password manager as the **default credential/API-key manager**:
+every provider is configured once, stored encrypted in the gateway vault, and exposed through a
+single browser/reveal surface. **Vaultwarden is the default provider**; 1Password (Connect host +
+token, or a service-account token with the `op` CLI) is an option; the built-in AES vault remains
+as a fallback.
+
+```jsonc
+GET /mcp/v1/admin/credentials/providers
+→ { "defaultProvider": "vaultwarden",
+    "descriptors": [{ "id": "vaultwarden", "name": "Vaultwarden", "description": "…",
+                      "fields": [{ "key": "VAULTWARDEN_URL", "label": "Server URL",
+                                   "secret": false, "required": true, "placeholder": "https://vault.example" },
+                                 { "key": "BW_PASSWORD", "label": "Master password", "secret": true, "required": true } ],
+                      "docsHint": "…" }, … 1Password, gateway ],
+    "providers": [{ "id": "vaultwarden", "configured": false, "isDefault": true,
+                    "available": true, "state": "not-configured", "message": "…",
+                    "details": {} }, …] }
+
+PUT    /mcp/v1/admin/credentials/providers/:id   { "values": { "VAULTWARDEN_URL": "…", "…": "…" } }
+POST   /mcp/v1/admin/credentials/providers/:id/test     → { "provider": CredentialProviderStatus }
+DELETE /mcp/v1/admin/credentials/providers/:id          → { "provider": CredentialProviderStatus }
+POST   /mcp/v1/admin/credentials/default               { "providerId": "onepassword" }
+GET    /mcp/v1/admin/credentials/items?provider=vaultwarden&search=&limit=50
+       → { "items": [{ "provider": "vaultwarden", "id": "arr/sonarr/api-key", "name": "…",
+                       "username": null, "category": "arr", "urls": [], "fields": ["password"] }] }
+POST   /mcp/v1/admin/credentials/reveal  { "provider": "vaultwarden", "itemId": "…", "field": "password" }
+       → { "reveal": { "provider": "…", "itemId": "…", "field": "password", "value": "…" } }
+         // every reveal is audited as method "admin.credential.reveal"; the value is never logged
+```
+
+Provider configuration values are encrypted in the gateway vault (`CRED_<PROVIDER>_<FIELD>`).
+For Vaultwarden the gateway also materialises the values into the connector's
+`~/.config/vaultwarden/mcp.env` (0600, inside the container) and restarts the imported
+`vaultwarden-mcp` server, so the existing Vault Warden approval flow keeps working unchanged.
+
+Configuration profiles can reference provider items instead of storing values:
+
+```jsonc
+{ "key": "N8N_API_KEY",
+  "credentialRef": { "provider": "vaultwarden", "itemId": "arr/n8n/api-key", "field": "password" } }
+```
+
+At server start the supervisor resolves each reference through the credential provider and injects
+the value into the sub-process environment/headers (profile env < credential refs < server env).
+References are metadata only in the gateway database; the value stays in Vaultwarden/1Password.

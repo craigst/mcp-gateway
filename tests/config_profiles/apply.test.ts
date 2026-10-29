@@ -128,6 +128,7 @@ describe('DefaultConfigProfileService.apply with a live fixture server', () => {
     expect(harness.service.resolveForServer(server.id)).toEqual({
       env: {},
       headers: { 'X-Api-Key': 'header-secret-value' },
+      credentialRefs: [],
     });
     // Header values are in the vault, not SQLite.
     expect(JSON.stringify(harness.db.prepare('SELECT * FROM config_profiles').all())).not.toContain(
@@ -195,7 +196,11 @@ describe('DefaultConfigProfileService.apply with a live fixture server', () => {
     expect(harness.service.resolveForServer(server.id).env).toEqual({ API_URL: 'http://detached' });
 
     harness.service.detach(profile.id, server.id);
-    expect(harness.service.resolveForServer(server.id)).toEqual({ env: {}, headers: {} });
+    expect(harness.service.resolveForServer(server.id)).toEqual({
+      env: {},
+      headers: {},
+      credentialRefs: [],
+    });
   });
 });
 

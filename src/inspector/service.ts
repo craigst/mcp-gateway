@@ -427,7 +427,14 @@ export class ServerInspectorService {
 
   private toInspectorProfile(profile: ConfigProfileSummary): InspectorProfile {
     const mapEntries = (entries: ConfigProfileSummary['entries']): InspectorProfileEntry[] =>
-      entries.map((entry) => ({ key: entry.key, source: entry.source, ref: entry.ref ?? null }));
+      entries.map((entry) => ({
+        key: entry.key,
+        source: entry.source,
+        ref: entry.ref ?? null,
+        ...(entry.source === 'credential-ref'
+          ? { provider: entry.provider, itemId: entry.itemId, field: entry.field ?? null }
+          : {}),
+      }));
     return {
       id: profile.id,
       name: profile.name,

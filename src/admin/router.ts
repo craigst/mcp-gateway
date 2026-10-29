@@ -59,6 +59,7 @@ export interface AdminDeps {
   inspectorApi?: AdminSubRouter;
   backupApi?: AdminSubRouter;
   settingsApi?: AdminSubRouter;
+  credentialsApi?: AdminSubRouter;
   logger?: Logger;
 }
 
@@ -115,6 +116,8 @@ export class AdminApi {
           return (await this.deps.backupApi?.handle(req, res, url)) ?? false;
         case 'settings':
           return (await this.deps.settingsApi?.handle(req, res, url)) ?? false;
+        case 'credentials':
+          return (await this.deps.credentialsApi?.handle(req, res, url)) ?? false;
         case 'config-profiles':
           return (await this.deps.configProfilesApi?.handle(req, res, url)) ?? false;
         default:

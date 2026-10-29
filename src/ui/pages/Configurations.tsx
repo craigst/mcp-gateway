@@ -12,7 +12,7 @@ import { DangerButton, GhostButton, PrimaryButton, SecondaryButton } from '../co
 import { useToast } from '../components/Toasts.js';
 import { ConfigProfileDialog } from '../pages/configurations/ConfigProfileDialog.js';
 import { ApplyProfileDialog } from '../pages/configurations/ApplyProfileDialog.js';
-import { countEncrypted, countVaultRefs } from '../pages/configurations/shared.js';
+import { countCredentialRefs, countEncrypted, countVaultRefs } from '../pages/configurations/shared.js';
 import type { PageKey } from '../components/Layout.js';
 import type { ConfigProfileSummary, ServerRecord } from '../../core/types.js';
 
@@ -139,6 +139,7 @@ export function ConfigurationsPage({ onNavigate }: ConfigurationsPageProps) {
               {profileList.map((profile) => {
                 const encrypted = countEncrypted(profile.entries);
                 const vaultRefs = countVaultRefs(profile.entries);
+                const credentialRefs = countCredentialRefs(profile.entries);
                 const headerVaultRefs = countVaultRefs(profile.headers);
                 return (
                   <article
@@ -160,6 +161,7 @@ export function ConfigurationsPage({ onNavigate }: ConfigurationsPageProps) {
                         <Badge tone="neutral">{profile.entries.length} env</Badge>
                         {encrypted > 0 && <Badge tone="warning">{encrypted} encrypted</Badge>}
                         {vaultRefs > 0 && <Badge tone="accent">{vaultRefs} vault ref</Badge>}
+                        {credentialRefs > 0 && <Badge tone="info">{credentialRefs} password-manager</Badge>}
                         {profile.headers.length > 0 && (
                           <Badge tone="info">
                             {profile.headers.length} header{profile.headers.length === 1 ? '' : 's'}

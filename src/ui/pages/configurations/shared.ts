@@ -2,20 +2,23 @@
  * Pure helpers for the encrypted configuration-profile editor.
  *
  * A profile row is either:
- *  - `encrypted` — a value the gateway encrypts into its own vault (write-only), or
- *  - `vault-ref` — a reference to an existing named secret from the Vault page.
+ *  - `encrypted` — a value the gateway encrypts into its own vault (write-only),
+ *  - `vault-ref` — a reference to an existing named secret from the Vault page, or
+ *  - `credential-ref` — a reference to an item in an external password manager
+ *    (Vaultwarden / 1Password) via the credential-provider layer.
  * Values are never returned by the API, so edit mode only shows keys/sources.
  */
 import type {
   ConfigProfileInputValue,
   ConfigProfileValue,
+  CredentialProviderId,
 } from '../../../core/types.js';
 
 export const CONFIG_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** HTTP header names allow digits and hyphens (e.g. `X-Api-Key`). */
 export const HEADER_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 
-export type ConfigRowMode = 'encrypted' | 'vault-ref';
+export type ConfigRowMode = 'encrypted' | 'vault-ref' | 'credential-ref';
 
 export interface ConfigRow {
   id: number;
@@ -25,6 +28,12 @@ export interface ConfigRow {
   value: string;
   /** Vault secret name for `vault-ref` rows. */
   secretRef: string;
+  /** Password-manager provider for `credential-ref` rows. */
+  credentialProvider: CredentialProviderId;
+  /** Provider item id (Vaultwarden alias/name, 1Password item id). */
+  credentialItemId: string;
+  /** Field to resolve from the item (defaults to `password`). */
+  credentialField: string;
   /** True when this row came from an existing profile (blank value means keep). */
   existing: boolean;
 }
@@ -39,6 +48,9 @@ export function newConfigRow(): ConfigRow {
     mode: 'encrypted',
     value: '',
     secretRef: '',
+    credentialProvider: 'vaultwarden',
+    credentialItemId: '',
+    credentialField: 'password',
     existing: false,
   };
 }
@@ -50,9 +62,17 @@ export function rowsFromValues(values: readonly ConfigProfileValue[]): ConfigRow
     return {
       id: rowSequence,
       key: value.key,
-      mode: value.source === 'vault-ref' ? 'vault-ref' : 'encrypted',
+      mode:
+        value.source === 'vault-ref'
+          ? 'vault-ref'
+          : value.source === 'credential-ref'
+            ? 'credential-ref'
+            : 'encrypted',
       value: '',
       secretRef: value.ref ?? '',
+      credentialProvider: value.provider ?? 'vaultwarden',
+      credentialItemId: value.itemId ?? '',
+      credentialField: value.field ?? 'password',
       existing: true,
     };
   });
@@ -79,7 +99,7 @@ export function buildConfigValues(
   for (const row of rows) {
     const key = row.key.trim();
     if (key === '') {
-      if (row.value.trim() !== '' || row.secretRef.trim() !== '') {
+      if (row.value.trim() !== '' || row.secretRef.trim() !== '' || row.credentialItemId.trim() !== '') {
         return { values, error: `A ${label} has a value but no key.` };
       }
       continue;
@@ -96,6 +116,21 @@ export function buildConfigValues(
       const ref = row.secretRef.trim();
       if (ref === '') return { values, error: `Choose a vault secret for ${key}.` };
       values.push({ key, secretRef: ref });
+      continue;
+    }
+
+    if (row.mode === 'credential-ref') {
+      const itemId = row.credentialItemId.trim();
+      if (itemId === '') return { values, error: `Choose a password-manager item for ${key}.` };
+      const field = row.credentialField.trim();
+      values.push({
+        key,
+        credentialRef: {
+          provider: row.credentialProvider,
+          itemId,
+          ...(field === '' ? {} : { field }),
+        },
+      });
       continue;
     }
 
@@ -116,4 +151,9 @@ export function countVaultRefs(values: readonly ConfigProfileValue[]): number {
 
 export function countEncrypted(values: readonly ConfigProfileValue[]): number {
   return values.filter((value) => value.source === 'encrypted').length;
+}
+
+/** Count rows that resolve from an external password manager (credential refs). */
+export function countCredentialRefs(values: readonly ConfigProfileValue[]): number {
+  return values.filter((value) => value.source === 'credential-ref').length;
 }

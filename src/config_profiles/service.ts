@@ -6,6 +6,10 @@
  *   - `value`     input  -> encrypted into the gateway AES vault immediately
  *                            (`PROFILE_<id>_ENV_<KEY>` / `PROFILE_<id>_HEADER_<KEY>`)
  *   - `secretRef` input  -> reference to an existing named vault secret
+ *   - `credentialRef`    -> reference to an external password-manager item
+ *                            (Vaultwarden/1Password). Metadata only: no vault write;
+ *                            returned by `resolveForServer` for the supervisor to
+ *                            resolve at process start.
  *
  * Profiles are attached to servers via `servers.config_profile_ids` and resolved at
  * process start through the supervisor's profile resolver hook. Merge precedence:
@@ -29,6 +33,8 @@ import type {
   ConfigProfileInputValue,
   ConfigProfileSummary,
   ConfigProfileValue,
+  CredentialProviderId,
+  CredentialRef,
   InstallTestResult,
   ServerStatus,
 } from '../core/types.js';
@@ -50,12 +56,29 @@ const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** RFC 7230 token characters allowed in an HTTP header name. */
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 const MAX_VAULT_SECRET_NAME_LENGTH = 64;
+const CREDENTIAL_PROVIDER_IDS: readonly CredentialProviderId[] = [
+  'vaultwarden',
+  'onepassword',
+  'gateway',
+];
+
+function isValidCredentialProvider(value: unknown): value is CredentialProviderId {
+  return typeof value === 'string' && (CREDENTIAL_PROVIDER_IDS as readonly string[]).includes(value);
+}
+
+interface NormalisedCredentialRef {
+  provider: CredentialProviderId;
+  itemId: string;
+  /** Optional field inside the credential item; null when the item itself is the secret. */
+  field: string | null;
+}
 
 interface NormalisedValue {
   key: string;
   value?: string;
   secretRef?: string;
-  /** Update-only: keep the existing encrypted/vault-ref value for this key. */
+  credentialRef?: NormalisedCredentialRef;
+  /** Update-only: keep the existing encrypted/vault-ref/credential-ref value for this key. */
   keep?: true;
 }
 
@@ -117,6 +140,31 @@ function validateDescription(raw: unknown): string | null {
   return description === '' ? null : description;
 }
 
+function validateCredentialRef(raw: unknown, key: string): NormalisedCredentialRef {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw invalidParams(`Entry '${key}' credentialRef must be an object`);
+  }
+  const record = raw as Record<string, unknown>;
+  if (!isValidCredentialProvider(record.provider)) {
+    throw invalidParams(
+      `Entry '${key}' credentialRef provider must be one of ${CREDENTIAL_PROVIDER_IDS.join(', ')}`,
+    );
+  }
+  const itemId = typeof record.itemId === 'string' ? record.itemId.trim() : '';
+  if (itemId === '') {
+    throw invalidParams(`Entry '${key}' credentialRef itemId must be a non-empty string`);
+  }
+  let field: string | null = null;
+  if (record.field !== undefined && record.field !== null) {
+    if (typeof record.field !== 'string') {
+      throw invalidParams(`Entry '${key}' credentialRef field must be a string or null`);
+    }
+    const trimmed = record.field.trim();
+    field = trimmed === '' ? null : trimmed;
+  }
+  return { provider: record.provider, itemId, field };
+}
+
 function validateValueList(raw: unknown, kind: 'env' | 'header', allowKeep = false): NormalisedValue[] {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) {
@@ -146,14 +194,22 @@ function validateValueList(raw: unknown, kind: 'env' | 'header', allowKeep = fal
 
     const hasValue = Object.prototype.hasOwnProperty.call(item, 'value');
     const hasSecretRef = Object.prototype.hasOwnProperty.call(item, 'secretRef');
-    if (hasValue && hasSecretRef) {
-      throw invalidParams(`Entry '${key}' must use either "value" or "secretRef", not both`);
+    const hasCredentialRef = Object.prototype.hasOwnProperty.call(item, 'credentialRef');
+    const provided = [hasValue, hasSecretRef, hasCredentialRef].filter(Boolean).length;
+    if (provided > 1) {
+      throw invalidParams(
+        `Entry '${key}' must use exactly one of "value", "secretRef" or "credentialRef"`,
+      );
     }
-    if (!hasValue && !hasSecretRef) {
+    if (provided === 0) {
       if (!allowKeep) {
-        throw invalidParams(`Entry '${key}' must provide a "value" or a "secretRef"`);
+        throw invalidParams(`Entry '${key}' must provide a "value", "secretRef" or "credentialRef"`);
       }
       values.push({ key, keep: true });
+      continue;
+    }
+    if (hasCredentialRef) {
+      values.push({ key, credentialRef: validateCredentialRef(record.credentialRef, key) });
       continue;
     }
     if (hasValue) {
@@ -248,13 +304,23 @@ export class DefaultConfigProfileService implements ConfigProfileService {
   }
 
   /**
-   * Resolve every attached profile for a server into concrete env/headers.
-   * Throws a clear GatewayError when the vault is disabled or a value is missing.
+   * Resolve every attached profile for a server.
+   *
+   * Encrypted/vault-ref entries are decrypted into `env`/`headers` as before.
+   * External password-manager entries are not fetched here: they are returned as
+   * `credentialRefs` so the supervisor can resolve them through the credential
+   * provider service at process start. Throws a clear GatewayError when the vault
+   * is disabled or an encrypted/vault-ref value is missing.
    */
-  resolveForServer(serverId: string): { env: Record<string, string>; headers: Record<string, string> } {
+  resolveForServer(serverId: string): {
+    env: Record<string, string>;
+    headers: Record<string, string>;
+    credentialRefs: CredentialRef[];
+  } {
     const profileIds = this.store.profileIdsForServer(serverId);
     const env: Record<string, string> = {};
     const headers: Record<string, string> = {};
+    const credentialRefs = new Map<string, CredentialRef>();
 
     for (const profileId of profileIds) {
       const profile = this.store.getStored(profileId);
@@ -263,14 +329,14 @@ export class DefaultConfigProfileService implements ConfigProfileService {
         continue;
       }
       for (const entry of profile.entries) {
-        env[entry.key] = this.resolveEntry(profile, entry, 'env');
+        this.resolveEntryInto(profile, entry, 'env', env, headers, credentialRefs);
       }
       for (const entry of profile.headers) {
-        headers[entry.key] = this.resolveEntry(profile, entry, 'header');
+        this.resolveEntryInto(profile, entry, 'header', env, headers, credentialRefs);
       }
     }
 
-    return { env, headers };
+    return { env, headers, credentialRefs: [...credentialRefs.values()] };
   }
 
   // -------------------------------------------------------------------------
@@ -573,7 +639,22 @@ export class DefaultConfigProfileService implements ConfigProfileService {
         if (entry.keep !== true) return entry;
         const previous = current.find((candidate) => candidate.key.toLowerCase() === entry.key.toLowerCase());
         if (!previous) {
-          throw invalidParams(`Entry '${entry.key}' is new and requires a "value" or a "secretRef"`);
+          throw invalidParams(
+            `Entry '${entry.key}' is new and requires a "value", "secretRef" or "credentialRef"`,
+          );
+        }
+        if (previous.source === 'credential-ref') {
+          if (!previous.provider || !previous.itemId) {
+            throw invalidParams(`Entry '${entry.key}' has an unresolvable credential reference`);
+          }
+          return {
+            key: entry.key,
+            credentialRef: {
+              provider: previous.provider,
+              itemId: previous.itemId,
+              field: previous.field ?? null,
+            },
+          };
         }
         if (previous.source === 'vault-ref') {
           if (!previous.ref) {
@@ -600,6 +681,19 @@ export class DefaultConfigProfileService implements ConfigProfileService {
     const plan: EntryPlan = { values: [], writes: [] };
     const usedSecretNames = new Map<string, string>();
     for (const entry of values) {
+      if (entry.credentialRef !== undefined) {
+        // External credential reference: metadata only — no vault secret is written
+        // and the vault may even be disabled.
+        plan.values.push({
+          key: entry.key,
+          source: 'credential-ref',
+          ref: null,
+          provider: entry.credentialRef.provider,
+          itemId: entry.credentialRef.itemId,
+          field: entry.credentialRef.field,
+        });
+        continue;
+      }
       if (entry.secretRef !== undefined) {
         if (!this.vault.isEnabled()) throw vaultRequiredError();
         if (this.vault.getSecret(entry.secretRef) === null) {
@@ -636,6 +730,43 @@ export class DefaultConfigProfileService implements ConfigProfileService {
       this.vault.setSecret(write.name, write.value);
       owned.push(write.name);
     }
+  }
+
+  private resolveEntryInto(
+    profile: StoredConfigProfile,
+    entry: ConfigProfileValue,
+    target: 'env' | 'header',
+    env: Record<string, string>,
+    headers: Record<string, string>,
+    credentialRefs: Map<string, CredentialRef>,
+  ): void {
+    const refKey = `${target}:${entry.key}`;
+    if (entry.source === 'credential-ref') {
+      if (!entry.provider || !entry.itemId) {
+        throw invalidParams(
+          `Configuration profile '${profile.name}' has an unresolved credential reference for '${entry.key}'`,
+        );
+      }
+      credentialRefs.set(refKey, {
+        key: entry.key,
+        target,
+        provider: entry.provider,
+        itemId: entry.itemId,
+        field: entry.field ?? null,
+      });
+      // A later profile's external reference replaces any earlier plain value for
+      // the same target; the supervisor injects the resolved credential after
+      // profile env/headers.
+      if (target === 'header') delete headers[entry.key];
+      else delete env[entry.key];
+      return;
+    }
+
+    const value = this.resolveEntry(profile, entry, target);
+    if (target === 'header') headers[entry.key] = value;
+    else env[entry.key] = value;
+    // A later plain/vault-ref value overrides an earlier profile's credential ref.
+    credentialRefs.delete(refKey);
   }
 
   private resolveEntry(profile: StoredConfigProfile, entry: ConfigProfileValue, kind: 'env' | 'header'): string {

@@ -10,6 +10,7 @@ import type {
   DelegationService,
   BackupService,
   ConfigProfileService,
+  CredentialProviderService,
   EscalationService,
   GitImportService,
   KeyService,
@@ -50,6 +51,8 @@ import { ServerInspectorService } from './inspector/index.js';
 import { SettingsApi } from './admin/settings-api.js';
 import { DefaultBackupService } from './backup/index.js';
 import { BackupApi } from './admin/backup-api.js';
+import { DefaultCredentialProviderService } from './credentials/index.js';
+import { CredentialsApi } from './admin/credentials-api.js';
 import { invalidParams } from './core/errors.js';
 import { InspectorApi } from './admin/inspector-api.js';
 
@@ -68,6 +71,7 @@ export interface GatewayServices {
   updates: ServerUpdateService;
   inspector: ServerInspectorService;
   backup: BackupService;
+  credentials: CredentialProviderService;
   router: JsonRpcRouter;
   admin: AdminApi;
 }
@@ -87,6 +91,8 @@ export interface ContainerOptions {
   logger?: Logger;
   /** Extra delegation targets for observer harnesses (also read from MCP_DELEGATION_TARGETS). */
   delegationTargets?: DelegationTarget[];
+  /** Override the home directory used for provider files (tests). */
+  credentialHomeDir?: string;
 }
 
 /**
@@ -165,15 +171,23 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     },
   });
 
-  // The supervisor needs profiles and profiles need the supervisor: resolve lazily.
+  // The supervisor needs profiles/credentials and both need the supervisor:
+  // resolve them lazily through holders.
   const profileHolder: { service: DefaultConfigProfileService | null } = { service: null };
+  const credentialHolder: { service: DefaultCredentialProviderService | null } = { service: null };
   const supervisor = new DefaultSupervisor({
     repository,
     config,
     vault,
     logger,
     profileResolver: (serverId) =>
-      profileHolder.service?.resolveForServer(serverId) ?? { env: {}, headers: {} },
+      profileHolder.service?.resolveForServer(serverId) ?? { env: {}, headers: {}, credentialRefs: [] },
+    credentialResolver: async (refs) => {
+      if (!credentialHolder.service) {
+        throw invalidParams('Credential providers are not available yet');
+      }
+      return credentialHolder.service.resolveRefs(refs);
+    },
   });
   const configProfiles = new DefaultConfigProfileService({
     db,
@@ -183,6 +197,20 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     logger,
   });
   profileHolder.service = configProfiles;
+
+  // Credential providers (v0.7): Vaultwarden default, 1Password option.
+  const credentials = new DefaultCredentialProviderService({
+    db,
+    config,
+    vault,
+    repository,
+    supervisor,
+    audit,
+    logger,
+    homeDir: options.credentialHomeDir,
+  });
+  credentialHolder.service = credentials;
+  const credentialsApi = new CredentialsApi({ config, keys, credentials, audit, authenticate, logger });
   const configProfilesApi = new ConfigProfilesApi({ config, keys, configProfiles, logger, authenticate });
 
   // Server update tracking (v0.4). Catalog installs feed source metadata via a
@@ -266,6 +294,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     inspectorApi,
     settingsApi,
     backupApi,
+    credentialsApi,
     logger,
   });
   const server = new GatewayHttpServer({ config, router, admin, keys, uiAuth, authApi, supervisor, audit, logger });
@@ -291,6 +320,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     updates,
     inspector,
     backup,
+    credentials,
     router,
     admin,
   };
@@ -303,6 +333,13 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     server,
     start: async () => {
       const address = await server.start();
+      try {
+        await credentials.initialize();
+      } catch (error) {
+        logger.warn('credential provider initialisation failed', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
       await autostartServers(supervisor, repository, config.autostart, logger);
       return address;
     },

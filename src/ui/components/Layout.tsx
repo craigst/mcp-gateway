@@ -8,6 +8,7 @@ export type PageKey =
   | 'catalog'
   | 'server'
   | 'configurations'
+  | 'secrets'
   | 'settings'
   | 'vaultwarden'
   | 'rbac'
@@ -38,10 +39,10 @@ export const NAV_ITEMS: readonly NavItem[] = [
     description: 'Reusable encrypted env/headers applied to many MCP servers.',
   },
   {
-    key: 'vaultwarden',
-    label: 'Vault Warden',
+    key: 'secrets',
+    label: 'Secrets',
     icon: '◈',
-    description: 'Approve agent credential requests and review vault access.',
+    description: 'Password-manager items, Vault Warden approvals and built-in vault secrets.',
   },
   { key: 'rbac', label: 'RBAC', icon: '⬡', description: 'Scoped API keys and per-tool access policy.' },
   { key: 'vault', label: 'Vault', icon: '▣', description: 'Encrypted secrets injected into sub-server environments.' },
@@ -144,7 +145,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
           {NAV_ITEMS.map((item) => navButton(item, false))}
         </nav>
         <div className="space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
-          <p>v0.6.0 · MCP 2025-06-18</p>
+          <p>v0.7.0 · MCP 2025-06-18</p>
           <div className="rounded-lg border border-slate-800 px-2.5 py-2">
             <div className="flex items-center gap-2">
               <span

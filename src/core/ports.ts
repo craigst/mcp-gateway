@@ -15,6 +15,13 @@ import type {
   ApiKeyRecord,
   BackupEnvelope,
   BackupMetadata,
+  CredentialItem,
+  CredentialItemQuery,
+  CredentialProviderDescriptor,
+  CredentialProviderId,
+  CredentialProviderStatus,
+  CredentialRef,
+  CredentialRevealResult,
   AuthenticatedKey,
   AuditEntry,
   AuditStatus,
@@ -505,7 +512,12 @@ export interface ServerUpdateService {
 
 export interface ConfigProfileResolver {
   /** Merge attached profile env/headers (resolving encrypted vault values) for a server. */
-  resolveForServer(serverId: string): { env: Record<string, string>; headers: Record<string, string> };
+  resolveForServer(serverId: string): {
+    env: Record<string, string>;
+    headers: Record<string, string>;
+    /** External password-manager references resolved at process start. */
+    credentialRefs: CredentialRef[];
+  };
   profileIdsForServer(serverId: string): string[];
 }
 
@@ -554,4 +566,28 @@ export interface BackupService {
 
 export interface GatewaySettingsService {
   info(): GatewaySettingsInfo;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.7 — credential provider service
+// ---------------------------------------------------------------------------
+
+export interface CredentialProviderService {
+  descriptors(): CredentialProviderDescriptor[];
+  listProviders(): Promise<CredentialProviderStatus[]>;
+  getProvider(id: CredentialProviderId): Promise<CredentialProviderStatus>;
+  /** Store provider configuration (secret values encrypted in the gateway vault). */
+  configure(id: CredentialProviderId, values: Record<string, string>): Promise<CredentialProviderStatus>;
+  /** Clear provider configuration. */
+  clear(id: CredentialProviderId): Promise<CredentialProviderStatus>;
+  test(id: CredentialProviderId): Promise<CredentialProviderStatus>;
+  defaultProvider(): Promise<CredentialProviderId>;
+  setDefault(id: CredentialProviderId): Promise<void>;
+  listItems(id: CredentialProviderId, query?: CredentialItemQuery): Promise<CredentialItem[]>;
+  reveal(id: CredentialProviderId, itemId: string, field?: string | null): Promise<CredentialRevealResult>;
+  /** Resolve many references at process start (used by configuration profiles). */
+  resolveRefs(refs: CredentialRef[]): Promise<Record<string, string>>;
+  /** Materialise provider configuration into sub-server files at boot (Vaultwarden mcp.env). */
+  initialize(): Promise<void>;
 }

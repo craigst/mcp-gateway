@@ -9,7 +9,7 @@ import type { GatewayConfig } from '../../src/core/config.js';
 import { openDatabase } from '../../src/core/db.js';
 import type { Logger } from '../../src/core/logger.js';
 import type { McpClient, Supervisor } from '../../src/core/ports.js';
-import type { ServerRecord } from '../../src/core/types.js';
+import type { CredentialRef, ServerRecord } from '../../src/core/types.js';
 import { DefaultConfigProfileService } from '../../src/config_profiles/service.js';
 import { SqliteCatalogRepository } from '../../src/catalog/repository.js';
 import { DefaultSupervisor } from '../../src/gateway/supervisor.js';
@@ -66,6 +66,8 @@ export interface HarnessOptions {
   /** Pass null to simulate a vault-disabled gateway. */
   vaultSecret?: string | null;
   config?: Partial<GatewayConfig>;
+  /** Optional fake credential-provider resolver wired into the supervisor. */
+  credentialResolver?: (refs: CredentialRef[]) => Promise<Record<string, string>>;
 }
 
 /**
@@ -91,6 +93,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       if (!holder.service) throw new Error('configuration profile service is not initialised');
       return holder.service.resolveForServer(serverId);
     },
+    ...(options.credentialResolver ? { credentialResolver: options.credentialResolver } : {}),
   });
   const service = new DefaultConfigProfileService({
     db,

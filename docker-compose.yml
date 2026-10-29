@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: mcp-gateway:0.6.0
+    image: mcp-gateway:0.7.0
     container_name: mcp-gateway
     ports:
       - "${MCP_PORT:-8080}:8080"

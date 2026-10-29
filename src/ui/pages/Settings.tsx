@@ -19,6 +19,7 @@ import {
   TextInput,
 } from '../components/Form.js';
 import { useToast } from '../components/Toasts.js';
+import { CredentialsSection } from './settings/CredentialsSection.js';
 import { CreateBackupDialog, RestoreBackupDialog } from './settings/BackupDialogs.js';
 import { ApiKeyDialog } from './settings/ApiKeyDialog.js';
 import type { PageKey } from '../components/Layout.js';
@@ -276,6 +277,8 @@ export function SettingsPage({ username, onNavigate, onReturnToLogin }: Settings
           </dl>
         )}
       </Card>
+
+      <CredentialsSection onNavigateSecrets={() => onNavigate?.('secrets')} />
 
       <Card
         title="Backups"

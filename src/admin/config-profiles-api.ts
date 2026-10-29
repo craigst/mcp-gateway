@@ -278,10 +278,12 @@ function parseInputValues(raw: unknown, field: 'entries' | 'headers'): ConfigPro
     }
     const hasValue = Object.prototype.hasOwnProperty.call(item, 'value');
     const hasSecretRef = Object.prototype.hasOwnProperty.call(item, 'secretRef');
-    if (hasValue && hasSecretRef) {
-      throw invalidParams(`"${field}[${index}]" must use either "value" or "secretRef", not both`);
+    const hasCredentialRef = Object.prototype.hasOwnProperty.call(item, 'credentialRef');
+    const sources = [hasValue, hasSecretRef, hasCredentialRef].filter(Boolean).length;
+    if (sources > 1) {
+      throw invalidParams(`"${field}[${index}]" must use only one of "value", "secretRef" or "credentialRef"`);
     }
-    if (!hasValue && !hasSecretRef) {
+    if (sources === 0) {
       // Update-only "keep current value" rows: the service validates that the
       // key already exists (create rejects key-only rows).
       return { key: key.trim() };
@@ -292,10 +294,35 @@ function parseInputValues(raw: unknown, field: 'entries' | 'headers'): ConfigPro
       }
       return { key: key.trim(), value: item.value };
     }
-    if (typeof item.secretRef !== 'string' || item.secretRef.trim() === '') {
-      throw invalidParams(`"${field}[${index}].secretRef" must be a non-empty string`);
+    if (hasSecretRef) {
+      if (typeof item.secretRef !== 'string' || item.secretRef.trim() === '') {
+        throw invalidParams(`"${field}[${index}].secretRef" must be a non-empty string`);
+      }
+      return { key: key.trim(), secretRef: item.secretRef.trim() };
     }
-    return { key: key.trim(), secretRef: item.secretRef.trim() };
+    const credentialRef = item.credentialRef;
+    if (!isRecord(credentialRef)) {
+      throw invalidParams(`"${field}[${index}].credentialRef" must be an object`);
+    }
+    const provider = credentialRef.provider;
+    if (provider !== 'vaultwarden' && provider !== 'onepassword' && provider !== 'gateway') {
+      throw invalidParams(`"${field}[${index}].credentialRef.provider" must be vaultwarden, onepassword or gateway`);
+    }
+    if (typeof credentialRef.itemId !== 'string' || credentialRef.itemId.trim() === '') {
+      throw invalidParams(`"${field}[${index}].credentialRef.itemId" must be a non-empty string`);
+    }
+    const fieldName = credentialRef.field;
+    if (fieldName !== undefined && fieldName !== null && typeof fieldName !== 'string') {
+      throw invalidParams(`"${field}[${index}].credentialRef.field" must be a string or null`);
+    }
+    return {
+      key: key.trim(),
+      credentialRef: {
+        provider,
+        itemId: credentialRef.itemId.trim(),
+        field: typeof fieldName === 'string' ? fieldName : null,
+      },
+    };
   });
 }
 

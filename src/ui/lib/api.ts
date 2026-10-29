@@ -17,6 +17,11 @@ import type {
   ConfigProfileApplyResult,
   ConfigProfileInput,
   ConfigProfileSummary,
+  CredentialItem,
+  CredentialProviderDescriptor,
+  CredentialProviderId,
+  CredentialProviderStatus,
+  CredentialRevealResult,
   EscalationStatus,
   EscalationTicket,
   GatewaySettingsInfo,
@@ -160,6 +165,27 @@ export interface RestoreBackupRequest {
 export interface DownloadBackupResult {
   blob: Blob;
   fileName: string;
+}
+
+// ---------------------------------------------------------------------------
+// v0.7 credential providers
+// ---------------------------------------------------------------------------
+
+export interface CredentialProvidersResponse {
+  providers: CredentialProviderStatus[];
+  descriptors: CredentialProviderDescriptor[];
+  defaultProvider: CredentialProviderId;
+}
+
+export interface CredentialItemQuery {
+  search?: string;
+  limit?: number;
+}
+
+export interface RevealCredentialRequest {
+  provider: CredentialProviderId;
+  itemId: string;
+  field?: string | null;
 }
 
 export interface SimpleOkResponse {
@@ -1189,6 +1215,69 @@ export class ApiClient {
       60_000,
     );
     return response.profile;
+  }
+
+  // -- v0.7 credential providers -------------------------------------------
+
+  getCredentialProviders(): Promise<CredentialProvidersResponse> {
+    return this.request<CredentialProvidersResponse>('/mcp/v1/admin/credentials/providers');
+  }
+
+  async configureCredentialProvider(
+    id: CredentialProviderId,
+    values: Record<string, string>,
+  ): Promise<CredentialProviderStatus> {
+    const response = await this.request<{ provider: CredentialProviderStatus }>(
+      `/mcp/v1/admin/credentials/providers/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: JSON.stringify({ values }) },
+    );
+    return response.provider;
+  }
+
+  async clearCredentialProvider(id: CredentialProviderId): Promise<CredentialProviderStatus> {
+    const response = await this.request<{ provider: CredentialProviderStatus }>(
+      `/mcp/v1/admin/credentials/providers/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    );
+    return response.provider;
+  }
+
+  async testCredentialProvider(id: CredentialProviderId): Promise<CredentialProviderStatus> {
+    const response = await this.request<{ provider: CredentialProviderStatus }>(
+      `/mcp/v1/admin/credentials/providers/${encodeURIComponent(id)}/test`,
+      { method: 'POST', body: JSON.stringify({}) },
+      60_000,
+    );
+    return response.provider;
+  }
+
+  async setDefaultCredentialProvider(id: CredentialProviderId): Promise<CredentialProviderId> {
+    const response = await this.request<{ defaultProvider: CredentialProviderId }>(
+      '/mcp/v1/admin/credentials/default',
+      { method: 'POST', body: JSON.stringify({ providerId: id }) },
+    );
+    return response.defaultProvider;
+  }
+
+  async listCredentialItems(
+    provider: CredentialProviderId,
+    query: CredentialItemQuery = {},
+  ): Promise<CredentialItem[]> {
+    const qs = buildQuery({ provider, search: query.search, limit: query.limit });
+    const response = await this.request<{ items?: CredentialItem[] }>(
+      `/mcp/v1/admin/credentials/items${qs}`,
+      {},
+      60_000,
+    );
+    return response.items ?? [];
+  }
+
+  async revealCredential(input: RevealCredentialRequest): Promise<CredentialRevealResult> {
+    const response = await this.request<{ reveal: CredentialRevealResult }>(
+      '/mcp/v1/admin/credentials/reveal',
+      { method: 'POST', body: JSON.stringify(input) },
+    );
+    return response.reveal;
   }
 
   // -- vault ----------------------------------------------------------------

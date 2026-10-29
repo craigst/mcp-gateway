@@ -34,6 +34,7 @@ If not, the tool is invisible — not merely denied.
 | 🔄 | **Update manager** | Per-server upstream tracking (tag/commit): "update available" badges, check-all, and one-click staged updates (clone → build → swap → restart → probe) with automatic rollback on a failed build. |
 | ⚙️ | **Encrypted configuration profiles** | Save credentials/endpoints (IPs, ports, API keys, headers) once **in the AES-256 vault**, reference named secrets, and apply one profile to many MCP servers. No env files — values are decrypted only into the sub-process environment. |
 | 🔬 | **Server inspector** | Open any MCP server: every tool (with schema + live Try), prompts, resources and templates, capabilities/instructions, encrypted configuration with audited reveal, version/update/changelog, and per-server request history — ok, failed **and denied** — with the API key that used it. |
+| 🔑 | **Vaultwarden as the default password/API manager** | Configure your Vaultwarden server (URL, client id/secret, master password) in the UI — the gateway materialises the connector config securely, browses/reveals items, and can inject API keys into MCP servers by reference. **1Password** (Connect host + API token, or service-account token with the `op` CLI) is a first-class alternative; the built-in AES vault is the fallback. |
 | 🚀 | **First-run onboarding** | A fresh gateway starts in setup mode: the Web UI wizard creates the operator account, offers an optional master API key (shown once) and can restore an existing backup — no env files or manual key bootstrapping needed. |
 | 💾 | **Password-encrypted backups** | One-click backup of the whole gateway — accounts, API keys, servers, profiles, catalog sources and **every vault secret** — encrypted with scrypt + AES-256-GCM using your account password. Restore on any fresh gateway (setup wizard or Settings) with that password; servers whose code was not in the backup get a one-click **Reinstall**. |
 | 🖥️ | **Web UI console** | Dashboard, catalog manager, RBAC grid, vault, audit explorer, delegation observer, live log stream, JSON-RPC playground. |
@@ -47,10 +48,16 @@ If not, the tool is invisible — not merely denied.
 
 ![First-run setup — create the operator account or restore a backup](docs/screenshots/v06/setup-welcome.png)
 
+![Settings → Credentials — Vaultwarden default, 1Password option, gateway fallback](docs/screenshots/v07/settings-credentials.png)
+
 ![Server inspector — activity with ok, error and denied requests](docs/screenshots/v05/activity.png)
 
 <details>
-<summary>More screenshots (settings & backups · inspector · configurations · update dialog · login · dashboard · catalog · Vault Warden)</summary>
+<summary>More screenshots (credentials & secrets · settings & backups · inspector · configurations · update dialog · login · dashboard · catalog)</summary>
+
+| Secrets — 1Password items | Secrets — Vaultwarden items |
+|---|---|
+| ![1Password secrets](docs/screenshots/v07/secrets-onepassword.png) | ![Vaultwarden secrets](docs/screenshots/v07/secrets-vaultwarden.png) |
 
 | Settings & encrypted backups | Backup creation |
 |---|---|
@@ -283,6 +290,27 @@ Click a server in **Catalog → Installed** (or **Open**) to land on its inspect
   latency, payload and the exact key (`dsh-harness`, `demo-agent`, …) that used the server.
   Failed and denied requests are first-class — they are what the manager is for.
 
+## Password & API-key management (Vaultwarden default, 1Password option)
+
+**Settings → Credentials** chooses where the gateway resolves credentials from. The default is
+**Vaultwarden**: enter your server URL, API client id/secret and master password once; the values are
+encrypted in the gateway vault, the connector's `~/.config/vaultwarden/mcp.env` is materialised
+(0700/0600) and the imported `vaultwarden-mcp` server restarts with that configuration. **1Password**
+is one card away — Connect host + access token (or a service-account token with the `op` CLI).
+The built-in AES vault stays available as a fallback.
+
+**Secrets** (sidebar) is the single browser: provider tabs (default provider selected), search,
+item metadata and audited **Reveal** with copy. The Vaultwarden tab keeps the human-approved
+credential delivery flow, access log and tool protection.
+
+**API keys by reference:** configuration profiles can point at a password-manager item instead of
+storing a value — `{ "key": "N8N_API_KEY", "credentialRef": { "provider": "vaultwarden",
+"itemId": "arr/n8n/api-key", "field": "password" } }`. At server start the supervisor resolves the
+reference (audited by the password manager) and injects it into the sub-process environment/headers.
+The gateway database holds only the reference; rotate the key in Vaultwarden/1Password and restart
+the server to pick it up. Provider configuration is encrypted in the gateway vault and therefore
+included in password-protected backups.
+
 ## First start, onboarding & backups
 
 A fresh install needs **no pre-set password**:
@@ -375,7 +403,7 @@ npm run lint           # eslint
 npm run build          # server + UI bundle
 ```
 
-The suite is **800 tests across 81 files**: unit suites per module, an integration suite that
+The suite is **861 tests across 88 files**: unit suites per module, an integration suite that
 boots a real gateway on an ephemeral port and spawns fixture MCP servers, and an end-to-end
 scenario covering vault → git import → catalog → execution → delegation → depth guard → escalation,
 plus jsdom UI tests. CI also builds the Docker image and smoke-tests `/health` inside the container.
@@ -401,7 +429,8 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 | v0.3.0 | Built-in username/password Web UI login, session-authenticated console + WebSocket logs, master-key rotation, persistent podman/systemd deployment | ✅ shipped |
 | v0.4.0 | Upstream update manager (checks + staged per-server updates) and encrypted configuration profiles replacing env files | ✅ shipped |
 | v0.5.0 | Full MCP server inspector (tools/prompts/resources/config/activity), proxied prompts & resources, audited credential reveal, per-server failed/denied request history | ✅ shipped |
-| **v0.6.0** | **First-run onboarding wizard, in-UI settings, password-encrypted full backups with restore & server reinstall** | ✅ **current** |
+| v0.6.0 | First-run onboarding wizard, in-UI settings, password-encrypted full backups with restore & server reinstall | ✅ shipped |
+| **v0.7.0** | **Vaultwarden as the default password/API manager, 1Password option, unified Secrets page and password-manager references in configuration profiles** | ✅ **current** |
 
 ## License
 

@@ -12,6 +12,13 @@ const { apiMock } = vi.hoisted(() => ({
     restoreBackup: vi.fn(),
     reinstallServer: vi.fn(),
     createKey: vi.fn(),
+    getCredentialProviders: vi.fn(),
+    configureCredentialProvider: vi.fn(),
+    clearCredentialProvider: vi.fn(),
+    testCredentialProvider: vi.fn(),
+    setDefaultCredentialProvider: vi.fn(),
+    listCredentialItems: vi.fn(),
+    revealCredential: vi.fn(),
   },
 }));
 
@@ -85,6 +92,74 @@ const reinstallResult = {
   changed: true,
 };
 
+const credentialProviders = {
+  providers: [
+    {
+      id: 'vaultwarden',
+      name: 'Vaultwarden',
+      kind: 'password-manager',
+      configured: true,
+      isDefault: true,
+      available: true,
+      state: 'connected',
+      message: 'Connected to the Vaultwarden API.',
+      details: {},
+    },
+    {
+      id: 'onepassword',
+      name: '1Password',
+      kind: 'password-manager',
+      configured: false,
+      isDefault: false,
+      available: true,
+      state: 'not-configured',
+      message: 'Add a Connect host and service-account token.',
+      details: {},
+    },
+    {
+      id: 'gateway',
+      name: 'Gateway vault',
+      kind: 'builtin',
+      configured: true,
+      isDefault: false,
+      available: true,
+      state: 'connected',
+      message: 'Built-in AES-256-GCM vault.',
+      details: {},
+    },
+  ],
+  descriptors: [
+    {
+      id: 'vaultwarden',
+      name: 'Vaultwarden',
+      description: 'Default password/API manager.',
+      docsHint: 'Create an API key in Vaultwarden and paste it here.',
+      fields: [
+        { key: 'baseUrl', label: 'Host URL', secret: false, required: true, placeholder: 'https://vault.example' },
+        { key: 'apiToken', label: 'API token', secret: true, required: true, hint: 'write-only' },
+      ],
+    },
+    {
+      id: 'onepassword',
+      name: '1Password',
+      description: 'Connect host + service-account token.',
+      docsHint: 'Use a 1Password Connect host and service-account token.',
+      fields: [
+        { key: 'connectHost', label: 'Connect host', secret: false, required: true, placeholder: 'https://connect.example' },
+        { key: 'serviceAccountToken', label: 'Service account token', secret: true, required: true },
+      ],
+    },
+    {
+      id: 'gateway',
+      name: 'Gateway vault',
+      description: 'Built-in encrypted vault.',
+      docsHint: 'Manage secrets from the Vault page.',
+      fields: [],
+    },
+  ],
+  defaultProvider: 'vaultwarden',
+};
+
 const masterKey = {
   id: 'key_master_new',
   name: 'external-master',
@@ -112,6 +187,18 @@ beforeEach(() => {
   apiMock.restoreBackup.mockResolvedValue(restoreResult);
   apiMock.reinstallServer.mockResolvedValue(reinstallResult);
   apiMock.createKey.mockResolvedValue({ key: masterKey, plaintext: 'mcp_master_SETTINGSKEY0123' });
+  apiMock.getCredentialProviders.mockResolvedValue(credentialProviders);
+  apiMock.configureCredentialProvider.mockResolvedValue(credentialProviders.providers[1]);
+  apiMock.clearCredentialProvider.mockResolvedValue(credentialProviders.providers[1]);
+  apiMock.testCredentialProvider.mockResolvedValue(credentialProviders.providers[0]);
+  apiMock.setDefaultCredentialProvider.mockResolvedValue('onepassword');
+  apiMock.listCredentialItems.mockResolvedValue([]);
+  apiMock.revealCredential.mockResolvedValue({
+    provider: 'vaultwarden',
+    itemId: 'alias-n8n',
+    field: 'password',
+    value: 'revealed-value',
+  });
 });
 
 afterEach(() => {
@@ -120,14 +207,15 @@ afterEach(() => {
 });
 
 function renderSettings(onReturnToLogin = vi.fn()) {
+  const onNavigate = vi.fn();
   render(
     <SettingsPage
       username="operator"
-      onNavigate={vi.fn()}
+      onNavigate={onNavigate}
       onReturnToLogin={onReturnToLogin}
     />,
   );
-  return { onReturnToLogin };
+  return { onReturnToLogin, onNavigate };
 }
 
 describe('Settings page', () => {
@@ -236,6 +324,50 @@ describe('Settings page', () => {
       expect(apiMock.changePassword).toHaveBeenCalledWith('old-password', 'new-password-123'),
     );
     await waitFor(() => expect(onReturnToLogin).toHaveBeenCalledTimes(1));
+  });
+
+  it('renders credential providers and changes the default provider', async () => {
+    const { onNavigate } = renderSettings();
+
+    expect(await screen.findByText('Credentials')).toBeTruthy();
+    expect(screen.getByText('Vaultwarden', { selector: 'p' })).toBeTruthy();
+    expect(screen.getAllByText('1Password').length).toBeGreaterThan(0);
+    expect(screen.getByText('Gateway vault', { selector: 'p' })).toBeTruthy();
+    expect(screen.getByText('built-in')).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open Secrets →' })[0] as HTMLElement);
+    expect(onNavigate).toHaveBeenCalledWith('secrets');
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'onepassword' } });
+    await waitFor(() => expect(apiMock.setDefaultCredentialProvider).toHaveBeenCalledWith('onepassword'));
+  });
+
+  it('configures a provider from its descriptor fields and tests it', async () => {
+    renderSettings();
+    await screen.findByText('Credentials');
+
+    const card = screen.getByText('1Password', { selector: 'p' }).closest('article') as HTMLElement;
+    fireEvent.click(within(card).getByRole('button', { name: 'Configure' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Configure 1Password' });
+    fireEvent.change(within(dialog).getByLabelText('Connect host'), {
+      target: { value: 'https://connect.example' },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/^Service account token/), {
+      target: { value: 'ops-token' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save provider' }));
+
+    await waitFor(() =>
+      expect(apiMock.configureCredentialProvider).toHaveBeenCalledWith('onepassword', {
+        connectHost: 'https://connect.example',
+        serviceAccountToken: 'ops-token',
+      }),
+    );
+
+    const vaultwardenCard = screen.getByText('Vaultwarden', { selector: 'p' }).closest('article') as HTMLElement;
+    fireEvent.click(within(vaultwardenCard).getByRole('button', { name: 'Test' }));
+    await waitFor(() => expect(apiMock.testCredentialProvider).toHaveBeenCalledWith('vaultwarden'));
   });
 
   it('creates a master API key from the settings quick action', async () => {

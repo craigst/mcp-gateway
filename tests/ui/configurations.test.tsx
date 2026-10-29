@@ -26,6 +26,12 @@ const { apiMock } = vi.hoisted(() => ({
     checkUpdates: vi.fn(),
     checkServerUpdate: vi.fn(),
     updateServer: vi.fn(),
+    getCredentialProviders: vi.fn(),
+    configureCredentialProvider: vi.fn(),
+    testCredentialProvider: vi.fn(),
+    setDefaultCredentialProvider: vi.fn(),
+    listCredentialItems: vi.fn(),
+    revealCredential: vi.fn(),
   },
 }));
 
@@ -151,6 +157,48 @@ beforeEach(() => {
   apiMock.checkUpdates.mockResolvedValue([]);
   apiMock.checkServerUpdate.mockRejectedValue(new Error('not configured'));
   apiMock.updateServer.mockRejectedValue(new Error('not configured'));
+  apiMock.getCredentialProviders.mockResolvedValue({
+    providers: [
+      {
+        id: 'vaultwarden',
+        name: 'Vaultwarden',
+        kind: 'password-manager',
+        configured: true,
+        isDefault: true,
+        available: true,
+        state: 'connected',
+        message: 'connected',
+        details: {},
+      },
+      {
+        id: 'onepassword',
+        name: '1Password',
+        kind: 'password-manager',
+        configured: false,
+        isDefault: false,
+        available: true,
+        state: 'not-configured',
+        message: '',
+        details: {},
+      },
+    ],
+    descriptors: [
+      { id: 'vaultwarden', name: 'Vaultwarden', description: 'Default', docsHint: '', fields: [] },
+      { id: 'onepassword', name: '1Password', description: 'Alternative', docsHint: '', fields: [] },
+    ],
+    defaultProvider: 'vaultwarden',
+  });
+  apiMock.listCredentialItems.mockResolvedValue([
+    {
+      provider: 'vaultwarden',
+      id: 'alias-n8n',
+      name: 'n8n API key',
+      username: null,
+      category: 'API',
+      urls: [],
+      fields: ['password', 'token'],
+    },
+  ]);
 });
 
 afterEach(() => {
@@ -269,6 +317,47 @@ describe('Configurations page', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     await waitFor(() => expect(screen.queryByText('Apply “Internal services”')).toBeNull());
+  });
+
+  it('builds a credentialRef payload from a password-manager item row', async () => {
+    render(<ConfigurationsPage />);
+    await screen.findByText('Internal services');
+
+    fireEvent.click(screen.getByRole('button', { name: 'New profile' }));
+    await screen.findByText('New configuration profile');
+    fireEvent.change(screen.getByPlaceholderText('Internal services'), { target: { value: 'PM profile' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
+    fireEvent.change(screen.getByLabelText('Environment variable key'), { target: { value: 'N8N_TOKEN' } });
+    fireEvent.change(screen.getByLabelText('Environment variable value source'), {
+      target: { value: 'credential-ref' },
+    });
+
+    // Provider defaults to Vaultwarden; pick the alias and a field.
+    const itemSelect = await screen.findByLabelText('Environment variable credential item');
+    await waitFor(() =>
+      expect(within(itemSelect).getByRole('option', { name: /n8n API key/ })).toBeTruthy(),
+    );
+    fireEvent.change(itemSelect, { target: { value: 'alias-n8n' } });
+    fireEvent.change(screen.getByLabelText('Environment variable credential field'), {
+      target: { value: 'token' },
+    });
+    expect(screen.getByText('vaultwarden: alias-n8n')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create profile' }));
+
+    await waitFor(() => expect(apiMock.createConfigProfile).toHaveBeenCalledTimes(1));
+    expect(apiMock.createConfigProfile).toHaveBeenCalledWith({
+      name: 'PM profile',
+      description: null,
+      entries: [
+        {
+          key: 'N8N_TOKEN',
+          credentialRef: { provider: 'vaultwarden', itemId: 'alias-n8n', field: 'token' },
+        },
+      ],
+      headers: [],
+    });
+    expect(apiMock.listCredentialItems).toHaveBeenCalled();
   });
 
   it('deletes a profile after confirmation', async () => {

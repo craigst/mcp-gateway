@@ -968,3 +968,110 @@ describe('ApiClient v0.6 setup, settings & encrypted backups', () => {
     expect(caught).toMatchObject({ status: 401, message: 'Unauthorized' });
   });
 });
+
+describe('ApiClient v0.7 credential providers', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const status = {
+    id: 'vaultwarden',
+    name: 'Vaultwarden',
+    kind: 'password-manager',
+    configured: true,
+    isDefault: true,
+    available: true,
+    state: 'connected',
+    message: 'Connected',
+    details: {},
+  };
+
+  const item = {
+    provider: 'vaultwarden',
+    id: 'alias-n8n',
+    name: 'n8n API key',
+    username: null,
+    category: 'API',
+    urls: [],
+    fields: ['password'],
+  };
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function lastCall(): [string, RequestInit] {
+    return fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string, RequestInit];
+  }
+
+  it('lists providers/descriptors and configures, tests, clears and defaults a provider', async () => {
+    const client = new ApiClient('http://gateway.test');
+    const providersPayload = {
+      providers: [status],
+      descriptors: [
+        {
+          id: 'vaultwarden',
+          name: 'Vaultwarden',
+          description: 'Default',
+          fields: [{ key: 'apiToken', label: 'API token', secret: true, required: true }],
+          docsHint: 'docs',
+        },
+      ],
+      defaultProvider: 'vaultwarden',
+    };
+
+    fetchMock.mockResolvedValueOnce(fakeResponse(providersPayload));
+    expect(await client.getCredentialProviders()).toEqual(providersPayload);
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/credentials/providers');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ provider: status }));
+    await client.configureCredentialProvider('vaultwarden', { apiToken: 'token' });
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/credentials/providers/vaultwarden');
+    expect(lastCall()[1].method).toBe('PUT');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ values: { apiToken: 'token' } });
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ provider: status }));
+    await client.testCredentialProvider('vaultwarden');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/credentials/providers/vaultwarden/test');
+    expect(lastCall()[1].method).toBe('POST');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ provider: { ...status, configured: false } }));
+    await client.clearCredentialProvider('vaultwarden');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/credentials/providers/vaultwarden');
+    expect(lastCall()[1].method).toBe('DELETE');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ defaultProvider: 'onepassword' }));
+    expect(await client.setDefaultCredentialProvider('onepassword')).toBe('onepassword');
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/credentials/default');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({ providerId: 'onepassword' });
+  });
+
+  it('lists items with search/limit and reveals a credential value', async () => {
+    const client = new ApiClient('http://gateway.test');
+
+    fetchMock.mockResolvedValueOnce(fakeResponse({ items: [item] }));
+    expect(await client.listCredentialItems('vaultwarden', { search: 'n8n', limit: 10 })).toEqual([item]);
+    expect(lastCall()[0]).toBe(
+      'http://gateway.test/mcp/v1/admin/credentials/items?provider=vaultwarden&search=n8n&limit=10',
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({
+        reveal: { provider: 'vaultwarden', itemId: 'alias-n8n', field: 'password', value: 'hunter2' },
+      }),
+    );
+    expect(
+      await client.revealCredential({ provider: 'vaultwarden', itemId: 'alias-n8n', field: 'password' }),
+    ).toEqual({ provider: 'vaultwarden', itemId: 'alias-n8n', field: 'password', value: 'hunter2' });
+    expect(lastCall()[0]).toBe('http://gateway.test/mcp/v1/admin/credentials/reveal');
+    expect(lastCall()[1].method).toBe('POST');
+    expect(JSON.parse(String(lastCall()[1].body))).toEqual({
+      provider: 'vaultwarden',
+      itemId: 'alias-n8n',
+      field: 'password',
+    });
+  });
+});
