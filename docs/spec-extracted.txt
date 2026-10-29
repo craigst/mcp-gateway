@@ -1,0 +1,318 @@
+     ENTERPRISE SYSTEM SPECIFICATION & BUILD BLUEPRINT
+
+    All-in-One MCP Gateway & Orchestration Engine
+    Zero-Trust Catalog Visibility, Navigation Discovery, Scoped API Keys & Remote Agent Delegation
+
+
+
+  Unified Endpoint                  Discovery Menu                             Key Scoping                       Sub-Agents
+  /mcp/v1                           Zero-Trust                                 Server & Tool                     Observer Proxy
+  Single JSON-RPC 2.0               Scope-filtered tool search                 Granular API key grants           Cross-harness delegation
+  proxy
+
+
+1. System Architecture & Strategic Vision
+The All-in-One Model Context Protocol (MCP) Gateway provides a unified, secure orchestration tier for multi-
+agent environments. Rather than hosting fragmented MCP tool servers across disparate endpoints with
+scattered API credentials, this platform encapsulates all runtimes (Node.js, Python, Go, and binary processes)
+within a single master Docker container. The system serves as a smart security shield, presenting a single entry
+point (`/mcp/v1`) while strictly enforcing zero-trust discovery, key-scoped tool visibility, and remote agent
+delegation.
+
+2. High-Level Gateway & Sub-Process Topology
+
+                                                       Master Container Footprint (Docker)
+
+                                   Gateway Ingress Proxy                  Internal Tool & Sub-Agent Pool
+   AI Agents / Harnesses                                                                                               Vault & Audit DB
+                                    Navigation Menu Router
+     (Scoped mcp_ag_... Keys)                                         Local MCPs   Remote Agent   Observer Bot          AES-256 / Telemetry
+                                     Zero-Trust Scope Filter
+
+
+
+
+    Figure 1: Master Container architecture detailing ingress policy decision points, sub-process isolation, and remote observer
+                                                              proxying.
+
+
+
+
+All-in-One MCP Gateway Architectural Specification                                                                                  Page 1 of 8
+3. Navigation Menu & Zero-Trust Discovery
+The MCP gateway functions as a dynamic, intelligent navigation menu for AI agents. When an agent initializes,
+it can query search and listing endpoints to discover available tools. Crucially, the catalog response is censored
+at the gateway layer based on the agent's API key permissions—unauthorized tools are completely invisible.
+
+ Discovery Vector           JSON-RPC Method                     Scope Filtering Mechanism              Visibility Mode
+
+ Catalog Search             `tools/search`                      Filters vector search results           CENSORED
+                                                                against permitted API key scopes.
+
+ Menu Enumeration           `tools/list`                        Returns schemas *only* for tools        MASKED
+                                                                granted to the agent's API key.
+
+ Server Query               `servers/list_permitted`            Lists accessible sub-servers;           ZERO-TRUST
+                                                                unpermitted servers are hidden.
+
+ Direct Execution           `tools/call`                        Executes known tools directly           DIRECT
+                                                                without requiring re-discovery.
+
+ Agent Delegation           `agents/delegate`                   Routes request to an external           DELEGATED
+                                                                observer bot or remote agent
+                                                                harness.
+
+
+4. Default-Hidden High-Privilege Safeguards
+
+  High-Risk & Root Privileged Tool Isolation
+  Certain MCP sub-servers provide powerful capabilities—such as root shell access, production database drop
+  commands, or infrastructure modifications. By default, these tools are marked as `HIGH_PRIVILEGE` and are omitted
+  from all generic search and listing requests. An agent cannot see or infer their existence unless its API key explicitly
+  holds a signed grant for that specific tool ID.
+
+
+Discovery & Repeat Call Optimization Rules
+  Dynamic Navigation Menu: On initial bootstrap, agents query `tools/search` or `tools/list` to populate their
+  internal tool availability tree.
+  Direct Invocations for Frequent Tasks: Agents store tool signatures in memory. For repeat operations,
+  agents bypass search and execute `tools/call` directly via the gateway.
+  Invisible Rejection: Calling an ungranted tool ID yields a standard generic `Tool Not Found` or structured
+  `Access Denied` response, preventing key probing.
+  Transient Scope Escalation: Agents can request supervisory elevation, generating an audit ticket for
+  human or Chief AI approval.
+
+
+
+
+All-in-One MCP Gateway Architectural Specification                                                                   Page 2 of 8
+5. Scoped API Key Management & RBAC
+The gateway enforces fine-grained Role-Based Access Control (RBAC). When administrators or supervisory
+systems issue an API key, they define exact permission vectors that dictate server visibility, individual tool
+execution rights, argument guardrails, and sub-agent delegation privileges.
+
+
+  1. Server-Level Grants                                       2. Tool-Level Whitelisting
+  Defines which sub-servers (e.g., `github-mcp`,               Restricts access to specific functions within an
+  `postgres-mcp`) the API key can access. Unassigned           accessible server (e.g., allowing `git_pull` while blocking
+  servers remain invisible during catalog search.              `git_push` and `git_reset`).
+
+
+  3. Argument Guardrails                                       4. Delegation Claims
+  Regex and JSON Schema rules applied to input                 Specifies whether the key can invoke remote observer
+  parameters (e.g., enforcing SQL queries to start with        agents or trigger sub-agent execution harnesses
+  `SELECT` and blocking `DROP/UPDATE`).                        across external endpoints.
+
+
+6. Master API Key vs Agent Key Matrix
+ Key Type                             Format Prefix                Catalog Visibility               Admin Capabilities
+
+ Standard Agent Key                   `mcp_ag_...`                 Filtered by Scope Grants          NONE
+
+ Scoped Developer Key                 `mcp_dev_...`                Staging & Test Servers            LIMITED
+
+ Sub-Agent Delegate                   `mcp_sub_...`                Target Task Specific              NONE
+
+ Chief AI / Supervisor                `mcp_sup_...`                Full Audit & Approvals            ELEVATED
+
+ Master System Key                    `mcp_master_...`             Complete Catalog Access           FULL ADMIN
+
+
+
+  API Key Generation Protocol
+  Keys are cryptographically generated using SHA-256 hashed tokens with embedded metadata. When creating a key
+  via the Web UI or Master API (`POST /mcp/v1/admin/keys/create`), administrators explicitly check server IDs, tool
+  masks, and set expiration limits.
+
+
+
+
+All-in-One MCP Gateway Architectural Specification                                                                Page 3 of 8
+7. Sub-Agent Delegation & Remote Observer Runtimes
+A key innovation of the platform is the ability to expose external AI agents and secondary harnesses as
+standard MCP tools. An agent can call an MCP tool that delegates execution to a specialized remote agent—
+such as an external observer bot, code security reviewer, or auditing harness—transparently through the
+gateway.
+
+
+
+                                   Gateway Ingress                     Observer Sub-Agent
+      Primary Agent                 Delegation Handler                  External Harness / Bot
+                                                                                                          Unified Audit Log
+       Calls Proxy Tool                                                                                     Parent-Child Trace
+                                  Context & Depth Check              Runs Analysis / Code Evaluation
+
+
+
+
+    Figure 2: Sub-Agent delegation workflow showing primary request proxying, depth checks, and parent-child audit logging.
+
+
+8. Sub-Agent Execution Guardrails & Observer Pattern
+
+  Recursion & Depth Limiters                                       Isolated Context Boundaries
+  To prevent infinite delegation loops between                     Sub-agents operate within isolated ephemeral sub-
+  autonomous bots, the gateway attaches an `X-MCP-                 contexts. They only receive parameters explicitly
+  Delegation-Depth` header. Maximum recursion depth is             passed in the tool call and cannot access the parent
+  hard-capped at 3 levels by default.                              agent's conversation history or keys.
+
+Observer Pattern Operations: An external observer bot acts as an independent verifier. When a primary agent
+attempts an impactful action (e.g., deploying code), it invokes the `observe_and_verify` tool. The gateway routes this
+to the observer agent, which analyzes the payload and returns an approval token or diagnostic feedback.
+
+
+
+
+All-in-One MCP Gateway Architectural Specification                                                                      Page 4 of 8
+9. Web UI Management Console Architecture
+The embedded Web UI offers comprehensive operational oversight, real-time telemetry monitoring, server
+management, secret vault administration, and interactive debugging capabilities—all accessible through an
+intuitive browser interface.
+
+                                                                                                  Access
+ Web UI Subsystem         Primary Functionality                      Administrative Role
+                                                                                                  Requirement
+
+ Overview                 Real-time req/min charts, container        System Health Monitoring      READ-ONLY
+ Dashboard                CPU/RAM meters, error rate tracking.
+
+ Catalog Manager          Start, stop, rebuild, and import MCP       Runtime Orchestration         FULL ADMIN
+                          sub-servers from GitHub repositories.
+
+ RBAC Scope Grid          Interactive matrix mapping API keys to     Access Policy Control         FULL ADMIN
+                          permitted sub-servers and tools.
+
+ Secret Vault             AES-256-GCM storage for external API       Credential Protection         MASTER KEY
+                          keys, DB strings, and OAuth tokens.
+
+ Sub-Agent Observer       Monitors remote agent delegation           Delegation Oversight          SUPERVISOR
+                          chains, latency, and observer verdicts.
+
+ Audit Log Explorer       Full-text search across JSON-RPC           Security & Forensics          AUDITOR
+                          payloads, execution traces, and denials.
+
+
+10. Interactive Sandbox & Testing Playground
+
+  Live Payload Testing & Diagnostic Sandbox
+  The Web UI includes an interactive API playground that allows administrators to send test JSON-RPC payloads directly
+  to any hosted sub-server or sub-agent. The playground simulates execution using specific Agent API key contexts,
+  displaying raw request/response payloads, latency breakdowns (Gateway overhead vs. Sub-server time), and scope
+  verification status.
+
+
+Admin Capabilities Available in Web UI
+  One-Click API Key Provisioning: Generate new keys with checkboxes for server access, tool whitelisting,
+  and delegation rights.
+  Live Log Streaming: WebSockets-powered real-time terminal window showing stdout/stderr streams for all
+  running sub-processes.
+  Hot Secret Rotation: Update third-party API credentials in the vault with zero downtime; running processes
+  reload variables seamlessly.
+  Instant Emergency Lockout: Kill switch button to revoke an API key or isolate a compromised sub-server
+  instantly.
+
+
+
+
+All-in-One MCP Gateway Architectural Specification                                                              Page 5 of 8
+11. Protocol Extensions & JSON-RPC Schemas
+The gateway extends standard Model Context Protocol JSON-RPC 2.0 messages to support scope-filtered
+discovery, catalog search, and structured escalation error payloads.
+
+
+        // Request: tools/search with Query Filtering { "jsonrpc": "2.0", "id": "req-102", "method":
+  "tools/search", "params": { "query": "database postgres query", "limit": 5 } } // Response:
+  Filtered to permitted tools only (Zero-Trust) { "jsonrpc": "2.0", "id": "req-102", "result": {
+  "tools": [ { "name": "postgres_read_query", "description": "Execute read-only SQL SELECT
+  statements", "server_id": "postgres-mcp-v1" } ] } }
+
+
+
+12. Access Denial & Escalation Error Schema
+
+        // Response: Structured Access Denial (-32001) { "jsonrpc": "2.0", "id": "req-205", "error":
+  { "code": -32001, "message": "Access Denied: Agent 'mcp_ag_sales' lacks permission for
+  'db_drop_table'.", "data": { "status": "FORBIDDEN", "reason": "HIGH_PRIVILEGE_RESTRICTION",
+  "ticket_id": "esc-20261029-8812", "escalation_supported": true } } }
+
+
+Automated Agent Escalation Parsing: When an agent receives error code `-32001` with `escalation_supported: true`,
+autonomous agents configured with reasoning capabilities can parse the `ticket_id` and issue an approval request to a
+supervisory bot (`mcp_sup_...`) or human admin via `POST /mcp/v1/escalations/request`.
+
+
+
+
+All-in-One MCP Gateway Architectural Specification                                                             Page 6 of 8
+13. GitHub Import Engine & Manifest Specification
+The platform features an automated Git deployment engine. Sub-servers can be installed directly from GitHub
+repositories by supplying the clone URL. The gateway handles cloning, environment setup, dependency
+compilation, and supervisor registration automatically.
+
+
+        // mcp-manifest.json Specification for Repository Root { "name": "github-mcp-connector",
+  "version": "2.1.0", "runtime": "node20", "build_command": "npm install && npm run build",
+  "start_command": "node dist/index.js", "environment": { "DEFAULT_BRANCH": "main" },
+  "required_secrets": ["GITHUB_PAT_TOKEN"], "capabilities": { "high_privilege_tools":
+  ["repo_delete", "force_push"], "delegation_supported": false } }
+
+
+
+
+14. Sub-Process Execution Runtimes
+
+  Node.js Runtime Pool                                     Python Runtime Pool
+  Supports Node v20/v22 LTS. Pre-configured with `npx`,    Python 3.11/3.12 environment powered by `uv` for
+  `pnpm`, and `yarn`. Operates via stdio stream pipes or   ultra-fast virtualenv creation and package installation.
+  local HTTP/SSE ports bound to `127.0.0.1`.               Isolated from system Python.
+
+
+  Go & Native Binary Pool                                  Sub-Agent Proxy Pool
+  Direct execution of compiled C/C++/Rust/Go binaries      HTTP/WebSocket proxy wrappers that bridge local tool
+  with Linux namespace sandboxing, memory caps, and        calls to remote AI agent harnesses, managing
+  process signal handlers.                                 authentication and session states.
+
+
+
+
+All-in-One MCP Gateway Architectural Specification                                                         Page 7 of 8
+15. Project Directory & Repository Layout
+
+        mcp-gateway-master/ ├── Dockerfile # Master multi-runtime container image ├── docker-
+  compose.yml # Production volume & port mappings ├── src/ │ ├── gateway/ # Ingress reverse proxy &
+  JSON-RPC router │ ├── catalog/ # Zero-Trust Search & Scope Filtering Engine │ ├── rbac/ # Token
+  verification & policy decision point │ ├── delegation/ # Sub-Agent & Remote Observer Proxy
+  Handler │ ├── vault/ # AES-256 encrypted credential storage │ ├── git_engine/ # GitHub automated
+  clone & build supervisor │ └── ui/ # Embedded Web UI (React/Tailwind single bundle) └── data/ #
+  Persistent SQLite DB, repos, and secrets
+
+16. Implementation Roadmap & Build Phases
+ Phase             Milestone Name                    Key Deliverables                                Target Status
+
+ Phase 1           Core Engine & Container           Multi-runtime Dockerfile, stdio process          COMPLETED
+                                                     supervisor, `/mcp/v1` router.
+
+ Phase 2           Catalog & RBAC Shield             Scope-filtered `tools/search`, API key           COMPLETED
+                                                     generator, zero-trust masking.
+
+ Phase 3           Web UI Console                    Management UI, matrix scope editor, live log     IN PROGRESS
+                                                     viewer, debug sandbox.
+
+ Phase 4           Sub-Agent Delegation              Remote harness proxying, delegation              PLANNED
+                                                     headers, recursion limiters.
+
+ Phase 5           Git Engine & Vault                Automated GitHub import pipeline, AES-256        QUEUED
+                                                     secrets vault, automated tests.
+
+
+  Production Deployment Readiness Statement
+  The All-in-One MCP Gateway provides an enterprise-ready foundation for managing agent tool suites at scale. By
+  consolidating sub-servers, enforcing zero-trust navigation discovery, isolating sensitive credentials, and supporting
+  remote sub-agent delegation, the platform guarantees robust operational governance across multi-agent AI
+  ecosystems.
+
+
+
+
+All-in-One MCP Gateway Architectural Specification                                                                Page 8 of 8
+

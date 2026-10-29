@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: typecheck · lint · test · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test (unit + integration + e2e)
+        run: npm test
+
+      - name: Build server + UI bundle
+        run: npm run build
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage
+          if-no-files-found: ignore
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: mcp-gateway:ci
+
+      - name: Smoke test image
+        run: |
+          docker run -d --name mcp-gateway-ci \
+            -e MCP_MASTER_KEY="mcp_master_ci_bootstrap_key_0123456789abcdef" \
+            -e MCP_VAULT_SECRET="ci-vault-secret-0123456789abcdef" \
+            -p 18080:8080 mcp-gateway:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/mcp/v1/health; then exit 0; fi
+            sleep 2
+          done
+          docker logs mcp-gateway-ci
+          exit 1
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f mcp-gateway-ci || true

@@ -1,0 +1,16 @@
+{
+  "name": "fixture-echo-server",
+  "version": "1.0.0",
+  "runtime": "node20",
+  "build_command": "node scripts/build.mjs",
+  "start_command": "node server.mjs --stdio",
+  "environment": {
+    "FIXTURE_MODE": "test",
+    "DEFAULT_BRANCH": "main"
+  },
+  "required_secrets": ["FIXTURE_API_TOKEN"],
+  "capabilities": {
+    "high_privilege_tools": ["danger_delete"],
+    "delegation_supported": true
+  }
+}

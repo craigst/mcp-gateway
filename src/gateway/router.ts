@@ -1,0 +1,341 @@
+import { ErrorCodes, GatewayError, accessDenied, asGatewayError, invalidParams, toolNotFound } from '../core/errors.js';
+import { newRequestId } from '../core/ids.js';
+import { createLogger, type Logger } from '../core/logger.js';
+import type { GatewayConfig } from '../core/config.js';
+import type {
+  AuditService,
+  CatalogService,
+  DelegationService,
+  EscalationService,
+  KeyService,
+  PolicyEngine,
+  Supervisor,
+} from '../core/ports.js';
+import type {
+  AuthenticatedKey,
+  AuthorizationDecision,
+  JsonRpcRequest,
+  PolicyDenialReason,
+  RequestContext,
+  ToolDescriptor,
+} from '../core/types.js';
+
+export interface RouterDeps {
+  config: GatewayConfig;
+  keys: KeyService;
+  policy: PolicyEngine;
+  escalations: EscalationService;
+  catalog: CatalogService;
+  supervisor: Supervisor;
+  delegation: DelegationService;
+  audit: AuditService;
+  logger?: Logger;
+}
+
+const PROTOCOL_VERSION = '2025-06-18';
+const GATEWAY_VERSION = '0.1.0';
+
+/**
+ * JSON-RPC method dispatch. Authorization, audit recording and escalation
+ * ticket creation all happen here so every discovery vector is uniformly
+ * censored at the gateway layer.
+ */
+export class JsonRpcRouter {
+  private readonly logger: Logger;
+
+  constructor(private readonly deps: RouterDeps) {
+    this.logger = deps.logger ?? createLogger('router');
+  }
+
+  /** Execute one JSON-RPC request. Returns the `result` payload, or undefined for notifications. */
+  async handle(ctx: RequestContext, request: JsonRpcRequest): Promise<unknown> {
+    const started = performance.now();
+    const isNotification = request.id === undefined || request.id === null;
+    let status: 'ok' | 'error' | 'denied' = 'ok';
+    let errorCode: number | null = null;
+    let serverId: string | null = null;
+    let toolId: string | null = null;
+
+    try {
+      const params = asObject(request.params);
+      const key = ctx.key;
+      if (!key) throw new GatewayError(ErrorCodes.KEY_INVALID, 'Unauthorized: missing API key.', { data: { status: 'UNAUTHORIZED', reason: 'MISSING_KEY' } });
+
+      switch (request.method) {
+        case 'initialize':
+          return {
+            protocolVersion: PROTOCOL_VERSION,
+            serverInfo: { name: 'mcp-gateway', version: GATEWAY_VERSION },
+            capabilities: { tools: { listChanged: true }, logging: {} },
+            instructions:
+              'Zero-trust MCP gateway. Use tools/search or tools/list to discover permitted tools; tools/call executes directly.',
+            _meta: {
+              gateway: {
+                key_id: key.id,
+                key_type: key.keyType,
+                delegation_max_depth: this.deps.config.delegationMaxDepth,
+              },
+            },
+          };
+
+        case 'ping':
+          return {};
+
+        case 'notifications/initialized':
+          return undefined;
+
+        case 'notifications/cancelled':
+          return undefined;
+
+        case 'tools/list': {
+          const requestedServer = optionalString(params.serverId, 'serverId');
+          const listed = this.deps.catalog.listTools(key, requestedServer ? { serverId: requestedServer } : undefined);
+          const tools = listed.tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+            server_id: tool.server_id,
+            tool_id: tool.id,
+          }));
+          return { tools, total: tools.length };
+        }
+
+        case 'tools/search': {
+          const query = optionalString(params.query, 'query') ?? '';
+          const limit = clampInt(params.limit, 1, 100, 20);
+          const requestedServer = optionalString(params.serverId, 'serverId');
+          if (requestedServer) {
+            if (!this.deps.policy.isServerPermitted(key, requestedServer)) {
+              // Do not disclose whether the server exists.
+              return { tools: [], total: 0, censored: true };
+            }
+            const result = this.deps.catalog.searchTools(key, query, 100);
+            const filtered = result.tools.filter((tool) => tool.server_id === requestedServer).slice(0, limit);
+            return { tools: filtered, total: filtered.length, censored: true };
+          }
+          return this.deps.catalog.searchTools(key, query, limit);
+        }
+
+        case 'servers/list_permitted':
+          return { servers: this.deps.catalog.listPermittedServers(key) };
+
+        case 'tools/call': {
+          const name = requiredString(params.name, 'name');
+          const requestedServer = optionalString(params.serverId, 'serverId');
+          const args = asObject(params.arguments ?? {});
+          const tool = this.resolveTool(key, name, requestedServer);
+          serverId = tool.serverId;
+          toolId = tool.id;
+
+          const decision = this.deps.policy.evaluateCall(key, tool, args);
+          if (!decision.allowed) {
+            throw await this.deny(ctx, tool, decision);
+          }
+
+          if (this.deps.supervisor.status(tool.serverId) !== 'running') {
+            await this.deps.supervisor.start(tool.serverId);
+          }
+          const client = this.deps.supervisor.client(tool.serverId);
+          if (!client) throw new GatewayError(ErrorCodes.UPSTREAM_ERROR, `Server '${tool.serverId}' is unavailable`);
+
+          const callStarted = performance.now();
+          const result = await client.callTool(tool.name, args, {
+            timeoutMs: this.deps.config.defaultToolTimeoutMs,
+            meta: { trace_id: ctx.requestId, key_id: key.id, delegation_depth: ctx.delegationDepth },
+          });
+          const subServerMs = Number((performance.now() - callStarted).toFixed(2));
+          return {
+            ...result,
+            _meta: {
+              server_id: tool.serverId,
+              tool_id: tool.id,
+              sub_server_ms: subServerMs,
+              gateway_overhead_ms: Number((performance.now() - started).toFixed(2)),
+              delegation_depth: ctx.delegationDepth,
+            },
+          };
+        }
+
+        case 'agents/delegate': {
+          if (!this.deps.policy.canDelegate(key)) {
+            throw accessDenied('Access Denied: key has no delegation claim.', { reason: 'DELEGATION_NOT_PERMITTED' });
+          }
+          const targetId = requiredString(params.targetId, 'targetId');
+          const mode = params.mode === 'observe_and_verify' ? 'observe_and_verify' : 'delegate';
+          const result = await this.deps.delegation.delegate(
+            key,
+            { targetId, payload: params.payload ?? {}, mode },
+            { depth: ctx.delegationDepth, parentRequestId: ctx.requestId },
+          );
+          return {
+            target_id: result.targetId,
+            status: result.status,
+            verdict: result.verdict,
+            approval_token: result.approvalToken,
+            output: result.output,
+            latency_ms: result.latencyMs,
+            depth: result.depth,
+            trace_id: result.traceId,
+          };
+        }
+
+        case 'escalations/request': {
+          if (!this.deps.policy.canEscalate(key)) {
+            throw accessDenied('Access Denied: key cannot request escalation.', { reason: 'ESCALATION_NOT_PERMITTED' });
+          }
+          const ticket = this.deps.escalations.create({
+            key,
+            toolId: optionalString(params.toolId, 'toolId') ?? null,
+            serverId: optionalString(params.serverId, 'serverId') ?? null,
+            reason: (optionalString(params.reason, 'reason') ?? 'HIGH_PRIVILEGE_RESTRICTION') as PolicyDenialReason,
+            requestPayload: params.requestPayload ?? null,
+          });
+          return { ticket_id: ticket.ticketId, status: ticket.status, created_at: ticket.createdAt };
+        }
+
+        default:
+          throw new GatewayError(ErrorCodes.METHOD_NOT_FOUND, `Method not found: ${request.method}`, {
+            data: { status: 'METHOD_NOT_FOUND' },
+          });
+      }
+    } catch (error) {
+      const gatewayError = asGatewayError(error);
+      status = gatewayError.code === ErrorCodes.ACCESS_DENIED ? 'denied' : 'error';
+      errorCode = gatewayError.code;
+      if (status === 'error' && gatewayError.code === ErrorCodes.INTERNAL_ERROR) {
+        this.logger.error('jsonrpc method failed', { method: request.method, error: gatewayError.message });
+      }
+      throw gatewayError;
+    } finally {
+      if (!isNotification || status !== 'ok') {
+        try {
+          this.deps.audit.record({
+            requestId: ctx.requestId,
+            keyId: ctx.key?.id ?? null,
+            method: request.method,
+            serverId,
+            toolId,
+            status,
+            latencyMs: Number((performance.now() - started).toFixed(2)),
+            errorCode,
+            delegationDepth: ctx.delegationDepth,
+            parentId: ctx.parentAuditId,
+            payload: request.params ?? null,
+          });
+        } catch (auditError) {
+          this.logger.warn('audit record failed', { error: String(auditError) });
+        }
+      }
+    }
+  }
+
+  /** Resolve a tool name to a visible tool, enforcing anti-probing semantics. */
+  private resolveTool(key: AuthenticatedKey, name: string, serverId?: string): ToolDescriptor {
+    const repository = this.deps.catalog.repository;
+    // Server-level grants are checked FIRST so an unpermitted server can never
+    // leak tool existence (including high-privilege tools) through denials.
+    const candidates = (
+      serverId
+        ? repository.listToolsByServer(serverId)
+        : repository.listTools()
+    ).filter(
+      (tool) =>
+        (tool.name === name || tool.id === name) && this.deps.policy.isServerPermitted(key, tool.serverId),
+    );
+
+    const visible = candidates.find((tool) => this.deps.policy.isToolPermitted(key, tool));
+    if (visible) return visible;
+
+    const hiddenHighPrivilege = candidates.find((tool) => tool.highPrivilege);
+    if (hiddenHighPrivilege) {
+      // Structured denial is safe here: the key is explicitly allowed to know
+      // high-privilege tools exist, it just lacks a signed grant.
+      return this.denySync(key, hiddenHighPrivilege, {
+        allowed: false,
+        reason: 'HIGH_PRIVILEGE_RESTRICTION',
+        detail: `Agent '${key.name}' lacks an explicit grant for '${hiddenHighPrivilege.name}'.`,
+      });
+    }
+    // Unknown or invisible: indistinguishable response.
+    throw toolNotFound();
+  }
+
+  private denySync(key: AuthenticatedKey, tool: ToolDescriptor, decision: AuthorizationDecision): never {
+    let ticketId: string | undefined;
+    if (decision.reason === 'HIGH_PRIVILEGE_RESTRICTION' && this.deps.policy.canEscalate(key)) {
+      const ticket = this.deps.escalations.create({
+        key,
+        toolId: tool.id,
+        serverId: tool.serverId,
+        reason: 'HIGH_PRIVILEGE_RESTRICTION',
+        requestPayload: null,
+      });
+      ticketId = ticket.ticketId;
+    }
+    throw accessDenied(
+      decision.detail ??
+        `Access Denied: Agent '${key.name}' lacks permission for '${tool.name}'.`,
+      {
+        reason: decision.reason ?? 'TOOL_NOT_PERMITTED',
+        ticketId,
+        escalationSupported: Boolean(ticketId),
+        toolId: tool.id,
+        serverId: tool.serverId,
+      },
+    );
+  }
+
+  private async deny(ctx: RequestContext, tool: ToolDescriptor, decision: AuthorizationDecision): Promise<GatewayError> {
+    const key = ctx.key;
+    if (!key) return accessDenied('Access Denied: missing key.', { reason: 'TOKEN_NOT_PERMITTED' });
+    try {
+      return this.denySync(key, tool, decision);
+    } catch (error) {
+      return error instanceof GatewayError ? error : internalDenial(tool);
+    }
+  }
+}
+
+function internalDenial(tool: ToolDescriptor): GatewayError {
+  return accessDenied('Access Denied.', { toolId: tool.id, serverId: tool.serverId });
+}
+
+export function createRequestContext(
+  key: AuthenticatedKey | null,
+  headers: Record<string, string>,
+  clientIp: string | null,
+): RequestContext {
+  const depthRaw = headers['x-mcp-delegation-depth'];
+  const parsedDepth = depthRaw ? Number.parseInt(depthRaw, 10) : 0;
+  return {
+    requestId: newRequestId(),
+    key,
+    delegationDepth: Number.isFinite(parsedDepth) && parsedDepth > 0 ? parsedDepth : 0,
+    parentAuditId: null,
+    headers,
+    clientIp,
+  };
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (value === null || value === undefined) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) throw invalidParams('params must be an object');
+  return value as Record<string, unknown>;
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') throw invalidParams(`'${field}' is required`);
+  return value;
+}
+
+function optionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') throw invalidParams(`'${field}' must be a string`);
+  return value;
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number.parseInt(value, 10) : Number.NaN;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}

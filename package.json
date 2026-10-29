@@ -1,0 +1,74 @@
+{
+  "name": "mcp-gateway",
+  "version": "0.1.0",
+  "description": "Zero-trust MCP gateway: one JSON-RPC endpoint in front of every MCP sub-server, with scoped keys, censored discovery, sub-agent delegation, AES-256 vault and a management console.",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "main": "dist/src/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "npm run build:server && npm run build:ui",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:ui": "vite build",
+    "start": "node dist/src/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint .",
+    "test:unit": "vitest run tests/rbac tests/catalog tests/vault tests/git_engine tests/delegation tests/gateway",
+    "test:integration": "vitest run tests/integration tests/e2e",
+    "test:ui": "vitest run tests/ui"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "@vitest/coverage-v8": "^5.0.5",
+    "eslint": "^10.13.0",
+    "jsdom": "^30.1.3",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  },
+  "author": {
+    "name": "Craig CXS",
+    "email": "admin@evoonline.co.uk"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/craigst/mcp-gateway.git"
+  },
+  "homepage": "https://github.com/craigst/mcp-gateway#readme",
+  "bugs": {
+    "url": "https://github.com/craigst/mcp-gateway/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "gateway",
+    "json-rpc",
+    "zero-trust",
+    "rbac",
+    "ai-agents",
+    "orchestration",
+    "delegation"
+  ]
+}

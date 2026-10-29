@@ -1,0 +1,35 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mcp-gateway:0.1.0
+    container_name: mcp-gateway
+    ports:
+      - "${MCP_PORT:-8080}:8080"
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8080
+      MCP_DATA_DIR: /data
+      MCP_LOG_LEVEL: ${MCP_LOG_LEVEL:-info}
+      # Bootstrap master key: only used when the database has no keys yet.
+      MCP_MASTER_KEY: ${MCP_MASTER_KEY:-}
+      # Required for the encrypted secret vault.
+      MCP_VAULT_SECRET: ${MCP_VAULT_SECRET:-}
+      MCP_KEY_PEPPER: ${MCP_KEY_PEPPER:-}
+      MCP_DELEGATION_MAX_DEPTH: ${MCP_DELEGATION_MAX_DEPTH:-3}
+      MCP_GIT_IMPORT_ALLOWED_PREFIXES: ${MCP_GIT_IMPORT_ALLOWED_PREFIXES:-}
+      MCP_TOOL_TIMEOUT_MS: ${MCP_TOOL_TIMEOUT_MS:-60000}
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/mcp/v1/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
