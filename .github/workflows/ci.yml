@@ -21,6 +21,11 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Configure git identity (test fixtures create repos)
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.invalid"
+
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 

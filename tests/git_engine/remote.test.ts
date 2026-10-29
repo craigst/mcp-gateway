@@ -44,7 +44,7 @@ beforeAll(() => {
   git(['add', '-A'], repoDir);
   git(['-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '-m', 'v2'], repoDir);
   secondCommit = git(['rev-parse', 'HEAD'], repoDir);
-  git(['tag', '-a', 'v2.0.0', '-m', 'release v2'], repoDir);
+  git(['-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'tag', '-a', 'v2.0.0', '-m', 'release v2'], repoDir);
 });
 
 afterAll(() => {
