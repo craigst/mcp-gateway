@@ -622,6 +622,49 @@ The **Connectors** page (sidebar: *Connectors*, `connectors`) is the device-onbo
 The pause dialog uses local time and converts it to the ISO `until` the API expects; leaving
 it empty creates an open-ended pause that only an operator can clear.
 
+## Physical host desktops (v0.11)
+
+The broker can also register an **existing Linux PC** as a computer instead of provisioning a
+container: `provider: "host"`. It shows up in the gateway fleet like any other computer, the
+fleet thumbnail and live-desktop hand-off work, and agents use the same `computer_*` tools.
+The connector for a host runs on that machine with `--kind computer --backend wayland`; it is
+not a container.
+
+```sh
+# on the broker host (or POST /api/computers/host with an admin token)
+cd "/path/to/computer broker"
+python -m broker.cli computer attach --name gpc --kind host   # prints a one-time token
+
+# on the physical PC, from a checkout of the broker repo
+scripts/install-connector.sh \
+  --broker wss://<broker>:7443/connector --enroll <TOKEN> \
+  --kind computer --backend wayland --name gpc \
+  --ca ~/.local/share/computer-broker/tls/broker-ca.pem
+```
+
+The gateway does not create host computers itself; after registration it discovers the
+computer on the next computer-use sync, and the fleet card's **Open live desktop** goes
+through the normal one-time hand-off into the broker viewer.
+
+**Displays.** The host connector reports enabled outputs from `kscreen-doctor` (name, virtual
+position, resolution, scale, rotation, primary) plus the combined desktop bounds. The broker
+viewer offers **All displays** and one tab per display; frames are cropped server-side from the
+same capture. Gateway agents get the layout from `computer_displays` and can request a
+per-display frame with `computer_screenshot`'s `display` argument. `mouse.*` coordinates are
+virtual-desktop pixels (origin = `bounds.x, bounds.y`), so a click in a display view lands on
+that display. Display **layout changes** are not exposed; rotate/resolution/enable stay local.
+
+**Input.** Absolute pointer and keyboard go through `/dev/uinput` on the host, gated by the
+same control lease as containers: a person holding the viewer must send their lease with input
+calls, and agent calls are refused while held (never queued). The viewer's keyboard bar types
+text, Return/Esc/Tab/Backspace and Ctrl+C/Ctrl+V.
+
+**Requirements / limits:** KDE Plasma Wayland session logged in and unlocked; `spectacle`,
+`kscreen-doctor`, Pillow and read/write `/dev/uinput` for the connector user; US keyboard
+layout; frames are polled roughly every 900 ms, so this is remote monitoring/control rather
+than a game stream. `computer_windows` is not implemented for a host; the broker reports
+not-supported. See the broker repo's `docs/HOST-DESKTOP.md` for the full story.
+
 ## Runbook / failure modes
 
 | Symptom | Likely cause | Action |
