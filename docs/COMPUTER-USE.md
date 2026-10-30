@@ -43,8 +43,12 @@ Two paths reach the broker:
    MCP results back to the agent. Agents never see the broker URL or token.
 2. **Console path (browser):** the console uses the gateway's admin API. Live frame previews
    come from `GET /mcp/v1/admin/computer-use/computers/:id/frame`, which the gateway fetches
-   from the broker server-side. The "open live desktop" link points the browser at the broker's
-   own public viewer URL; the gateway only renders the link.
+   from the broker server-side. The "open live desktop" link goes through the gateway
+   (`GET /mcp/v1/admin/computer-use/computers/:id/live-desktop`), which mints a **one-time,
+   60-second sign-in hand-off** on the broker and redirects the browser to the broker's own
+   viewer. That means the operator's gateway console session carries into the broker console
+   without retyping the broker password. If the hand-off cannot be minted, the gateway falls
+   back to the plain broker URL (which shows the broker's own login page).
 
 The broker surface consumed by the gateway is deliberately small:
 
@@ -662,7 +666,12 @@ it empty creates an open-ended pause that only an operator can clear.
 - **Audit is complete.** Allowed, failed and denied calls (including pause refusals) are
   recorded with key, tool, latency and payload (truncated), so availability and RBAC changes
   are verifiable after the fact.
-- **The live desktop link is the broker's UI.** Gateway authentication does not apply to it.
+- **The live desktop link is the broker's UI, entered through a one-time hand-off.** The gateway
+  (master/console session only) asks the broker for a single-use, 60-second sign-in token and
+  redirects the browser to consume it; the broker sets its own HttpOnly session cookie. The
+  hand-off token is stored in broker memory, expires quickly, can be used once, and is audited
+  (`handoff.create` / `handoff.login`). If it cannot be minted the link falls back to the
+  broker's login page.
   Protect the broker with its own authentication, TLS and network policy; do not expose the
   broker or its viewer publicly unless that is deliberate.
 - **The broker is a separate trust boundary.** It can drive desktops and device connectors,

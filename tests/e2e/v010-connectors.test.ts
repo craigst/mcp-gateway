@@ -170,6 +170,14 @@ class FakeBroker implements ComputerUseBrokerPort {
     this.revoked.push(enrollmentId);
   }
 
+  async createHandoff(_input: { to: string; ttlSeconds: number }): Promise<{ token: string; expiresAt: string; path: string }> {
+    return {
+      token: 'handoff-token',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      path: '/login/handoff?token=handoff-token',
+    };
+  }
+
   async deviceCall(
     deviceId: string,
     op: string,
@@ -285,6 +293,15 @@ describe('v0.10 connectors, pairing and terminal', () => {
       },
     ]);
     expect(connectors.body.counts).toEqual({ devices: 2, online: 1, pendingEnrollments: 1 });
+  });
+
+  it('hands the live desktop off to a broker-signed console session', async () => {
+    const response = await fetch(`${baseUrl}/mcp/v1/admin/computer-use/computers/cmp_test/live-desktop`, {
+      headers: { authorization: `Bearer ${MASTER_KEY}` },
+      redirect: 'manual',
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe(`${BROKER_URL}/login/handoff?token=handoff-token`);
   });
 
   it('mints a pairing token and a shell-safe installer command', async () => {

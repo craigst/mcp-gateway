@@ -711,6 +711,9 @@ export interface ComputerUseService {
   connectors(): Promise<ComputerUseConnectorsResponse>;
   createEnrollment(input: ComputerUseEnrollmentInput, updatedBy?: string): Promise<ComputerUseEnrollmentResponse>;
   revokeEnrollment(enrollmentId: string): Promise<void>;
+  /** Seamless "Open live desktop" URL: broker console sign-in handoff, falling
+   *  back to the plain broker URL when the handoff cannot be minted. */
+  liveDesktopUrl(computerId: string): Promise<{ url: string; viaHandoff: boolean }>;
   openTerminal(input: ComputerUseTerminalOpenInput): Promise<ComputerUseTerminalSession>;
   sendTerminal(input: ComputerUseTerminalSendInput): Promise<{ ok: true }>;
   readTerminal(input: ComputerUseTerminalReadInput): Promise<ComputerUseTerminalReadResult>;
@@ -770,8 +773,17 @@ export interface ComputerUseBrokerPort {
     computerId?: string | null;
   }): Promise<BrokerEnrollmentCreated>;
   revokeEnrollment(enrollmentId: string): Promise<void>;
+  /** Mint a one-time browser sign-in link for the broker console (live desktop). */
+  createHandoff(input: { to: string; ttlSeconds: number }): Promise<BrokerHandoff>;
   /** One operation against a connected device connector (`exec.argv`, `term.*`, …). */
   deviceCall(deviceId: string, op: string, args?: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
+}
+
+export interface BrokerHandoff {
+  token: string;
+  expiresAt: string;
+  /** Broker-relative path, e.g. `/login/handoff?token=…`. */
+  path: string;
 }
 
 export interface BrokerTerminalSession {

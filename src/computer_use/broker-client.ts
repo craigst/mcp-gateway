@@ -24,6 +24,7 @@ import type {
   BrokerDeviceSnapshot,
   BrokerEnrollmentCreated,
   BrokerEnrollmentSnapshot,
+  BrokerHandoff,
   ComputerUseBrokerHealth,
   ComputerUseBrokerPort,
   ComputerUseFrameResult,
@@ -152,6 +153,24 @@ export class BrokerHttpClient implements ComputerUseBrokerPort {
 
   async revokeEnrollment(enrollmentId: string): Promise<void> {
     await this.request(`/api/enrollments/${encodeURIComponent(enrollmentId)}`, { method: 'DELETE' });
+  }
+
+  async createHandoff(input: { to: string; ttlSeconds: number }): Promise<BrokerHandoff> {
+    const response = await this.request('/api/handoff', {
+      method: 'POST',
+      body: JSON.stringify({ to: input.to, ttl_s: input.ttlSeconds }),
+    });
+    const record = expectObject(parseJsonBody(response.body), 'handoff');
+    const token = typeof record.token === 'string' ? record.token : '';
+    const path = typeof record.path === 'string' ? record.path : '';
+    if (token === '' || !path.startsWith('/')) throw brokerShapeError('handoff', record);
+    return {
+      token,
+      expiresAt: typeof record.expires_at === 'string'
+        ? record.expires_at
+        : typeof record.expiresAt === 'string' ? record.expiresAt : '',
+      path,
+    };
   }
 
   /**

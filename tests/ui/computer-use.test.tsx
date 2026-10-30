@@ -11,6 +11,9 @@ const { apiMock } = vi.hoisted(() => ({
     startComputerUseComputer: vi.fn(),
     stopComputerUseComputer: vi.fn(),
     computerUseFrameUrl: vi.fn(),
+    computerUseLiveDesktopUrl: vi.fn(
+      (id: string) => `/mcp/v1/admin/computer-use/computers/${id}/live-desktop`,
+    ),
     getComputerUseActivity: vi.fn(),
   },
 }));
@@ -243,7 +246,7 @@ describe('Computer Use page', () => {
     expect(screen.queryByAltText('Live screen of Desktop Beta')).toBeNull();
     expect(
       screen.getByRole('link', { name: /Open live desktop/ }).getAttribute('href'),
-    ).toBe('https://broker.example.lan/#/d/comp-alpha');
+    ).toBe('/mcp/v1/admin/computer-use/computers/comp-alpha/live-desktop');
 
     expect((await screen.findAllByText('computer_screenshot')).length).toBeGreaterThan(0);
     expect(screen.getByText('high privilege')).toBeTruthy();

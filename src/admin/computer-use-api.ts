@@ -152,6 +152,17 @@ export class ComputerUseApi implements AdminSubRouter {
         }
       }
 
+      // GET /admin/computer-use/computers/:id/live-desktop -> 302 to the broker
+      // console with a one-time sign-in handoff (no second password prompt).
+      if (rest.length === 3 && rest[0] === 'computers' && rest[2] === 'live-desktop' && method === 'GET') {
+        this.requireMaster(req);
+        const computerId = decodeURIComponent(rest[1] as string);
+        const target = await this.deps.computerUse.liveDesktopUrl(computerId);
+        res.writeHead(302, { location: target.url, 'cache-control': 'no-store' });
+        res.end();
+        return true;
+      }
+
       // GET /admin/computer-use/computers/:id/frame?maxWidth=480
       if (rest.length === 3 && rest[0] === 'computers' && rest[2] === 'frame' && method === 'GET') {
         this.requireMaster(req);

@@ -206,6 +206,7 @@ semantics, tool catalogue and runbook are in [`COMPUTER-USE.md`](./COMPUTER-USE.
 | `POST` | `/settings` | `ComputerUseSettingsInput` | `ComputerUseOverview` (persists URL/CA/enabled + write-only token, restarts the managed server) |
 | `POST` | `/availability` | `ComputerUseAvailabilityInput` | `ComputerUseOverview` |
 | `POST` | `/sync` | — | `ComputerUseOverview` (reconnect, re-register, refresh tools) |
+| `GET` | `/computers/:id/live-desktop` | — | `302` to the broker console with a one-time sign-in hand-off (no broker password prompt); falls back to the plain broker URL |
 | `POST` | `/computers/:id/start` | — | `{ "computer": ComputerUseComputerInfo }` |
 | `POST` | `/computers/:id/stop` | — | `{ "computer": ComputerUseComputerInfo }` |
 | `GET` | `/computers/:id/frame?maxWidth=480` | — | image bytes (`content-type` from broker, `cache-control: private, no-store`, `x-frame-time`); `maxWidth` clamped 160–1600 |

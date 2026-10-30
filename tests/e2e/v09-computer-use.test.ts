@@ -167,6 +167,14 @@ class FakeBroker implements ComputerUseBrokerPort {
     // no-op stub
   }
 
+  async createHandoff(_input: { to: string; ttlSeconds: number }): Promise<{ token: string; expiresAt: string; path: string }> {
+    return {
+      token: 'handoff-token',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      path: '/login/handoff?token=handoff-token',
+    };
+  }
+
   async deviceCall(
     _deviceId: string,
     _op: string,

@@ -14,7 +14,6 @@ import {
 import { cx } from '../../lib/cx.js';
 import { api } from '../../lib/api.js';
 import { formatTimestamp } from '../../lib/format.js';
-import { safeExternalUrl } from '../server/shared.js';
 import type {
   ComputerUseComputerInfo,
   ComputerUseComputersResponse,
@@ -122,7 +121,7 @@ function ComputerCard({
   // The fleet response merges global availability into every computer, so a
   // paused tile may be paused globally rather than individually.
   const individuallyPaused = paused && !globalPaused;
-  const liveUrl = safeExternalUrl(computer.liveUrl);
+  const liveUrl = computer.liveUrl === null ? null : api.computerUseLiveDesktopUrl(computer.id);
   const connector = computer.connector;
 
   return (
@@ -331,7 +330,7 @@ function PreviewDialog({ computer, frameTick, onClose }: PreviewDialogProps) {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
 
-  const liveUrl = safeExternalUrl(computer.liveUrl);
+  const liveUrl = computer.liveUrl === null ? null : api.computerUseLiveDesktopUrl(computer.id);
   const running = isComputerRunning(computer.state);
 
   return (

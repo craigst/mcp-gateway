@@ -1406,6 +1406,14 @@ export class ApiClient {
     return `${this.baseUrl}/mcp/v1/admin/computer-use/computers/${encodeURIComponent(computerId)}/frame${buildQuery({ maxWidth })}`;
   }
 
+  /**
+   * Same-origin URL that mints a one-time broker console sign-in hand-off and
+   * lands on that computer's live desktop (no broker password prompt).
+   */
+  computerUseLiveDesktopUrl(computerId: string): string {
+    return `${this.baseUrl}/mcp/v1/admin/computer-use/computers/${encodeURIComponent(computerId)}/live-desktop`;
+  }
+
   /** Recent audit rows for the managed computer-use server. */
   async getComputerUseActivity(limit = 50): Promise<AuditEntry[]> {
     const response = await this.request<ComputerUseActivityResponse>(

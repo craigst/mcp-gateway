@@ -475,6 +475,32 @@ export class DefaultComputerUseService implements ComputerUseService {
     this.logger.info('connector enrollment revoked', { enrollmentId: id });
   }
 
+  async liveDesktopUrl(computerId: string): Promise<{ url: string; viaHandoff: boolean }> {
+    const id = requiredId(computerId, 'computerId');
+    const settings = this.store.get();
+    const publicBase = (settings.publicBrokerUrl ?? settings.brokerUrl)?.replace(/\/+$/, '') ?? '';
+    if (publicBase === '') {
+      throw invalidParams('The public broker URL is not configured; set it in Computer use settings.');
+    }
+    const direct = `${publicBase}/#/d/${encodeURIComponent(id)}`;
+    const broker = this.broker ?? this.buildBroker();
+    if (broker === null) return { url: direct, viaHandoff: false };
+    try {
+      const handoff = await broker.createHandoff({ to: `/#/d/${encodeURIComponent(id)}`, ttlSeconds: 60 });
+      return {
+        url: `${publicBase}${handoff.path.startsWith('/') ? handoff.path : `/${handoff.path}`}`,
+        viaHandoff: true,
+      };
+    } catch (error) {
+      // Fall back to the broker's own login screen rather than failing the click.
+      this.logger.warn('live desktop handoff unavailable; falling back to broker login', {
+        computerId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { url: direct, viaHandoff: false };
+    }
+  }
+
   async openTerminal(input: ComputerUseTerminalOpenInput): Promise<ComputerUseTerminalSession> {
     const deviceId = requiredId(input.deviceId, 'deviceId');
     const broker = this.requireBroker();
