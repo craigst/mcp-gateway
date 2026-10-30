@@ -1082,3 +1082,113 @@ export type ComputerUseAvailabilityInput =
 export interface ComputerUseActivityResponse {
   activity: AuditEntry[];
 }
+
+
+// ---------------------------------------------------------------------------
+// v0.10 — connector onboarding (Linux PCs), pairing and terminal control
+// ---------------------------------------------------------------------------
+
+/** One enrolled device connector (a physical Linux PC, laptop, etc.). */
+export interface ComputerUseDeviceInfo {
+  id: string;
+  name: string;
+  state: string;
+  location: string | null;
+  tags: string[];
+  capabilities: string[];
+  meta: {
+    hostname?: string | null;
+    platform?: string | null;
+    version?: string | null;
+    [key: string]: unknown;
+  } | null;
+  lastSeen: string | null;
+  /** The connector advertises the interactive-terminal ops (term.*). */
+  terminalCapable: boolean;
+}
+
+export type ComputerUseEnrollmentKind = 'device' | 'computer';
+
+/** A live (unclaimed) connector/desktop pairing token. The token itself is never listed. */
+export interface ComputerUseEnrollmentInfo {
+  id: string;
+  kind: ComputerUseEnrollmentKind;
+  expiresAt: string;
+  createdAt: string | null;
+}
+
+export interface ComputerUseInstallCommand {
+  /** One-liner to paste on the new Linux PC. */
+  command: string;
+  /** Broker base URL reachable from the new PC (https). */
+  brokerUrl: string;
+  /** Connector websocket endpoint (wss). */
+  connectorUrl: string;
+  /** CA download URL used by the installer bootstrap. */
+  caUrl: string;
+  /** Whether the generated command enables the interactive terminal policy. */
+  allowTerminal: boolean;
+  expiresAt: string;
+}
+
+export interface ComputerUseConnectorsResponse {
+  broker: ComputerUseBrokerInfo;
+  devices: ComputerUseDeviceInfo[];
+  enrollments: ComputerUseEnrollmentInfo[];
+  /** Used to build pairing commands; must be reachable from the new machine. */
+  publicBrokerUrl: string | null;
+  counts: { devices: number; online: number; pendingEnrollments: number };
+}
+
+export interface ComputerUseEnrollmentInput {
+  kind?: ComputerUseEnrollmentKind;
+  /** Required for kind "computer": the broker computer the connector serves. */
+  computerId?: string | null;
+  /** Human label for the new machine (used in the generated install command). */
+  name?: string | null;
+  ttlSeconds?: number;
+  /** Enable the connector's interactive terminal policy (off by default). */
+  allowTerminal?: boolean;
+}
+
+export interface ComputerUseEnrollmentResponse {
+  enrollment: ComputerUseEnrollmentInfo & { token: string };
+  install: ComputerUseInstallCommand;
+}
+
+// -- terminal control -------------------------------------------------------
+
+export interface ComputerUseTerminalOpenInput {
+  deviceId: string;
+  rows?: number;
+  cols?: number;
+  /** Optional shell override; the connector policy decides whether it is allowed. */
+  shell?: string | null;
+  cwd?: string | null;
+}
+
+export interface ComputerUseTerminalSession {
+  deviceId: string;
+  session: string;
+}
+
+export interface ComputerUseTerminalSendInput {
+  deviceId: string;
+  session: string;
+  input: string;
+  /** Defaults to true: a command line is usually finished with Enter. */
+  enter?: boolean;
+}
+
+export interface ComputerUseTerminalReadInput {
+  deviceId: string;
+  session: string;
+  lines?: number;
+  waitSeconds?: number;
+}
+
+export interface ComputerUseTerminalReadResult {
+  session: string;
+  lines: string[];
+  changed: boolean;
+}

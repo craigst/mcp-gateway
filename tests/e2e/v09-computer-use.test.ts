@@ -17,6 +17,9 @@ import type { GatewayConfig } from '../../src/core/config.js';
 import { createLogger } from '../../src/core/logger.js';
 import type {
   BrokerComputerSnapshot,
+  BrokerDeviceSnapshot,
+  BrokerEnrollmentCreated,
+  BrokerEnrollmentSnapshot,
   ComputerUseBrokerHealth,
   ComputerUseBrokerPort,
   ComputerUseFrameResult,
@@ -136,6 +139,39 @@ class FakeBroker implements ComputerUseBrokerPort {
         isError: false,
       };
     }
+    return {};
+  }
+
+  // v0.10 connector/terminal surface: the v0.9 scenarios do not use it, but the
+  // port requires it, so these are deliberately minimal stubs.
+  async devices(): Promise<BrokerDeviceSnapshot[]> {
+    return [];
+  }
+
+  async enrollments(): Promise<BrokerEnrollmentSnapshot[]> {
+    return [];
+  }
+
+  async createEnrollment(input: { kind: 'device' | 'computer'; ttlSeconds: number }): Promise<BrokerEnrollmentCreated> {
+    const now = Date.now();
+    return {
+      id: 'enr_stub',
+      kind: input.kind,
+      token: 'brk_stub_token',
+      expiresAt: new Date(now + input.ttlSeconds * 1_000).toISOString(),
+      createdAt: new Date(now).toISOString(),
+    };
+  }
+
+  async revokeEnrollment(_enrollmentId: string): Promise<void> {
+    // no-op stub
+  }
+
+  async deviceCall(
+    _deviceId: string,
+    _op: string,
+    _args?: Record<string, unknown>,
+  ): Promise<unknown> {
     return {};
   }
 }

@@ -36,6 +36,7 @@ If not, the tool is invisible — not merely denied.
 | 🔬 | **Server inspector** | Open any MCP server: every tool (with schema + live Try), prompts, resources and templates, capabilities/instructions, encrypted configuration with audited reveal, version/update/changelog, and per-server request history — ok, failed **and denied** — with the API key that used it. |
 | 🛡️ | **API key console** | Click any key in RBAC: see **its own activity** (requests, tools/servers used, ok/error/denied, latency), **rename it for the bot it belongs to**, and **pause access** — the whole key, one MCP server, or individual tools — from simple toggles, then resume just as easily. |
 | 🖥️ | **Computer use** | Fronts a self-hosted **Computer Broker** as a managed `computer-use` MCP server: computer list/status/screenshot/windows, click/type/key/scroll/open-app and device exec/files/terminal — with per-key RBAC, audit, approval-gated destructive tools and console pause/resume. |
+| 🔌 | **Connectors & onboarding** | Enrol physical **Linux PCs** as Computer Broker device connectors: a single-use pairing token and one-line installer (downloads connector + CA, installs a systemd user unit, dials out — no inbound ports). The Connectors page lists devices and online state, pending/revoked pairings, and proxies an interactive terminal (opt-in connector policy). **Replaces DeviceBridge.** |
 | 🔑 | **Vaultwarden as the default password/API manager** | Configure your Vaultwarden server (URL, client id/secret, master password) in the UI — the gateway materialises the connector config securely, browses/reveals items, and can inject API keys into MCP servers by reference. **1Password** (Connect host + API token, or service-account token with the `op` CLI) is a first-class alternative; the built-in AES vault is the fallback. |
 | 🚀 | **First-run onboarding** | A fresh gateway starts in setup mode: the Web UI wizard creates the operator account, offers an optional master API key (shown once) and can restore an existing backup — no env files or manual key bootstrapping needed. |
 | 💾 | **Password-encrypted backups** | One-click backup of the whole gateway — accounts, API keys, servers, profiles, catalog sources and **every vault secret** — encrypted with scrypt + AES-256-GCM using your account password. Restore on any fresh gateway (setup wizard or Settings) with that password; servers whose code was not in the backup get a one-click **Reinstall**. |
@@ -219,6 +220,50 @@ approved in the console). Frames are proxied by the gateway (the broker token ne
 the browser) and every call — allowed or refused — is audited.
 
 Full guide: [`docs/COMPUTER-USE.md`](./docs/COMPUTER-USE.md).
+
+## Connectors: onboarding Linux PCs
+
+The broker can drive **real machines**, not just virtual desktops. A small **connector** runs
+on a Linux PC (laptop, workstation, server), dials out to the broker over a WebSocket and
+executes the device tools — files, exec and an optional terminal. The gateway's new
+**Connectors** page is the onboarding surface: enrolled devices with online/offline state,
+hostname/platform/capabilities, pending pairings, an **Add Linux PC** wizard and an operator
+terminal.
+
+**Pairing is one command.** Choose a name and pairing lifetime in the wizard, then paste the
+generated one-liner on the new machine (as the user who should own the connector — no root,
+no SSH keys touched):
+
+```bash
+curl -fsSLk 'https://broker.example.com/install/install-connector.sh' \
+  | bash -s -- --broker 'wss://broker.example.com/connector' \
+              --enroll '<single-use token>' --name 'workshop-pc' [--terminal]
+```
+
+The installer downloads the connector bundle and, when the broker publishes one, its CA
+(fetched over the TLS bootstrap, then pinned), installs a systemd `--user` unit and starts it.
+The connector then dials **out** to `wss://<broker>/connector` — no inbound port, no listening
+service. The
+single-use token (default 60 minutes) is claimed exactly once, the device appears online and
+the pending pairing disappears; pending pairings can be revoked from the console and an
+expired token is simply replaced. Creating a pairing requires a **public broker URL** in
+Computer-use settings, because the new PC must be able to reach it.
+
+**Terminal is opt-in.** The wizard's *Allow interactive terminal* checkbox passes `--terminal`,
+which sets `terminal.enabled: true` in the connector's local policy on a fresh install (an
+existing policy is kept, never overwritten); the installer default is off. A device shows a
+**Terminal** button only when it advertises the `term.*` capabilities, and the console session
+is proxied server-side through the gateway (open/send/read/close) — the broker credential
+never reaches the browser. Terminal sessions run as the connector user, with no elevation
+path.
+
+**DeviceBridge is retired.** The legacy DeviceBridge connector/service is disabled in favour
+of the Computer Broker's device connectors. The gateway does **not** register a DeviceBridge
+MCP server and there is no DeviceBridge integration to configure: onboarding happens in
+**Connectors**, and the `device_*` tools agents already use continue to come from the managed
+`computer-use` server.
+
+Full guide: [`docs/COMPUTER-USE.md#connectors-onboarding-linux-pcs-v010`](./docs/COMPUTER-USE.md#connectors-onboarding-linux-pcs-v010).
 
 ## Run persistently with rootless podman (Linux)
 
@@ -436,7 +481,8 @@ curl -s localhost:8080/mcp/v1 -H "Authorization: Bearer $AGENT_KEY" \
 ```
 
 See [`docs/API.md`](./docs/API.md) and [`docs/API-V2.md`](./docs/API-V2.md) for the complete
-JSON-RPC + admin API, [`docs/IMPORTING.md`](./docs/IMPORTING.md) for catalogs/harnesses and
+JSON-RPC + admin API, [`docs/COMPUTER-USE.md`](./docs/COMPUTER-USE.md) for computer use and
+connector onboarding, [`docs/IMPORTING.md`](./docs/IMPORTING.md) for catalogs/harnesses and
 [`docs/MANIFEST.md`](./docs/MANIFEST.md) for the sub-server manifest format.
 
 ## Repository layout
@@ -465,7 +511,7 @@ npm run lint           # eslint
 npm run build          # server + UI bundle
 ```
 
-The suite is **944 tests across 99 files**: unit suites per module, an integration suite that
+The suite is **966 tests across 101 files**: unit suites per module, an integration suite that
 boots a real gateway on an ephemeral port and spawns fixture MCP servers, and an end-to-end
 scenario covering vault → git import → catalog → execution → delegation → depth guard → escalation,
 plus jsdom UI tests. CI also builds the Docker image and smoke-tests `/health` inside the container.
@@ -494,7 +540,8 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 | v0.6.0 | First-run onboarding wizard, in-UI settings, password-encrypted full backups with restore & server reinstall | ✅ shipped |
 | v0.7.0 | Vaultwarden as the default password/API manager, 1Password option, unified Secrets page and password-manager references in configuration profiles | ✅ shipped |
 | v0.8.0 | RBAC API-key console: per-key activity, rename for bot references, pause/resume whole keys, MCP servers or individual tools | ✅ shipped |
-| **v0.9.0** | **Computer use: managed `computer-use` MCP server fronting a self-hosted Computer Broker, console fleet view with live frames, global and per-computer availability with reason/auto-resume, approval-gated destructive calls** | ✅ **current** |
+| **v0.9.0** | **Computer use: managed `computer-use` MCP server fronting a self-hosted Computer Broker, console fleet view with live frames, global and per-computer availability with reason/auto-resume, approval-gated destructive calls** | ✅ shipped |
+| **v0.10.0** | **Connectors: Linux PC onboarding with single-use pairing tokens and a one-line installer, pending/revoke pairing management, operator terminal proxied through the gateway (opt-in connector policy); DeviceBridge retired** | ✅ **current** |
 
 ## License
 

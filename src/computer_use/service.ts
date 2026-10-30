@@ -23,6 +23,7 @@ import { nowIso } from '../core/ids.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type {
   AuditService,
+  BrokerDeviceSnapshot,
   CatalogRepository,
   ComputerUseBrokerPort,
   ComputerUseCallDecision,
@@ -39,10 +40,20 @@ import type {
   ComputerUseBrokerInfo,
   ComputerUseComputerInfo,
   ComputerUseComputersResponse,
+  ComputerUseConnectorsResponse,
   ComputerUseCounts,
+  ComputerUseDeviceInfo,
+  ComputerUseEnrollmentInput,
+  ComputerUseEnrollmentKind,
+  ComputerUseEnrollmentResponse,
   ComputerUseOverview,
   ComputerUseSettingsInfo,
   ComputerUseSettingsInput,
+  ComputerUseTerminalOpenInput,
+  ComputerUseTerminalReadInput,
+  ComputerUseTerminalReadResult,
+  ComputerUseTerminalSendInput,
+  ComputerUseTerminalSession,
   ComputerUseToolInfo,
   ServerRecord,
   ToolDescriptor,
@@ -98,6 +109,21 @@ const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
 const HEALTH_CACHE_MS = 3_000;
 const COMPUTERS_CACHE_MS = 2_000;
 const MAX_REASON_LENGTH = 200;
+
+/** Ops a connector must advertise before the gateway exposes its terminal. */
+const TERMINAL_CAPABILITIES: readonly string[] = ['term.open', 'term.send', 'term.read', 'term.close'];
+const TERMINAL_UNSUPPORTED_MESSAGE =
+  'This connector does not support terminal control (its policy/capabilities do not advertise term.*)';
+const DEFAULT_CONNECTOR_NAME = 'linux-pc';
+const MAX_CONNECTOR_NAME_LENGTH = 60;
+const DEFAULT_ENROLLMENT_TTL_S = 3_600;
+const MIN_ENROLLMENT_TTL_S = 60;
+const MAX_ENROLLMENT_TTL_S = 86_400;
+const DEFAULT_TERMINAL_LINES = 200;
+const MAX_TERMINAL_LINES = 2_000;
+const MAX_TERMINAL_WAIT_S = 30;
+/** Pairing tokens are opaque but constrained so they can safely be shell-quoted. */
+const ENROLLMENT_TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 export interface ComputerUseServiceOptions {
   config: GatewayConfig;
@@ -334,6 +360,206 @@ export class DefaultComputerUseService implements ComputerUseService {
     return this.audit.query({ serverId: this.managedId, limit: capped, offset: 0 }).entries;
   }
 
+  // -------------------------------------------------------------------------
+  // Connectors, pairing and terminal control (v0.10)
+  // -------------------------------------------------------------------------
+
+  async connectors(): Promise<ComputerUseConnectorsResponse> {
+    const settings = this.store.get();
+    const broker = await this.brokerInfo();
+    const publicBrokerUrl = settings.publicBrokerUrl ?? settings.brokerUrl;
+    const client = this.broker ?? this.buildBroker();
+    if (client === null) {
+      // Not configured is a valid state for the connectors page: show the broker
+      // info + an empty list instead of failing the whole page.
+      return {
+        broker,
+        devices: [],
+        enrollments: [],
+        publicBrokerUrl,
+        counts: { devices: 0, online: 0, pendingEnrollments: 0 },
+      };
+    }
+
+    const [devices, enrollments] = await Promise.all([client.devices(), client.enrollments()]);
+    const mapped = devices.map((device) => mapDeviceInfo(device));
+    return {
+      broker,
+      devices: mapped,
+      enrollments: enrollments.map((enrollment) => ({
+        id: enrollment.id,
+        kind: enrollment.kind,
+        expiresAt: enrollment.expiresAt,
+        createdAt: enrollment.createdAt,
+      })),
+      publicBrokerUrl,
+      counts: {
+        devices: mapped.length,
+        online: mapped.filter((device) => device.state === 'online').length,
+        pendingEnrollments: enrollments.length,
+      },
+    };
+  }
+
+  async createEnrollment(
+    input: ComputerUseEnrollmentInput,
+    updatedBy = 'operator',
+  ): Promise<ComputerUseEnrollmentResponse> {
+    const kind = normalizeEnrollmentKind(input.kind);
+    const computerId = input.computerId === undefined || input.computerId === null
+      ? null
+      : String(input.computerId).trim();
+    if (kind === 'computer') {
+      if (computerId === null || computerId === '') {
+        throw invalidParams("'computerId' is required for a computer-kind enrollment");
+      }
+    } else if (computerId !== null && computerId !== '') {
+      throw invalidParams("'computerId' is only valid for a computer-kind enrollment");
+    }
+    const name = normalizeConnectorName(input.name);
+    const ttlSeconds = Math.round(
+      clampNumber(input.ttlSeconds, MIN_ENROLLMENT_TTL_S, MAX_ENROLLMENT_TTL_S, DEFAULT_ENROLLMENT_TTL_S, 'ttlSeconds'),
+    );
+    if (input.allowTerminal !== undefined && typeof input.allowTerminal !== 'boolean') {
+      throw invalidParams("'allowTerminal' must be a boolean");
+    }
+    const allowTerminal = input.allowTerminal === true;
+
+    const settings = this.store.get();
+    const publicBrokerUrl = settings.publicBrokerUrl ?? settings.brokerUrl;
+    const publicUrl = requirePublicBrokerUrl(publicBrokerUrl);
+
+    const broker = this.requireBroker();
+    const created = await broker.createEnrollment({ kind, ttlSeconds, computerId });
+    const token = typeof created.token === 'string' ? created.token.trim() : '';
+    if (!ENROLLMENT_TOKEN_PATTERN.test(token)) {
+      throw new GatewayError(ErrorCodes.UPSTREAM_ERROR, 'Computer Broker returned an unexpected enrollment token', {
+        data: { status: 'BROKER_SHAPE_ERROR', reason: 'ENROLLMENT_TOKEN_INVALID' },
+        httpStatus: 502,
+      });
+    }
+
+    const publicBase = publicUrl.replace(/\/+$/, '');
+    const connectorUrl = `wss://${new URL(publicBase).host}/connector`;
+    this.logger.info('connector enrollment created', {
+      enrollmentId: created.id,
+      kind,
+      name,
+      allowTerminal,
+      updatedBy,
+    });
+    return {
+      enrollment: {
+        id: created.id,
+        kind: created.kind,
+        expiresAt: created.expiresAt,
+        createdAt: created.createdAt,
+        token,
+      },
+      install: {
+        command: buildInstallCommand({ publicBase, connectorUrl, token, name, allowTerminal }),
+        brokerUrl: publicBase,
+        connectorUrl,
+        caUrl: `${publicBase}/install/broker-ca.pem`,
+        allowTerminal,
+        expiresAt: created.expiresAt,
+      },
+    };
+  }
+
+  async revokeEnrollment(enrollmentId: string): Promise<void> {
+    const id = typeof enrollmentId === 'string' ? enrollmentId.trim() : '';
+    if (id === '') return;
+    const broker = this.requireBroker();
+    await broker.revokeEnrollment(id);
+    this.logger.info('connector enrollment revoked', { enrollmentId: id });
+  }
+
+  async openTerminal(input: ComputerUseTerminalOpenInput): Promise<ComputerUseTerminalSession> {
+    const deviceId = requiredId(input.deviceId, 'deviceId');
+    const broker = this.requireBroker();
+    await this.requireTerminalCapable(broker, deviceId);
+
+    const args: Record<string, unknown> = {};
+    if (input.rows !== undefined) args.rows = positiveInteger(input.rows, 'rows');
+    if (input.cols !== undefined) args.cols = positiveInteger(input.cols, 'cols');
+    if (input.shell !== undefined && input.shell !== null) {
+      const shell = optionalText(input.shell, 'shell');
+      if (shell !== null) args.shell = shell;
+    }
+    if (input.cwd !== undefined && input.cwd !== null) {
+      const cwd = optionalText(input.cwd, 'cwd');
+      if (cwd !== null) args.cwd = cwd;
+    }
+
+    const data = await broker.deviceCall(deviceId, 'term.open', args);
+    const session = isRecord(data) && typeof data.session === 'string' ? data.session.trim() : '';
+    if (session === '') {
+      throw new GatewayError(ErrorCodes.UPSTREAM_ERROR, 'Computer Broker returned an unexpected terminal session', {
+        data: { status: 'BROKER_SHAPE_ERROR', reason: 'TERMINAL_SESSION_MISSING', details: data },
+        httpStatus: 502,
+      });
+    }
+    return { deviceId, session };
+  }
+
+  async sendTerminal(input: ComputerUseTerminalSendInput): Promise<{ ok: true }> {
+    const deviceId = requiredId(input.deviceId, 'deviceId');
+    const session = requiredId(input.session, 'session');
+    if (typeof input.input !== 'string') throw invalidParams("'input' must be a string");
+    if (input.enter !== undefined && typeof input.enter !== 'boolean') {
+      throw invalidParams("'enter' must be a boolean");
+    }
+    const broker = this.requireBroker();
+    await broker.deviceCall(deviceId, 'term.send', {
+      session,
+      input: input.input,
+      // A typed command line is normally submitted with Enter.
+      enter: input.enter !== false,
+    });
+    return { ok: true };
+  }
+
+  async readTerminal(input: ComputerUseTerminalReadInput): Promise<ComputerUseTerminalReadResult> {
+    const deviceId = requiredId(input.deviceId, 'deviceId');
+    const session = requiredId(input.session, 'session');
+    const lines = clampNumber(input.lines, 1, MAX_TERMINAL_LINES, DEFAULT_TERMINAL_LINES, 'lines');
+    const waitSeconds = clampNumber(input.waitSeconds, 0, MAX_TERMINAL_WAIT_S, 0, 'waitSeconds');
+    const broker = this.requireBroker();
+    // A read may legitimately block for `wait_s`, so allow for it in the budget.
+    const data = await broker.deviceCall(
+      deviceId,
+      'term.read',
+      { session, lines: Math.round(lines), wait_s: waitSeconds },
+      (waitSeconds + 10) * 1_000,
+    );
+    const record = isRecord(data) ? data : {};
+    return {
+      session,
+      lines: Array.isArray(record.lines)
+        ? record.lines.filter((line): line is string => typeof line === 'string')
+        : [],
+      changed: record.changed === true,
+    };
+  }
+
+  async closeTerminal(input: { deviceId: string; session: string }): Promise<{ ok: true }> {
+    const deviceId = requiredId(input.deviceId, 'deviceId');
+    const session = requiredId(input.session, 'session');
+    const broker = this.requireBroker();
+    try {
+      await broker.deviceCall(deviceId, 'term.close', { session });
+    } catch (error) {
+      // Closing is idempotent: an already-gone session is still "closed".
+      if (error instanceof GatewayError && error.httpStatus === 404) {
+        this.logger.debug('terminal session already closed', { deviceId, session });
+        return { ok: true };
+      }
+      throw error;
+    }
+    return { ok: true };
+  }
+
   checkCall(tool: ToolDescriptor, args: Record<string, unknown>): ComputerUseCallDecision {
     if (this.managedId === null || tool.serverId !== this.managedId) return { allowed: true };
     const availability = this.store.get().availability;
@@ -499,6 +725,28 @@ export class DefaultComputerUseService implements ComputerUseService {
       );
     }
     return this.broker;
+  }
+
+  /** Terminal operations need a live connector that advertises the `term.*` policy. */
+  private async requireTerminalCapable(broker: ComputerUseBrokerPort, deviceId: string): Promise<void> {
+    const devices = await broker.devices();
+    const device = devices.find((candidate) => candidate.id === deviceId);
+    if (device === undefined) {
+      throw new GatewayError(ErrorCodes.INVALID_PARAMS, `Unknown connector '${deviceId}'`, {
+        data: { status: 'NOT_FOUND', reason: 'CONNECTOR_NOT_FOUND', details: { device_id: deviceId } },
+        httpStatus: 404,
+      });
+    }
+    if (!isTerminalCapable(device.capabilities)) {
+      throw new GatewayError(ErrorCodes.INVALID_PARAMS, TERMINAL_UNSUPPORTED_MESSAGE, {
+        data: {
+          status: 'CONNECTOR_TERMINAL_UNSUPPORTED',
+          reason: 'TERMINAL_UNSUPPORTED',
+          details: { device_id: deviceId, capabilities: device.capabilities },
+        },
+        httpStatus: 409,
+      });
+    }
   }
 
   private storeToken(token: string): void {
@@ -674,7 +922,130 @@ export class DefaultComputerUseService implements ComputerUseService {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers — v0.10 connectors, pairing and terminal
+// ---------------------------------------------------------------------------
+
+function mapDeviceInfo(device: BrokerDeviceSnapshot): ComputerUseDeviceInfo {
+  return {
+    id: device.id,
+    name: device.name,
+    state: device.state,
+    location: device.location,
+    tags: device.tags,
+    capabilities: device.capabilities,
+    meta: device.meta,
+    lastSeen: device.lastSeen,
+    terminalCapable: isTerminalCapable(device.capabilities),
+  };
+}
+
+function isTerminalCapable(capabilities: readonly string[]): boolean {
+  // Either every term.* op is advertised, or the connector advertises the
+  // entry-point `term.open` only and the broker enforces the rest.
+  if (capabilities.includes('term.open')) return true;
+  return TERMINAL_CAPABILITIES.every((capability) => capabilities.includes(capability));
+}
+
+function normalizeEnrollmentKind(value: ComputerUseEnrollmentKind | undefined): ComputerUseEnrollmentKind {
+  if (value === undefined || value === null) return 'device';
+  if (value === 'device' || value === 'computer') return value;
+  throw invalidParams("'kind' must be 'device' or 'computer'");
+}
+
+function normalizeConnectorName(value: string | null | undefined): string {
+  if (value === undefined || value === null) return DEFAULT_CONNECTOR_NAME;
+  if (typeof value !== 'string') throw invalidParams("'name' must be a string or null");
+  // Strip control characters (the name is embedded in a shell command and in
+  // the broker's registry) and collapse whitespace.
+  const cleaned = stripControlCharacters(value).replace(/\s+/g, ' ').trim();
+  if (cleaned === '') return DEFAULT_CONNECTOR_NAME;
+  return cleaned.slice(0, MAX_CONNECTOR_NAME_LENGTH).trim();
+}
+
+function stripControlCharacters(value: string): string {
+  let cleaned = '';
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    cleaned += code < 0x20 || code === 0x7f ? ' ' : char;
+  }
+  return cleaned;
+}
+
+function requirePublicBrokerUrl(value: string | null): string {
+  const message =
+    'A public broker URL is required to pair a connector. Set the public broker URL in Computer-use settings.';
+  if (value === null || value === '') throw invalidParams(message);
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw invalidParams(message);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw invalidParams(message);
+  return value.replace(/\/+$/, '');
+}
+
+function buildInstallCommand(input: {
+  publicBase: string;
+  connectorUrl: string;
+  token: string;
+  name: string;
+  allowTerminal: boolean;
+}): string {
+  const installUrl = `${input.publicBase}/install/install-connector.sh`;
+  const parts = [
+    `curl -fsSLk ${shellQuote(installUrl)}`,
+    '| bash -s --',
+    `--broker ${shellQuote(input.connectorUrl)}`,
+    `--enroll ${shellQuote(input.token)}`,
+    `--name ${shellQuote(input.name)}`,
+  ];
+  if (input.allowTerminal) parts.push('--terminal');
+  return parts.join(' ');
+}
+
+/** POSIX single-quote a value: `'` becomes `'\''`. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function requiredId(value: string, field: string): string {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (trimmed === '') throw invalidParams(`'${field}' is required`);
+  return trimmed;
+}
+
+function positiveInteger(value: number, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw invalidParams(`'${field}' must be a number`);
+  const rounded = Math.round(value);
+  if (rounded < 1) throw invalidParams(`'${field}' must be at least 1`);
+  return rounded;
+}
+
+function optionalText(value: string, field: string): string | null {
+  if (typeof value !== 'string') throw invalidParams(`'${field}' must be a string or null`);
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function clampNumber(
+  value: number | undefined | null,
+  min: number,
+  max: number,
+  fallback: number,
+  field: string,
+): number {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw invalidParams(`'${field}' must be a number`);
+  return Math.min(max, Math.max(min, value));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// ---------------------------------------------------------------------------
+// Helpers — v0.9 availability and settings
 // ---------------------------------------------------------------------------
 
 function availableRecord(): ComputerUseAvailability {

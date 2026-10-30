@@ -18,8 +18,15 @@ import type {
   ComputerUseAvailabilityInput,
   ComputerUseComputerInfo,
   ComputerUseComputersResponse,
+  ComputerUseConnectorsResponse,
+  ComputerUseEnrollmentInput,
+  ComputerUseEnrollmentResponse,
   ComputerUseOverview,
   ComputerUseSettingsInput,
+  ComputerUseTerminalOpenInput,
+  ComputerUseTerminalReadInput,
+  ComputerUseTerminalReadResult,
+  ComputerUseTerminalSendInput,
   ConfigProfileApplyResult,
   ConfigProfileInput,
   ConfigProfileSummary,
@@ -1405,6 +1412,89 @@ export class ApiClient {
       `/mcp/v1/admin/computer-use/activity${buildQuery({ limit })}`,
     );
     return response.activity ?? [];
+  }
+
+  // -- v0.10 connectors (Linux PC onboarding, pairing, terminal) -----------
+
+  /** Broker devices, pending pairings and the pairing prerequisites. */
+  getComputerUseConnectors(): Promise<ComputerUseConnectorsResponse> {
+    return this.request<ComputerUseConnectorsResponse>('/mcp/v1/admin/computer-use/connectors');
+  }
+
+  /**
+   * Mint a single-use pairing token plus the one-line install command. The
+   * token is returned exactly once; the pending pairing is listed afterwards.
+   */
+  createComputerUseEnrollment(
+    input: ComputerUseEnrollmentInput = {},
+  ): Promise<ComputerUseEnrollmentResponse> {
+    return this.request<ComputerUseEnrollmentResponse>(
+      '/mcp/v1/admin/computer-use/connectors/enrollments',
+      { method: 'POST', body: JSON.stringify(input) },
+      60_000,
+    );
+  }
+
+  /** Revoke an unclaimed pairing token. True when the broker deleted it. */
+  async revokeComputerUseEnrollment(enrollmentId: string): Promise<boolean> {
+    const response = await this.request<{ deleted?: boolean }>(
+      `/mcp/v1/admin/computer-use/connectors/enrollments/${encodeURIComponent(enrollmentId)}`,
+      { method: 'DELETE' },
+    );
+    return response.deleted ?? false;
+  }
+
+  /** Open an interactive terminal session on a connected device connector. */
+  async openComputerUseTerminal(
+    deviceId: string,
+    input: Omit<ComputerUseTerminalOpenInput, 'deviceId'> = {},
+  ): Promise<string> {
+    const response = await this.request<{ session: string }>(
+      `/mcp/v1/admin/computer-use/connectors/devices/${encodeURIComponent(deviceId)}/terminal/open`,
+      { method: 'POST', body: JSON.stringify(input) },
+      60_000,
+    );
+    return response.session;
+  }
+
+  /** Send a line to an open terminal session (`enter` defaults to true). */
+  async sendComputerUseTerminal(
+    deviceId: string,
+    input: Omit<ComputerUseTerminalSendInput, 'deviceId'>,
+  ): Promise<boolean> {
+    const response = await this.request<{ ok?: boolean }>(
+      `/mcp/v1/admin/computer-use/connectors/devices/${encodeURIComponent(deviceId)}/terminal/send`,
+      { method: 'POST', body: JSON.stringify(input) },
+      60_000,
+    );
+    return response.ok ?? false;
+  }
+
+  /** Read a terminal output buffer; `waitSeconds` long-polls for new output. */
+  readComputerUseTerminal(
+    deviceId: string,
+    input: Omit<ComputerUseTerminalReadInput, 'deviceId'>,
+  ): Promise<ComputerUseTerminalReadResult> {
+    const query = buildQuery({
+      session: input.session,
+      lines: input.lines,
+      waitSeconds: input.waitSeconds,
+    });
+    return this.request<ComputerUseTerminalReadResult>(
+      `/mcp/v1/admin/computer-use/connectors/devices/${encodeURIComponent(deviceId)}/terminal/read${query}`,
+      {},
+      60_000,
+    );
+  }
+
+  /** Close an open terminal session (best effort; safe to call twice). */
+  async closeComputerUseTerminal(deviceId: string, session: string): Promise<boolean> {
+    const response = await this.request<{ ok?: boolean }>(
+      `/mcp/v1/admin/computer-use/connectors/devices/${encodeURIComponent(deviceId)}/terminal/close`,
+      { method: 'POST', body: JSON.stringify({ session }) },
+      30_000,
+    );
+    return response.ok ?? false;
   }
 
   // -- vault ----------------------------------------------------------------

@@ -1,4 +1,4 @@
-# Computer use (v0.9)
+# Computer use (v0.10)
 
 The gateway can front an external, self-hosted **Computer Broker** as a managed built-in MCP
 server named `computer-use`. The broker owns the virtual desktops, the desktop viewer and the
@@ -6,6 +6,10 @@ device connectors; the gateway owns the policy plane — authentication, per-key
 censorship, argument guardrails, approvals and audit. Agents therefore get computer-use and
 device tools through the same `/mcp/v1` endpoint as every other sub-server, while the browser
 console gains a fleet view, live frame previews and availability (pause/resume) controls.
+
+v0.10 adds **Connectors** — onboarding physical Linux PCs as device connectors with a
+single-use pairing token, plus an operator terminal proxied through the gateway. See
+[Connectors: onboarding Linux PCs](#connectors-onboarding-linux-pcs-v010).
 
 The broker token never leaves the gateway process: it is not stored on the managed server row,
 never returned by the API, and screenshots are proxied server-side.
@@ -374,6 +378,168 @@ GET /mcp/v1/admin/computer-use/activity?limit=50
 is set). Poll the frame route at a modest interval (e.g. 1–2 s) for previews; it is not
 intended for live streaming — use the broker viewer/live desktop for that.
 
+## Connectors: onboarding Linux PCs (v0.10)
+
+A **connector** is the broker's small agent that runs on a real machine (a Linux PC, laptop or
+server) and dials out to the broker. The gateway does not talk to the connector directly: it
+asks the broker for a single-use enrollment token, hands the operator a one-line install
+command, and thereafter proxies device operations (terminal included) to the broker's
+`/api/devices/{id}/call` route.
+
+This replaces the legacy **DeviceBridge** connector/service, which is retired. The gateway
+registers **no DeviceBridge MCP server** and there is no DeviceBridge configuration to keep:
+device onboarding now happens in **Connectors**, and the `device_*` tools continue to come
+from the managed `computer-use` server covered above.
+
+The flow is deliberately outbound-only:
+
+```text
+console → POST /admin/computer-use/connectors/enrollments
+             │  gateway mints the enrollment on the broker (admin token, server-side)
+             ▼
+       Computer Broker ── POST /api/enrollments ──► single-use token (hash stored at rest)
+             │
+             │  operator pastes the returned one-liner on the new PC:
+             │  curl -fsSLk 'https://broker.example.com/install/install-connector.sh' \
+             │    | bash -s -- --broker 'wss://broker.example.com/connector' \
+             │                --enroll '<token>' --name 'workshop-pc' [--terminal]
+             ▼
+       new Linux PC: installer downloads the connector bundle (+ the broker CA when one is
+       published), installs a systemd --user unit; the connector dials OUT to
+       wss://<broker>/connector
+             │
+             ▼
+       broker claims the token once, the device goes online, and the pending pairing
+       disappears from Connectors. No inbound port is opened on the new PC.
+```
+
+The gateway never stores the connector's identity and never sees the enrollment token again
+after returning it: the token lives only in the pairing response and the installer, the
+broker keeps a hash, and the connector keeps its identity in its own state directory
+(`~/.local/share/computer-broker-connector-device`).
+
+### Broker HTTP endpoints
+
+These broker routes back the installer and pairing flow. The `/api/enrollments` routes are
+authenticated with the same broker bearer token the gateway already uses (admin scope); the
+`/install/*` routes are intentionally public, but the connector bundle is gated by the
+single-use enrollment token.
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/api/enrollments` | Pending (unclaimed, unexpired) pairings: `[{id,kind,expires_at,created_at}]`. Token hashes are never returned. |
+| `POST` | `/api/enrollments` | Mint a pairing: `{kind?, ttl_s?, computer_id?}` where `kind` is `device` (default) or `computer` (a `computer` enrollment also carries `computer_id`) → `201 {id,kind,token,expires_at,created_at}`. `ttl_s` clamped 60–86400 (default 3600); `token` is returned exactly once. |
+| `DELETE` | `/api/enrollments/{id}` | Revoke a pending pairing: `{ok:true}`; `404` when unknown. |
+| `GET` | `/install/install-connector.sh` | The installer script (`text/x-shellscript`) that the one-liner pipes to `bash`. |
+| `GET` | `/install/broker-ca.pem` | The broker's CA certificate (`application/x-pem-file`). Public by design — it is a certificate, not a secret. |
+| `GET` | `/install/connector.tar.gz?enroll=<token>` | Connector bundle for a `device` enrollment, gated only by the single-use token; `403 {"error":"enrollment_invalid"}` when the token is unknown, already claimed or expired. |
+
+### Gateway admin endpoints
+
+Mounted under `/mcp/v1/admin/computer-use/connectors`; **master key or console session only**,
+never an agent key. Response types are in the `v0.10 — connector onboarding` block of
+`src/core/types.ts`; the request/response walkthrough is repeated in
+[`API.md`](./API.md).
+
+| Method | Route (after the prefix) | Body | Result |
+|---|---|---|---|
+| `GET` | `/` | — | `ComputerUseConnectorsResponse`: `broker`, `devices` (`ComputerUseDeviceInfo[]`), pending `enrollments`, `publicBrokerUrl`, `counts {devices, online, pendingEnrollments}` |
+| `POST` | `/enrollments` | `{kind?, name?, ttlSeconds?, allowTerminal?}` | `{enrollment: {id, kind, expiresAt, createdAt, token}, install: {command, brokerUrl, connectorUrl, caUrl, allowTerminal, expiresAt}}` |
+| `DELETE` | `/enrollments/:id` | — | `{deleted:true}` |
+| `POST` | `/devices/:id/terminal/open` | `{rows?, cols?, shell?, cwd?}` | `{session}` |
+| `POST` | `/devices/:id/terminal/send` | `{session, input, enter?}` | `{ok:true}` |
+| `GET` | `/devices/:id/terminal/read?session=&lines=&waitSeconds=` | — | `{session, lines: string[], changed: boolean}` |
+| `POST` | `/devices/:id/terminal/close` | `{session}` | `{ok:true}` |
+
+`kind` defaults to `device` — the normal path for onboarding a Linux PC; `computer` pairs a
+desktop-kind connector instead. `name` is trimmed/collapsed to 60 characters and defaults to
+`linux-pc`; `ttlSeconds` is clamped to 60–86400 and defaults to 3600 (the console wizard offers
+15–1440 minutes); `allowTerminal` defaults to `false`. Creating an enrollment **requires a
+configured public broker URL** (`MCP_COMPUTER_BROKER_PUBLIC_URL`, or the server-side broker URL
+when no public one is set): the token would be useless if the new PC cannot reach the broker,
+so the request fails with a message pointing at Computer-use settings. `GET /` is what the
+wizard polls to detect the device appearing.
+
+### Pairing walkthrough
+
+1. **Make the broker reachable from the new PC.** In **Computer Use → Settings**, set the
+   *public broker URL* to the address the new machine will use (LAN hostname and port, or the
+   reverse-proxied `https://` origin). The install command is built from it.
+2. **Connectors → Add Linux PC.** Give the machine a name, choose whether it may host an
+   interactive terminal (off by default), pick a pairing lifetime, and submit. The wizard
+   shows the **one-line install command**, its expiry and the CA download URL. The command
+   shape is:
+
+   ```bash
+   curl -fsSLk 'https://broker.example.com/install/install-connector.sh' \
+     | bash -s -- --broker 'wss://broker.example.com/connector' \
+                 --enroll '<single-use token>' --name 'workshop-pc' [--terminal]
+   ```
+
+3. **Run it on the new PC as the user who should own the connector** (no root, no SSH keys
+   touched). The installer:
+   - fetches the broker CA over a TLS bootstrap (`curl -k`) when the broker publishes one, then
+     **pins** it for every later request (otherwise the host's system trust store applies);
+   - downloads the connector bundle (`/install/connector.tar.gz?enroll=…`), creates a private
+     venv and installs its requirements under `~/.local/opt/computer-broker/connector`;
+   - writes the connector policy (terminal disabled unless `--terminal`; a policy written by an
+     earlier install is kept, never overwritten), the `0600` `connector.env` and a systemd
+     `--user` unit, then enables/starts it and applies `loginctl enable-linger`;
+   - dials **out** to `wss://<broker>/connector` — no inbound port and no listening service.
+4. **Wait for the device to appear online.** The broker claims the token exactly once, records
+   the connector identity, and the device shows in Connectors with hostname/platform and
+   capabilities. The pending pairing disappears; the token is spent (once an identity exists,
+   the installer removes the bootstrap token from `connector.env`).
+5. **Pending pairings** are listed with their expiry and can be revoked at any time
+   (`DELETE …/enrollments/:id`); revocation kills the token immediately. Expiry (default 60
+   minutes) has the same effect — a dead token cannot be claimed and the operator simply
+   creates a new pairing.
+6. **Operate the device.** Its card shows online/offline state, hostname/platform, last seen
+   and capability badges. The **Terminal** button is offered only when the connector
+   advertises its `term.*` capabilities, and *Broker UI* opens the broker's own UI when a
+   public broker URL is configured.
+
+Re-run the command only with a **fresh** token: a claimed, expired or revoked token is refused
+by the bundle endpoint (`enrollment_invalid`) and by the websocket `enroll` handshake.
+Installation is idempotent per machine, but a second token only replaces the identity if the
+connector state directory is cleared — treat re-pairing as re-enrollment.
+
+### Terminal control
+
+The console terminal is a thin, authenticated proxy: the gateway opens a session on the
+broker (`term.open`), relays input (`term.send`) and incrementally reads output (`term.read`;
+`changed` distinguishes new output from an unchanged screen) until the dialog closes
+(`term.close`). Agent keys reach the same connector through the managed `computer-use`
+server's high-privilege tools (`device_terminal_open`, `device_terminal_send`,
+`device_terminal_read`, `device_terminal_close`), subject to their RBAC grants as before.
+`open` accepts optional `rows`/`cols` (the console uses 30×120), `shell` and `cwd`; `read`
+defaults to 200 lines (clamped 1–2000) and 0 wait seconds (clamped 0–30), returning the session
+and whether the output `changed` (the console polls about every 1.5 s with
+`lines=500&waitSeconds=1`); `send` defaults `enter` to true.
+
+Terminal access is **opt-in in two places**:
+
+1. **The enrollment must request it** — `allowTerminal: true` makes the generated command pass
+   `--terminal`, which writes `terminal.enabled: true` into the connector's local
+   `policy.json`. The installer default is `"terminal": {"enabled": false}`: an interactive
+   shell is never a default.
+2. **The device must advertise the connector's terminal operations** (`term.open`,
+   `term.send`, `term.read`, `term.close`, surfaced as `terminalCapable` on
+   `ComputerUseDeviceInfo`). A connector that does not advertise them is refused rather than
+   half-supported.
+
+| Symptom | Cause | Remedy |
+|---|---|---|
+| Terminal button disabled / "does not support terminal control" | Connector does not advertise `term.*`, normally because its policy has `terminal.enabled: false` | On the device, set `terminal.enabled` to `true` in `policy.json` and restart the connector's user unit; a **fresh** machine can instead be installed from a terminal-enabled enrollment. |
+| Session open fails with a policy refusal | Connector policy has `terminal.enabled: false` | Set `terminal.enabled` to `true` in the connector's `policy.json` and restart its user unit (an existing policy is never overwritten by the installer). |
+| `open` fails on the shell or cwd | The connector policy rejects that shell/working directory | Use a shell/cwd the connector allows; the gateway does not override connector policy. |
+| Session dies or `read` stays empty while the device is online | The session was closed by the connector, or the connector restarted | Open a new session — sessions live on the connector, not the gateway. |
+| Any terminal call fails while the device is online | Device went offline between listing and the call | Check the connector service on the PC (see the runbook). |
+
+The terminal runs as the **connector user** on the device. It is not an elevation mechanism:
+neither the installer nor the broker offers a root path. Treat an allowed terminal exactly as
+an SSH session to that machine — same privileges, same data.
+
 ## Token storage: env vs encrypted vault
 
 | Path | Where the secret lives | When to use |
@@ -434,6 +600,21 @@ signed-in operator:
 5. **Activity** — recent ok/error/denied audit rows for the `computer-use` server, including
    the refusal reason, so pauses and RBAC denials are visible in one place.
 
+The **Connectors** page (sidebar: *Connectors*, `connectors`) is the device-onboarding surface:
+
+- **Broker status** — configured/reachable, version, TLS, online device and pending-pairing
+  counts; when the broker is unreachable the page says so instead of pretending.
+- **Add Linux PC** — the wizard (name, *allow interactive terminal* with an explicit warning
+  that it is a real shell, pairing lifetime in minutes). Submitting shows the one-line install
+  command with a copy button, the CA URL and the expiry, and polls the connector list so the
+  dialog can report the machine connecting.
+- **Pending pairings** — expiry countdown and *Revoke*.
+- **Devices** — name, online/offline state, hostname/platform, last seen, capability badges
+  (terminal capability highlighted), a *Terminal* button (disabled with the reason when the
+  connector does not support it) and a *Broker UI* link.
+- **Terminal dialog** — opens a 30×120 session, polls output, sends a line on Enter and closes
+  the session when dismissed. Policy refusals are shown verbatim rather than swallowed.
+
 The pause dialog uses local time and converts it to the ISO `until` the API expects; leaving
 it empty creates an open-ended pause that only an operator can clear.
 
@@ -453,6 +634,14 @@ it empty creates an open-ended pause that only an operator can clear.
 | Frame endpoint fails while tools work | Frame route unreachable, or computer stopped | Check the computer's `state`/`error` and broker health; start the computer. |
 | "Open live desktop" link is unreachable but agent tools work | `MCP_COMPUTER_BROKER_PUBLIC_URL` wrong or not browser-reachable | Set the public URL (reverse proxy DNS/TLS) and Sync. |
 | Broker restarted/upgraded | Managed client errored, tool catalogue stale | **Sync** (or restart the managed server) to reconnect and refresh tools. |
+| Connector device shows offline | Connector service stopped or restarted, broker unreachable, or TLS/CA failure | On the PC: `systemctl --user status computer-broker-connector-device` and `journalctl --user -u computer-broker-connector-device -n 40 --no-pager`; confirm the broker URL resolves and its port is reachable; restart the unit. |
+| Add Linux PC fails with a public-URL error | No public broker URL configured | Set the browser/PC-reachable broker URL in **Computer Use → Settings**, save, then create the enrollment again. |
+| Install command fails at `curl` | `publicBrokerUrl` not reachable from the new PC (DNS, port, firewall) | Resolve the URL from that machine; ensure the broker is reachable on its LAN port or through the reverse proxy, then re-run with a fresh token. |
+| Installer reports `enrollment_invalid` | Token already claimed, expired (default 60 min) or revoked | Create a new pairing — a spent token cannot be reused. |
+| Connector fails its TLS/CA bootstrap | CA URL unreachable, or the certificate does not cover the hostname used | Check `/install/broker-ca.pem` from the new PC; use the hostname/SAN the certificate actually covers; pass `--ca /path/broker-ca.pem` when the CA is pre-provisioned. |
+| Device online but terminal unavailable | Connector policy has `terminal.enabled: false`, so it does not advertise `term.*` | Set `terminal.enabled` to `true` in the device's `policy.json` and restart the connector unit; for a fresh machine, install from a terminal-enabled enrollment. |
+| Terminal open refused by policy | Connector `terminal.enabled` is false | Same fix — enable terminal in the connector policy and restart its unit (the installer never overwrites an existing policy). |
+| Device shows the wrong name | The name is captured at enrollment/install time | Create a new enrollment with the desired `name` and reinstall the connector. |
 | All calls denied after a change | Availability or key grant changed | Inspect `availability.updatedBy`/reason and the key's access view; audit has denied rows. |
 
 ## Security notes
@@ -481,6 +670,27 @@ it empty creates an open-ended pause that only an operator can clear.
   and scope its token to what the gateway needs.
 - **CA files are read-only mounts.** Never disable certificate verification and never bake a
   private key into the gateway image.
+- **Pairing tokens are single-use and short-lived.** The broker stores only a token hash; the
+  plaintext is returned exactly once, is consumed by the connector's first websocket
+  enrollment (default lifetime 60 minutes), and never appears in an enrollment listing. The
+  installer removes it from `connector.env` once the connector has an identity.
+- **The CA bootstrap is a one-time trust-on-first-use step.** The generated one-liner uses
+  `curl -k` only to fetch the installer, and the installer uses it once for the broker CA when
+  one is published; the downloaded CA is then pinned for every later request. Check the host in
+  the command before running it, and prefer `--ca` when the CA can be provisioned out of band.
+- **No inbound port on the connector machine.** The connector dials out to the broker's
+  `/connector` websocket. There is no SSH or remote-shell listener, and the installer never
+  touches SSH configuration or `authorized_keys`.
+- **The shell is opt-in and unprivileged.** Terminal access requires an `allowTerminal`
+  enrollment *and* a connector policy that enables it (`terminal.enabled`); the shell runs as
+  the connector user, with no elevation path through the broker or the gateway.
+- **Device operations use the broker admin token server-side.** Console terminal routes
+  authenticate the operator (master key or console session) and proxy through the gateway; no
+  broker credential reaches the browser.
+- **DeviceBridge is retired.** The gateway registers no DeviceBridge MCP server and there is
+  nothing to configure: device onboarding is **Connectors** only. Remove any legacy
+  DeviceBridge service still running on formerly-enrolled machines.
 - **Backups.** With a vault-stored token, the broker token is included in the
   password-encrypted gateway backup; protect the backup password accordingly. An env-injected
-  token lives outside the backup and must be re-supplied on restore.
+  token lives outside the backup and must be re-supplied on restore. Pairing tokens are not
+  backed up — an enrollment is short-lived and is simply recreated.

@@ -15,7 +15,15 @@ import type { GatewayConfig } from '../core/config.js';
 import { ErrorCodes, GatewayError, accessDenied, invalidKey, invalidParams } from '../core/errors.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { ComputerUseService, KeyService } from '../core/ports.js';
-import type { AuthenticatedKey, ComputerUseAvailabilityInput, ComputerUseSettingsInput } from '../core/types.js';
+import type {
+  AuthenticatedKey,
+  ComputerUseAvailabilityInput,
+  ComputerUseEnrollmentInput,
+  ComputerUseSettingsInput,
+  ComputerUseTerminalOpenInput,
+  ComputerUseTerminalReadInput,
+  ComputerUseTerminalSendInput,
+} from '../core/types.js';
 import { readJsonBody } from '../gateway/server.js';
 import type { AdminSubRouter } from './types.js';
 
@@ -89,6 +97,59 @@ export class ComputerUseApi implements AdminSubRouter {
         const limit = numberParam(url, 'limit', 50);
         this.sendJson(res, 200, { activity: await this.deps.computerUse.activity(limit) });
         return true;
+      }
+
+      // GET /admin/computer-use/connectors
+      if (rest.length === 1 && rest[0] === 'connectors' && method === 'GET') {
+        this.requireMaster(req);
+        this.sendJson(res, 200, await this.deps.computerUse.connectors());
+        return true;
+      }
+
+      // POST /admin/computer-use/connectors/enrollments {ComputerUseEnrollmentInput}
+      if (rest.length === 2 && rest[0] === 'connectors' && rest[1] === 'enrollments' && method === 'POST') {
+        const principal = this.requireMaster(req);
+        const body = await this.readObjectBody(req);
+        this.sendJson(res, 200, await this.deps.computerUse.createEnrollment(parseEnrollment(body), principal.name));
+        return true;
+      }
+
+      // DELETE /admin/computer-use/connectors/enrollments/:id
+      if (rest.length === 3 && rest[0] === 'connectors' && rest[1] === 'enrollments' && method === 'DELETE') {
+        this.requireMaster(req);
+        await this.deps.computerUse.revokeEnrollment(decodeURIComponent(rest[2] as string));
+        this.sendJson(res, 200, { deleted: true });
+        return true;
+      }
+
+      // /admin/computer-use/connectors/devices/:id/terminal/{open,send,read,close}
+      if (rest.length === 5 && rest[0] === 'connectors' && rest[1] === 'devices' && rest[3] === 'terminal') {
+        this.requireMaster(req);
+        const deviceId = decodeURIComponent(rest[2] as string);
+        const action = rest[4];
+        if (action === 'open' && method === 'POST') {
+          const body = await this.readObjectBody(req);
+          this.sendJson(res, 200, await this.deps.computerUse.openTerminal(parseTerminalOpen(deviceId, body)));
+          return true;
+        }
+        if (action === 'send' && method === 'POST') {
+          const body = await this.readObjectBody(req);
+          this.sendJson(res, 200, await this.deps.computerUse.sendTerminal(parseTerminalSend(deviceId, body)));
+          return true;
+        }
+        if (action === 'read' && method === 'GET') {
+          this.sendJson(res, 200, await this.deps.computerUse.readTerminal(parseTerminalRead(deviceId, url)));
+          return true;
+        }
+        if (action === 'close' && method === 'POST') {
+          const body = await this.readObjectBody(req);
+          this.sendJson(
+            res,
+            200,
+            await this.deps.computerUse.closeTerminal({ deviceId, session: requiredBodyString(body, 'session') }),
+          );
+          return true;
+        }
       }
 
       // GET /admin/computer-use/computers/:id/frame?maxWidth=480
@@ -221,6 +282,77 @@ function parseAvailability(body: Record<string, unknown>): ComputerUseAvailabili
     return { scope: 'computer', computerId, available, reason, until };
   }
   throw invalidParams("'scope' must be 'global' or 'computer'");
+}
+
+function parseEnrollment(body: Record<string, unknown>): ComputerUseEnrollmentInput {
+  const input: ComputerUseEnrollmentInput = {};
+  if ('kind' in body) {
+    if (body.kind !== 'device' && body.kind !== 'computer') {
+      throw invalidParams("'kind' must be 'device' or 'computer'");
+    }
+    input.kind = body.kind;
+  }
+  if ('computerId' in body) input.computerId = optionalStringOrNull(body, 'computerId');
+  if ('name' in body) input.name = optionalStringOrNull(body, 'name');
+  if ('ttlSeconds' in body) input.ttlSeconds = optionalNumber(body, 'ttlSeconds');
+  if ('allowTerminal' in body) {
+    if (typeof body.allowTerminal !== 'boolean') throw invalidParams("'allowTerminal' must be a boolean");
+    input.allowTerminal = body.allowTerminal;
+  }
+  return input;
+}
+
+function parseTerminalOpen(deviceId: string, body: Record<string, unknown>): ComputerUseTerminalOpenInput {
+  return {
+    deviceId,
+    rows: optionalNumber(body, 'rows'),
+    cols: optionalNumber(body, 'cols'),
+    shell: body.shell === undefined ? undefined : optionalStringOrNull(body, 'shell'),
+    cwd: body.cwd === undefined ? undefined : optionalStringOrNull(body, 'cwd'),
+  };
+}
+
+function parseTerminalSend(deviceId: string, body: Record<string, unknown>): ComputerUseTerminalSendInput {
+  const session = requiredBodyString(body, 'session');
+  if (typeof body.input !== 'string') throw invalidParams("'input' must be a string");
+  let enter: boolean | undefined;
+  if ('enter' in body) {
+    if (typeof body.enter !== 'boolean') throw invalidParams("'enter' must be a boolean");
+    enter = body.enter;
+  }
+  return { deviceId, session, input: body.input, enter };
+}
+
+function parseTerminalRead(deviceId: string, url: URL): ComputerUseTerminalReadInput {
+  const session = (url.searchParams.get('session') ?? '').trim();
+  if (session === '') throw invalidParams("'session' is required");
+  return {
+    deviceId,
+    session,
+    lines: optionalNumberParam(url, 'lines'),
+    waitSeconds: optionalNumberParam(url, 'waitSeconds'),
+  };
+}
+
+function requiredBodyString(body: Record<string, unknown>, field: string): string {
+  const value = body[field];
+  if (typeof value !== 'string' || value.trim() === '') throw invalidParams(`'${field}' is required`);
+  return value.trim();
+}
+
+function optionalNumber(body: Record<string, unknown>, field: string): number | undefined {
+  const value = body[field];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw invalidParams(`'${field}' must be a number`);
+  return value;
+}
+
+function optionalNumberParam(url: URL, name: string): number | undefined {
+  const raw = url.searchParams.get(name);
+  if (raw === null || raw.trim() === '') return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) throw invalidParams(`'${name}' must be a number`);
+  return parsed;
 }
 
 function optionalStringOrNull(body: Record<string, unknown>, field: string): string | null {

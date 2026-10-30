@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { BrokerHttpClient, normalizeComputer } from '../../src/computer_use/broker-client.js';
+import { BrokerHttpClient, normalizeComputer, normalizeDevice, normalizeEnrollment } from '../../src/computer_use/broker-client.js';
 import { ErrorCodes, GatewayError } from '../../src/core/errors.js';
 import { createLogger } from '../../src/core/logger.js';
 
@@ -49,6 +49,25 @@ const rawComputer = {
   control: { held: false, holder: null, held_since: null, expires_at: null },
 };
 
+const rawDevices = [
+  {
+    id: 'dev_1',
+    name: 'builder',
+    state: 'online',
+    location: 'office',
+    tags: ['linux', 'ubuntu'],
+    capabilities: ['exec.argv', 'term.open', 'term.send', 'term.read', 'term.close'],
+    meta: { hostname: 'builder', platform: 'linux' },
+    last_seen: '2026-10-29T23:58:00Z',
+  },
+  { id: 'dev_2', name: 'files' },
+];
+
+const rawEnrollments = [
+  { id: 'enr_1', kind: 'device', expires_at: '2026-10-30T00:30:00Z', created_at: '2026-10-29T23:30:00Z' },
+  { id: 'enr_2', kind: 'computer', expires_at: '2026-10-30T00:40:00Z' },
+];
+
 beforeAll(async () => {
   server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -74,6 +93,44 @@ beforeAll(async () => {
       }
       if (url.pathname === '/api/computers/cmp_1/start' || url.pathname === '/api/computers/cmp_1/stop') {
         sendJson(res, 200, { ...rawComputer, state: url.pathname.endsWith('/start') ? 'ready' : 'stopped' });
+        return;
+      }
+      if (url.pathname === '/api/devices') {
+        sendJson(res, 200, rawDevices);
+        return;
+      }
+      if (url.pathname === '/api/enrollments') {
+        if (req.method === 'POST') {
+          sendJson(res, 200, {
+            id: 'enr_new',
+            kind: 'computer',
+            token: 'tok_abc123',
+            expires_at: '2026-10-30T01:00:00Z',
+            created_at: '2026-10-30T00:00:00Z',
+          });
+          return;
+        }
+        sendJson(res, 200, rawEnrollments);
+        return;
+      }
+      if (url.pathname === '/api/enrollments/enr_1' && req.method === 'DELETE') {
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (url.pathname === '/api/devices/dev_1/call') {
+        const call = (body ?? {}) as { op?: string; args?: unknown };
+        if (call.op === 'term.fail') {
+          sendJson(res, 200, {
+            ok: false,
+            detail: { error: 'unknown_session', message: 'no such terminal session' },
+          });
+          return;
+        }
+        sendJson(res, 200, { ok: true, data: { session: 'sess_9', op: call.op, args: call.args } });
+        return;
+      }
+      if (url.pathname === '/api/devices/missing/call') {
+        sendJson(res, 404, { detail: { error: 'unknown_device', message: 'no such device' } });
         return;
       }
       if (url.pathname === '/mcp') {
@@ -158,6 +215,96 @@ describe('BrokerHttpClient', () => {
     expect(started.state).toBe('ready');
   });
 
+  it('lists devices and normalises snake_case connector JSON', async () => {
+    const devices = await client().devices();
+    expect(devices).toHaveLength(2);
+    expect(devices[0]).toMatchObject({
+      id: 'dev_1',
+      name: 'builder',
+      state: 'online',
+      location: 'office',
+      tags: ['linux', 'ubuntu'],
+      capabilities: ['exec.argv', 'term.open', 'term.send', 'term.read', 'term.close'],
+      meta: { hostname: 'builder', platform: 'linux' },
+      lastSeen: '2026-10-29T23:58:00Z',
+    });
+    expect(devices[1]).toMatchObject({
+      id: 'dev_2',
+      name: 'files',
+      state: 'unknown',
+      location: null,
+      tags: [],
+      capabilities: [],
+      meta: null,
+      lastSeen: null,
+    });
+    expect(
+      recorded.some((entry) => entry.path === '/api/devices' && entry.authorization === 'Bearer brk_test_token'),
+    ).toBe(true);
+  });
+
+  it('lists and creates pairing enrollments', async () => {
+    const broker = client();
+    const enrollments = await broker.enrollments();
+    expect(enrollments).toEqual([
+      {
+        id: 'enr_1',
+        kind: 'device',
+        expiresAt: '2026-10-30T00:30:00Z',
+        createdAt: '2026-10-29T23:30:00Z',
+      },
+      { id: 'enr_2', kind: 'computer', expiresAt: '2026-10-30T00:40:00Z', createdAt: null },
+    ]);
+
+    const created = await broker.createEnrollment({ kind: 'computer', ttlSeconds: 900 });
+    expect(created).toEqual({
+      id: 'enr_new',
+      kind: 'computer',
+      token: 'tok_abc123',
+      expiresAt: '2026-10-30T01:00:00Z',
+      createdAt: '2026-10-30T00:00:00Z',
+    });
+    expect(recorded.find((entry) => entry.method === 'POST' && entry.path === '/api/enrollments')?.body).toEqual({
+      kind: 'computer',
+      ttl_s: 900,
+    });
+  });
+
+  it('revokes a pairing enrollment', async () => {
+    await client().revokeEnrollment('enr_1');
+    expect(recorded.some((entry) => entry.method === 'DELETE' && entry.path === '/api/enrollments/enr_1')).toBe(true);
+  });
+
+  it('calls a device operation and unwraps the broker envelope', async () => {
+    const data = await client().deviceCall('dev_1', 'term.open', { rows: 30 });
+    expect(data).toEqual({ session: 'sess_9', op: 'term.open', args: { rows: 30 } });
+    expect(recorded.find((entry) => entry.path === '/api/devices/dev_1/call')?.body).toEqual({
+      op: 'term.open',
+      args: { rows: 30 },
+    });
+  });
+
+  it('maps a failed device operation and a device HTTP error to upstream errors', async () => {
+    const broker = client();
+    await expect(broker.deviceCall('dev_1', 'term.fail')).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(GatewayError);
+      const gatewayError = error as GatewayError;
+      expect(gatewayError.code).toBe(ErrorCodes.UPSTREAM_ERROR);
+      expect(gatewayError.data?.reason).toBe('unknown_session');
+      expect(gatewayError.message).toContain('no such terminal session');
+      return true;
+    });
+
+    await expect(broker.deviceCall('missing', 'term.open')).rejects.toMatchObject({
+      code: ErrorCodes.UPSTREAM_ERROR,
+      httpStatus: 404,
+    });
+  });
+
+  it('refuses the connector API without a token', async () => {
+    await expect(client(null).devices()).rejects.toMatchObject({ code: ErrorCodes.INVALID_PARAMS });
+  });
+
   it('speaks JSON-RPC to the MCP endpoint and passes tool errors through', async () => {
     const broker = client();
     const list = (await broker.rpc('tools/list')) as { tools: Array<{ name: string }> };
@@ -213,5 +360,30 @@ describe('normalizeComputer', () => {
       connector: null,
       control: { held: false },
     });
+  });
+});
+
+describe('normalizeDevice / normalizeEnrollment', () => {
+  it('tolerates missing optional connector fields', () => {
+    expect(normalizeDevice({ id: 'dev_x' })).toEqual({
+      id: 'dev_x',
+      name: 'unnamed',
+      state: 'unknown',
+      location: null,
+      tags: [],
+      capabilities: [],
+      meta: null,
+      lastSeen: null,
+    });
+  });
+
+  it('normalises enrollment kinds and dates', () => {
+    expect(normalizeEnrollment({ id: 'enr_x', kind: 'computer', expires_at: '2026-10-30T00:30:00Z' })).toEqual({
+      id: 'enr_x',
+      kind: 'computer',
+      expiresAt: '2026-10-30T00:30:00Z',
+      createdAt: null,
+    });
+    expect(normalizeEnrollment({ id: 'enr_y', kind: 'weird' })).toMatchObject({ id: 'enr_y', kind: 'device', createdAt: null });
   });
 });

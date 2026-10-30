@@ -165,7 +165,7 @@ describe('gateway integration (live HTTP + stdio sub-server)', () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as { status: string; version: string };
     expect(body.status).toBe('ok');
-    expect(body.version).toBe('0.9.0');
+    expect(body.version).toBe('0.10.0');
   });
 
   it('rejects requests without a key (HTTP 401)', async () => {

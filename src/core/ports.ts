@@ -36,8 +36,16 @@ import type {
   ComputerUseAvailabilityInput,
   ComputerUseComputerInfo,
   ComputerUseComputersResponse,
+  ComputerUseConnectorsResponse,
+  ComputerUseEnrollmentInput,
+  ComputerUseEnrollmentResponse,
   ComputerUseOverview,
   ComputerUseSettingsInput,
+  ComputerUseTerminalOpenInput,
+  ComputerUseTerminalReadInput,
+  ComputerUseTerminalReadResult,
+  ComputerUseTerminalSendInput,
+  ComputerUseTerminalSession,
   CreateKeyInput,
   GatewaySettingsInfo,
   DelegationResult,
@@ -699,9 +707,78 @@ export interface ComputerUseService {
   frame(computerId: string, maxWidth: number): Promise<ComputerUseFrameResult>;
   /** Recent audit rows for the managed computer-use server. */
   activity(limit: number): Promise<AuditEntry[]>;
+  // -- connectors / device onboarding (v0.10) --
+  connectors(): Promise<ComputerUseConnectorsResponse>;
+  createEnrollment(input: ComputerUseEnrollmentInput, updatedBy?: string): Promise<ComputerUseEnrollmentResponse>;
+  revokeEnrollment(enrollmentId: string): Promise<void>;
+  openTerminal(input: ComputerUseTerminalOpenInput): Promise<ComputerUseTerminalSession>;
+  sendTerminal(input: ComputerUseTerminalSendInput): Promise<{ ok: true }>;
+  readTerminal(input: ComputerUseTerminalReadInput): Promise<ComputerUseTerminalReadResult>;
+  closeTerminal(input: { deviceId: string; session: string }): Promise<{ ok: true }>;
   /** Router gate: refusal is returned, never thrown (the router owns audit). */
   checkCall(tool: ToolDescriptor, args: Record<string, unknown>): ComputerUseCallDecision;
   /** Built-in MCP client factory for the supervisor (null for other servers). */
   createClient(serverId: string): McpClient | null;
   dispose(): Promise<void>;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.10 — connector onboarding (devices, pairing, terminal)
+// ---------------------------------------------------------------------------
+
+/** One broker device connector, normalised from the broker's JSON snapshot. */
+export interface BrokerDeviceSnapshot {
+  id: string;
+  name: string;
+  state: string;
+  location: string | null;
+  tags: string[];
+  capabilities: string[];
+  meta: Record<string, unknown> | null;
+  lastSeen: string | null;
+}
+
+export interface BrokerEnrollmentSnapshot {
+  id: string;
+  kind: 'device' | 'computer';
+  expiresAt: string;
+  createdAt: string | null;
+}
+
+export interface BrokerEnrollmentCreated extends BrokerEnrollmentSnapshot {
+  /** Plaintext, single-use pairing token — returned exactly once. */
+  token: string;
+}
+
+export interface ComputerUseBrokerPort {
+  readonly baseUrl: string;
+  health(): Promise<ComputerUseBrokerHealth>;
+  listComputers(): Promise<BrokerComputerSnapshot[]>;
+  getComputer(computerId: string): Promise<BrokerComputerSnapshot>;
+  startComputer(computerId: string): Promise<BrokerComputerSnapshot>;
+  stopComputer(computerId: string): Promise<BrokerComputerSnapshot>;
+  frame(computerId: string, maxWidth: number): Promise<ComputerUseFrameResult>;
+  /** JSON-RPC request against the broker's MCP endpoint (`POST /mcp`). */
+  rpc(method: string, params?: unknown, timeoutMs?: number): Promise<unknown>;
+  // -- connectors (v0.10) --
+  devices(): Promise<BrokerDeviceSnapshot[]>;
+  enrollments(): Promise<BrokerEnrollmentSnapshot[]>;
+  createEnrollment(input: {
+    kind: 'device' | 'computer';
+    ttlSeconds: number;
+    computerId?: string | null;
+  }): Promise<BrokerEnrollmentCreated>;
+  revokeEnrollment(enrollmentId: string): Promise<void>;
+  /** One operation against a connected device connector (`exec.argv`, `term.*`, …). */
+  deviceCall(deviceId: string, op: string, args?: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
+}
+
+export interface BrokerTerminalSession {
+  session: string;
+}
+
+export interface BrokerTerminalRead {
+  lines: string[];
+  changed: boolean;
 }

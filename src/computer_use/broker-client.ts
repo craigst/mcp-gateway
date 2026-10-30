@@ -7,6 +7,11 @@
  *   GET  /api/computers/{id}                       (one computer)
  *   POST /api/computers/{id}/start|stop            (lifecycle)
  *   GET  /api/computers/{id}/frame?max_width=      (JPEG still)
+ *   GET  /api/devices                              (enrolled connectors)
+ *   GET  /api/enrollments                          (live pairing tokens, no secrets)
+ *   POST /api/enrollments {kind,ttl_s}             (mint a single-use pairing token)
+ *   DELETE /api/enrollments/{id}                   (revoke)
+ *   POST /api/devices/{id}/call {op,args}          (one device operation)
  *   POST /mcp                                      (Streamable-HTTP MCP, JSON-RPC)
  *
  * Every authenticated call carries the operator-issued bearer token. The token
@@ -16,6 +21,9 @@ import { ErrorCodes, GatewayError } from '../core/errors.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type {
   BrokerComputerSnapshot,
+  BrokerDeviceSnapshot,
+  BrokerEnrollmentCreated,
+  BrokerEnrollmentSnapshot,
   ComputerUseBrokerHealth,
   ComputerUseBrokerPort,
   ComputerUseFrameResult,
@@ -102,6 +110,77 @@ export class BrokerHttpClient implements ComputerUseBrokerPort {
       contentType: response.contentType || 'image/jpeg',
       frameTime: headerValue(response.headers['x-frame-time']) ?? null,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Connectors, pairing and device operations (v0.10)
+  // -------------------------------------------------------------------------
+
+  async devices(): Promise<BrokerDeviceSnapshot[]> {
+    const response = await this.request('/api/devices');
+    const body = parseJsonBody(response.body);
+    if (!Array.isArray(body)) throw brokerShapeError('list devices', body);
+    return body.map((item) => normalizeDevice(item));
+  }
+
+  async enrollments(): Promise<BrokerEnrollmentSnapshot[]> {
+    const response = await this.request('/api/enrollments');
+    const body = parseJsonBody(response.body);
+    if (!Array.isArray(body)) throw brokerShapeError('list enrollments', body);
+    return body.map((item) => normalizeEnrollment(item));
+  }
+
+  async createEnrollment(input: {
+    kind: 'device' | 'computer';
+    ttlSeconds: number;
+    computerId?: string | null;
+  }): Promise<BrokerEnrollmentCreated> {
+    const body: Record<string, unknown> = { kind: input.kind, ttl_s: input.ttlSeconds };
+    if (input.computerId !== undefined && input.computerId !== null && input.computerId !== '') {
+      body.computer_id = input.computerId;
+    }
+    const response = await this.request('/api/enrollments', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    const record = expectObject(parseJsonBody(response.body), 'enrollment');
+    return {
+      ...normalizeEnrollment(record),
+      token: requireString(record.token, 'enrollment token'),
+    };
+  }
+
+  async revokeEnrollment(enrollmentId: string): Promise<void> {
+    await this.request(`/api/enrollments/${encodeURIComponent(enrollmentId)}`, { method: 'DELETE' });
+  }
+
+  /**
+   * One operation against a connected device connector. The broker wraps the
+   * operation result in `{ok, data}`; only `data` is returned, and a `!ok`
+   * envelope is mapped to an upstream `GatewayError` like an HTTP failure.
+   */
+  async deviceCall(
+    deviceId: string,
+    op: string,
+    args?: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<unknown> {
+    const response = await this.request(`/api/devices/${encodeURIComponent(deviceId)}/call`, {
+      method: 'POST',
+      body: JSON.stringify({ op, args: args ?? {} }),
+      timeoutMs: timeoutMs ?? this.timeoutMs,
+    });
+    const body = expectObject(parseJsonBody(response.body), 'device call');
+    if (body.ok === false) {
+      const detail = extractDetail(body);
+      const reason = detailReason(body, detail) ?? 'DEVICE_CALL_FAILED';
+      const message = detailMessage(body, detail) ?? `device operation '${op}' failed`;
+      throw new GatewayError(ErrorCodes.UPSTREAM_ERROR, `Computer Broker device ${deviceId}: ${message}`, {
+        data: { status: 'BROKER_ERROR', reason, details: detail ?? body },
+        httpStatus: 502,
+      });
+    }
+    return body.data ?? null;
   }
 
   /** One JSON-RPC request against the broker's MCP endpoint. Notifications are fire-and-forget. */
@@ -216,6 +295,35 @@ export function normalizeComputer(raw: unknown): BrokerComputerSnapshot {
       expiresAt: stringOrNull(control.expires_at ?? control.expiresAt),
     },
   };
+}
+
+export function normalizeDevice(raw: unknown): BrokerDeviceSnapshot {
+  const record = expectObject(raw, 'device');
+  return {
+    id: requireString(record.id, 'device id'),
+    name: stringOr(record.name, 'unnamed'),
+    state: stringOr(record.state, 'unknown'),
+    location: stringOrNull(record.location),
+    tags: stringArray(record.tags),
+    capabilities: stringArray(record.capabilities),
+    meta: isRecord(record.meta) ? record.meta : null,
+    lastSeen: stringOrNull(record.last_seen ?? record.lastSeen),
+  };
+}
+
+export function normalizeEnrollment(raw: unknown): BrokerEnrollmentSnapshot {
+  const record = expectObject(raw, 'enrollment');
+  return {
+    id: requireString(record.id, 'enrollment id'),
+    kind: record.kind === 'computer' ? 'computer' : 'device',
+    expiresAt: stringOr(record.expires_at ?? record.expiresAt, ''),
+    createdAt: stringOrNull(record.created_at ?? record.createdAt),
+  };
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim());
 }
 
 function extractDetail(parsed: unknown): unknown {

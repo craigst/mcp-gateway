@@ -8,6 +8,7 @@ import { LoginPage } from './pages/Login.js';
 import { DashboardPage } from './pages/Dashboard.js';
 import { CatalogPage } from './pages/Catalog.js';
 import { ComputerUsePage } from './pages/computer-use/ComputerUsePage.js';
+import { ConnectorsPage } from './pages/connectors/ConnectorsPage.js';
 import { ConfigurationsPage } from './pages/Configurations.js';
 import type { CatalogTab } from './pages/Catalog.js';
 import { SecretsPage } from './pages/secrets/SecretsPage.js';
@@ -24,6 +25,7 @@ const PAGE_KEYS: readonly string[] = [
   'dashboard',
   'catalog',
   'computer-use',
+  'connectors',
   'configurations',
   'secrets',
   'rbac',
@@ -122,6 +124,8 @@ function renderPage(page: PageKey, context: RenderContext) {
       return <ConfigurationsPage onNavigate={context.onNavigate} />;
     case 'computer-use':
       return <ComputerUsePage />;
+    case 'connectors':
+      return <ConnectorsPage />;
     case 'secrets':
       return <SecretsPage onNavigate={context.onNavigate} />;
     case 'rbac':
