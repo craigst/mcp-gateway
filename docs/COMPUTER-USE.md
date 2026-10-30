@@ -128,7 +128,8 @@ POST /mcp/v1/admin/keys/create
   "serverGrants": [{
     "serverId": "srv_computer_use",
     "tools": [
-      "list_computers", "computer_status", "computer_screenshot", "computer_windows",
+      "list_computers", "computer_status", "computer_screenshot", "computer_displays",
+      "computer_windows",
       "list_templates", "list_devices", "device_file_list", "device_file_read",
       "device_terminal_read"
     ],
@@ -151,7 +152,8 @@ observe: the input and lifecycle tools act on real machines.
 | `list_templates` | List templates available for new computers | ✅ | — | — |
 | `list_computers` | List broker computers and their state | ✅ | — | — |
 | `computer_status` | Status of one computer | ✅ | — | — |
-| `computer_screenshot` | Capture a frame/desktop screenshot | ✅ | — | — |
+| `computer_screenshot` | Capture a frame/desktop screenshot; optional `display` picks one display | ✅ | — | — |
+| `computer_displays` | List a computer's displays, geometry and combined bounds | ✅ | — | — |
 | `computer_windows` | List open windows on a computer | ✅ | — | — |
 | `list_devices` | List device connectors | ✅ | — | — |
 | `device_file_list` | List files on a device | ✅ | — | — |
@@ -308,7 +310,7 @@ POST /mcp/v1/admin/computer-use/settings
   },
   "server": {
     "id": "srv_computer_use", "name": "computer-use", "status": "running",
-    "toolCount": 23, "lastError": null
+    "toolCount": 24, "lastError": null
   },
   "tools": [
     { "name": "computer_screenshot", "description": "…", "highPrivilege": false,

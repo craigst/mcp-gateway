@@ -209,7 +209,7 @@ queued; an expired pause is not a pause. Taking or releasing the broker's live-c
 stays in the broker UI.
 
 **Tools and privilege.** Read-only tools (`list_templates`, `list_computers`,
-`computer_status`, `computer_screenshot`, `computer_windows`, `list_devices`,
+`computer_status`, `computer_screenshot`, `computer_displays`, `computer_windows`, `list_devices`,
 `device_file_list`, `device_file_read`, `device_terminal_read`) are visible to a granted key.
 Input tools (`computer_click`, `computer_move`, `computer_type`, `computer_key`,
 `computer_scroll`, `computer_open_app`, `create_computer`, `start_computer`,
