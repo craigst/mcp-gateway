@@ -13,6 +13,7 @@ import { DevicesSection } from './DevicesSection.js';
 import { PendingPairingsSection } from './PendingPairingsSection.js';
 import { PhysicalComputersSection } from './PhysicalComputersSection.js';
 import { TerminalDialog } from './TerminalDialog.js';
+import { VmProvidersSection } from './VmProvidersSection.js';
 import {
   enrollmentKindLabel,
   enrollmentExpiryLabel,
@@ -101,7 +102,9 @@ export function ConnectorsPage() {
           <p className="mt-0.5 max-w-3xl text-xs leading-relaxed text-slate-400">
             Onboard Linux PCs as Computer Broker connectors. Each pairing mints a single-use install
             command — the machine claims it by dialling out to the broker. Interactive terminals are
-            opt-in per pairing and give this console a real shell on the machine.
+            opt-in per pairing and give this console a real shell on the machine. VMs hosted on the
+            registered VM providers (zues, gpc) are listed in{' '}
+            <span className="font-medium text-slate-300">VM providers</span> below.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -144,6 +147,8 @@ export function ConnectorsPage() {
         error={connectors.error}
         onRetry={refresh}
       />
+
+      <VmProvidersSection />
 
       <PhysicalComputersSection />
 

@@ -16,6 +16,11 @@ const { apiMock } = vi.hoisted(() => ({
     updateComputerUseConnector: vi.fn(),
     removeComputerUseConnector: vi.fn(),
     computerUseLiveDesktopUrl: vi.fn(),
+    listComputerUseVmHosts: vi.fn(),
+    createComputerUseVmHost: vi.fn(),
+    testComputerUseVmHost: vi.fn(),
+    deleteComputerUseVmHost: vi.fn(),
+    createComputerUseVm: vi.fn(),
   },
 }));
 
@@ -38,6 +43,7 @@ import type {
   ComputerUseEnrollmentResponse,
   ComputerUseHostComputer,
   ComputerUseStats,
+  ComputerUseVmHostInfo,
 } from '../../src/core/types.js';
 
 const NOW = Date.now();
@@ -254,6 +260,119 @@ const connectorRemoveResult = {
   computerRemoved: true,
 };
 
+// ---------------------------------------------------------------------------
+// v0.13 VM providers (zues libvirt + gpc qemu) and their VMs
+// ---------------------------------------------------------------------------
+
+const zuesVmHost: ComputerUseVmHostInfo = {
+  id: 'vmh-zues',
+  name: 'zues',
+  kind: 'libvirt',
+  config: {
+    sshHost: 'zues',
+    sshUser: 'root',
+    host: 'zues',
+    user: 'root',
+    baseImage: '/mnt/user/domains/brk/base/noble-server-cloudimg-amd64.img',
+    storageDir: '/mnt/user/domains/brk/vms',
+    vmDir: null,
+    network: 'default',
+    template: 'ubuntu-24.04-cloud',
+    cloudImageUrl: null,
+    installBrowser: false,
+    defaults: { vcpus: 4, memoryMb: 8192, diskGb: 30 },
+  },
+  defaults: { vcpus: 4, memoryMb: 8192, diskGb: 30 },
+  template: 'ubuntu-24.04-cloud',
+  baseReady: true,
+  state: 'ready',
+  lastError: null,
+  createdAt: '2026-10-30T20:00:00.000Z',
+};
+
+const gpcVmHost: ComputerUseVmHostInfo = {
+  id: 'vmh-gpc',
+  name: 'gpc',
+  kind: 'qemu',
+  config: {
+    sshHost: null,
+    sshUser: null,
+    host: null,
+    user: null,
+    baseImage: '/home/craigst/.local/share/computer-broker/vm/base/noble-30g.img',
+    storageDir: '/home/craigst/.local/share/computer-broker/vm/vms',
+    vmDir: '/home/craigst/.local/share/computer-broker/vm/vms',
+    network: null,
+    template: 'ubuntu-24.04-cloud',
+    cloudImageUrl: null,
+    installBrowser: false,
+    defaults: { vcpus: 2, memoryMb: 4096, diskGb: 30 },
+  },
+  defaults: { vcpus: 2, memoryMb: 4096, diskGb: 30 },
+  template: 'ubuntu-24.04-cloud',
+  baseReady: true,
+  state: 'ready',
+  lastError: null,
+  createdAt: '2026-10-30T20:00:00.000Z',
+};
+
+function makeVmComputer(
+  overrides: Partial<ComputerUseComputerInfo> & { id: string; name: string; vmHostId?: string },
+): ComputerUseComputerInfo {
+  const { vmHostId, ...rest } = overrides;
+  return {
+    ...makeHostComputer({ id: overrides.id, name: overrides.name }),
+    provider: 'vm',
+    template: 'ubuntu-24.04-vm',
+    viewer: 'frames',
+    desktop: { viewer: 'frames', width: 1280, height: 800 },
+    resources:
+      vmHostId === undefined
+        ? null
+        : { vmHostId, vcpus: 4, memoryMb: 8192, diskGb: 30 },
+    ...rest,
+  };
+}
+
+const zuesVmOne = makeVmComputer({
+  id: 'comp-vm-zues-1',
+  name: 'zues-vm-1',
+  state: 'ready',
+  vmHostId: 'vmh-zues',
+});
+
+const zuesVmTwo = makeVmComputer({
+  id: 'comp-vm-zues-2',
+  name: 'zues-vm-2',
+  state: 'starting',
+  connector: null,
+  vmHostId: 'vmh-zues',
+});
+
+const gpcVmOne = makeVmComputer({
+  id: 'comp-vm-gpc-1',
+  name: 'gpc-vm-1',
+  state: 'ready',
+  vmHostId: 'vmh-gpc',
+});
+
+const vmFleet: ComputerUseComputersResponse = {
+  broker: brokerOnline,
+  availability: availableAvailability,
+  computers: [zuesVmOne, zuesVmTwo, gpcVmOne],
+};
+
+const vmHostCreateResult = {
+  vmHost: zuesVmHost,
+  test: { ok: true, virsh_version: '9.0.0', base_image: 'ok' },
+};
+
+const vmHostTestResult = {
+  ok: true,
+  vmHost: zuesVmHost,
+  details: { virsh_version: '9.0.0', base_image_bytes: 1234, kvm: true },
+};
+
 beforeEach(() => {
   apiMock.getComputerUseConnectors.mockResolvedValue(connectorsResponse);
   apiMock.createComputerUseEnrollment.mockResolvedValue(enrollmentResponse);
@@ -271,6 +390,11 @@ beforeEach(() => {
     (computerId: string) =>
       `/mcp/v1/admin/computer-use/computers/${computerId}/live-desktop`,
   );
+  apiMock.listComputerUseVmHosts.mockResolvedValue([]);
+  apiMock.createComputerUseVmHost.mockResolvedValue(vmHostCreateResult);
+  apiMock.testComputerUseVmHost.mockResolvedValue(vmHostTestResult);
+  apiMock.deleteComputerUseVmHost.mockResolvedValue(true);
+  apiMock.createComputerUseVm.mockResolvedValue(zuesVmOne);
 });
 
 afterEach(() => {
@@ -577,6 +701,214 @@ describe('Connectors page — physical computers (v0.12)', () => {
     );
     await waitFor(() =>
       expect(apiMock.listComputerUseComputers.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+  });
+});
+
+describe('Connectors page — VM providers (v0.13)', () => {
+  it('lists providers with defaults, base readiness, VM counts and running-VM grouping', async () => {
+    apiMock.listComputerUseVmHosts.mockResolvedValue([zuesVmHost, gpcVmHost]);
+    apiMock.listComputerUseComputers.mockResolvedValue(vmFleet);
+
+    render(
+      <ToastProvider>
+        <ConnectorsPage />
+      </ToastProvider>,
+    );
+
+    const zuesCard = await screen.findByRole('article', { name: 'VM provider zues' });
+    const gpcCard = screen.getByRole('article', { name: 'VM provider gpc' });
+
+    // Kind, state, base readiness and connection details.
+    expect(within(zuesCard).getByText('libvirt')).toBeTruthy();
+    expect(within(zuesCard).getAllByText('ready').length).toBeGreaterThanOrEqual(1);
+    expect(within(zuesCard).getByText('base image ready')).toBeTruthy();
+    expect(within(zuesCard).getByText('root@zues')).toBeTruthy();
+    expect(within(zuesCard).getAllByText(/4 vCPU · 8 GB RAM · 30 GB disk/).length).toBeGreaterThanOrEqual(1);
+    expect(within(gpcCard).getByText('qemu')).toBeTruthy();
+    expect(within(gpcCard).getByText('local KVM (/dev/kvm)')).toBeTruthy();
+    expect(within(gpcCard).getByText(/2 vCPU · 4 GB RAM · 30 GB disk/)).toBeTruthy();
+
+    // Per-provider VM counts and the VMs hosted on each card.
+    expect(within(zuesCard).getByText('2 VMs')).toBeTruthy();
+    expect(within(zuesCard).getByText('1 running')).toBeTruthy();
+    expect(within(zuesCard).getByText('zues-vm-1')).toBeTruthy();
+    expect(within(zuesCard).getByText('zues-vm-2')).toBeTruthy();
+    expect(within(gpcCard).getByText('1 VM')).toBeTruthy();
+    expect(within(gpcCard).getByText('gpc-vm-1')).toBeTruthy();
+    expect(within(gpcCard).queryByText('zues-vm-1')).toBeNull();
+
+    // Cross-provider summary: who hosts what, including the starting VM.
+    const summary = screen.getByRole('list', { name: 'Running VMs across providers' });
+    expect(within(summary).getByText('zues-vm-1')).toBeTruthy();
+    expect(within(summary).getByText('zues-vm-2')).toBeTruthy();
+    expect(within(summary).getByText('gpc-vm-1')).toBeTruthy();
+    expect(within(summary).getAllByText('zues').length).toBeGreaterThanOrEqual(1);
+    expect(within(summary).getAllByText('gpc').length).toBeGreaterThanOrEqual(1);
+
+    // Header counts and the link to the Computer Use fleet.
+    expect(screen.getByText('2 providers')).toBeTruthy();
+    expect(screen.getByText('2 running VMs')).toBeTruthy();
+    expect(screen.getByRole('link', { name: /Open Computer Use/ }).getAttribute('href')).toBe(
+      '#/computer-use',
+    );
+
+    // VM live-desktop hand-off URLs are wired per VM.
+    const vmLive = within(zuesCard).getByRole('link', { name: 'Open live desktop for zues-vm-1' });
+    expect(vmLive.getAttribute('href')).toBe(
+      '/mcp/v1/admin/computer-use/computers/comp-vm-zues-1/live-desktop',
+    );
+  });
+
+  it('deploys a VM with the provider defaults prefilled and refreshes the fleet', async () => {
+    apiMock.listComputerUseVmHosts.mockResolvedValue([zuesVmHost, gpcVmHost]);
+    apiMock.listComputerUseComputers.mockResolvedValue(vmFleet);
+
+    render(
+      <ToastProvider>
+        <ConnectorsPage />
+      </ToastProvider>,
+    );
+
+    const zuesCard = await screen.findByRole('article', { name: 'VM provider zues' });
+    fireEvent.click(within(zuesCard).getByRole('button', { name: 'Deploy VM on zues' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Deploy VM on zues' });
+    const nameInput = within(dialog).getByLabelText(/VM name/) as HTMLInputElement;
+    expect(nameInput.value).toBe('zues-vm');
+    expect((within(dialog).getByLabelText(/vCPUs/) as HTMLInputElement).value).toBe('4');
+    expect((within(dialog).getByLabelText(/Memory \(MB\)/) as HTMLInputElement).value).toBe('8192');
+    expect((within(dialog).getByLabelText(/Disk \(GB\)/) as HTMLInputElement).value).toBe('30');
+
+    fireEvent.change(nameInput, { target: { value: 'research-1' } });
+    fireEvent.change(within(dialog).getByLabelText(/vCPUs/), { target: { value: '6' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Deploy VM' }));
+
+    await waitFor(() =>
+      expect(apiMock.createComputerUseVm).toHaveBeenCalledWith({
+        vmHostId: 'vmh-zues',
+        name: 'research-1',
+        vcpus: 6,
+        memoryMb: 8192,
+        diskGb: 30,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Deploy VM on zues' })).toBeNull());
+    await waitFor(() =>
+      expect(apiMock.listComputerUseComputers.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+    expect(await screen.findByText(/starting on zues/)).toBeTruthy();
+  });
+
+  it('tests a provider and shows the broker test details', async () => {
+    apiMock.listComputerUseVmHosts.mockResolvedValue([zuesVmHost]);
+    apiMock.listComputerUseComputers.mockResolvedValue(vmFleet);
+
+    render(
+      <ToastProvider>
+        <ConnectorsPage />
+      </ToastProvider>,
+    );
+
+    const zuesCard = await screen.findByRole('article', { name: 'VM provider zues' });
+    fireEvent.click(within(zuesCard).getByRole('button', { name: 'Test provider zues' }));
+
+    await waitFor(() => expect(apiMock.testComputerUseVmHost).toHaveBeenCalledWith('vmh-zues'));
+    expect(await within(zuesCard).findByText('Provider test passed')).toBeTruthy();
+    const details = within(zuesCard).getByLabelText('Test details for zues');
+    expect(details.textContent).toContain('virsh_version');
+    await waitFor(() =>
+      expect(apiMock.listComputerUseVmHosts.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it('guards provider deletion while VMs reference it and deletes an empty provider', async () => {
+    apiMock.listComputerUseVmHosts.mockResolvedValue([zuesVmHost, gpcVmHost]);
+    // Only zues hosts a VM; gpc is empty and therefore deletable.
+    apiMock.listComputerUseComputers.mockResolvedValue({ ...vmFleet, computers: [zuesVmOne] });
+
+    render(
+      <ToastProvider>
+        <ConnectorsPage />
+      </ToastProvider>,
+    );
+
+    const zuesCard = await screen.findByRole('article', { name: 'VM provider zues' });
+    const gpcCard = screen.getByRole('article', { name: 'VM provider gpc' });
+
+    const zuesDelete = within(zuesCard).getByRole('button', {
+      name: 'Delete provider zues',
+    }) as HTMLButtonElement;
+    expect(zuesDelete.disabled).toBe(true);
+    expect(zuesDelete.closest('span')?.getAttribute('title')).toMatch(/reference this provider/);
+
+    const gpcDelete = within(gpcCard).getByRole('button', {
+      name: 'Delete provider gpc',
+    }) as HTMLButtonElement;
+    expect(gpcDelete.disabled).toBe(false);
+    fireEvent.click(gpcDelete);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Delete VM provider gpc' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete provider' }));
+
+    await waitFor(() => expect(apiMock.deleteComputerUseVmHost).toHaveBeenCalledWith('vmh-gpc'));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Delete VM provider gpc' })).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(apiMock.listComputerUseVmHosts.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it('registers a new VM provider from the add dialog', async () => {
+    apiMock.listComputerUseVmHosts.mockResolvedValue([zuesVmHost]);
+    apiMock.createComputerUseVmHost.mockResolvedValue({
+      vmHost: gpcVmHost,
+      test: { ok: true, kvm: true },
+    });
+
+    render(
+      <ToastProvider>
+        <ConnectorsPage />
+      </ToastProvider>,
+    );
+    await screen.findByRole('article', { name: 'VM provider zues' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add VM provider' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add VM provider' });
+
+    fireEvent.change(within(dialog).getByLabelText(/Provider name/), { target: { value: 'gpc2' } });
+    fireEvent.change(within(dialog).getByLabelText(/Kind/), { target: { value: 'qemu' } });
+    expect(within(dialog).queryByLabelText(/SSH host/)).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText(/Base image path/), {
+      target: { value: '/srv/vm/base/noble.img' },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/Storage directory/), {
+      target: { value: '/srv/vm/vms' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Register provider' }));
+
+    await waitFor(() =>
+      expect(apiMock.createComputerUseVmHost).toHaveBeenCalledWith({
+        name: 'gpc2',
+        kind: 'qemu',
+        config: {
+          baseImage: '/srv/vm/base/noble.img',
+          storageDir: '/srv/vm/vms',
+          defaults: { vcpus: 4, memoryMb: 8192, diskGb: 30 },
+          installBrowser: false,
+        },
+      }),
+    );
+
+    expect(await within(dialog).findByText('provider registered')).toBeTruthy();
+    expect(within(dialog).getByText(/Provider test passed/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Add VM provider' })).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(apiMock.listComputerUseVmHosts.mock.calls.length).toBeGreaterThanOrEqual(2),
     );
   });
 });

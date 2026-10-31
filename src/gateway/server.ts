@@ -13,7 +13,7 @@ import type { AuthenticatedKey, JsonRpcRequest, JsonRpcResponse, RequestContext 
 import type { AdminApi } from '../admin/router.js';
 import { createRequestContext, JsonRpcRouter } from './router.js';
 
-const GATEWAY_VERSION = '0.13.0';
+const GATEWAY_VERSION = '0.13.1';
 const MAX_BATCH_SIZE = 20;
 
 export interface GatewayServerDeps {

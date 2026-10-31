@@ -32,6 +32,13 @@ import type {
   ComputerUseTerminalReadInput,
   ComputerUseTerminalReadResult,
   ComputerUseTerminalSendInput,
+  ComputerUseVmComputerCreateInput,
+  ComputerUseVmHostCreateInput,
+  ComputerUseVmHostCreateResult,
+  ComputerUseVmHostDeleteResult,
+  ComputerUseVmHostInfo,
+  ComputerUseVmHostTestResult,
+  ComputerUseVmHostsResponse,
   ConfigProfileApplyResult,
   ConfigProfileInput,
   ConfigProfileSummary,
@@ -1562,6 +1569,60 @@ export class ApiClient {
       },
       60_000,
     );
+  }
+
+  // -- v0.13 VM providers (KVM/QEMU hosts and VM deployment) ---------------
+
+  /** Registered VM providers. Accepts `{vmHosts:[…]}` or a bare array. */
+  async listComputerUseVmHosts(): Promise<ComputerUseVmHostInfo[]> {
+    const response = await this.request<
+      ComputerUseVmHostsResponse | ComputerUseVmHostInfo[]
+    >('/mcp/v1/admin/computer-use/vm-hosts');
+    if (Array.isArray(response)) return response;
+    return response.vmHosts ?? [];
+  }
+
+  /** Register a VM provider; the broker tests it before storing (up to ~5 min). */
+  createComputerUseVmHost(
+    input: ComputerUseVmHostCreateInput,
+  ): Promise<ComputerUseVmHostCreateResult> {
+    return this.request<ComputerUseVmHostCreateResult>(
+      '/mcp/v1/admin/computer-use/vm-hosts',
+      {
+        method: 'POST',
+        body: JSON.stringify({ name: input.name, kind: input.kind, config: input.config }),
+      },
+      300_000,
+    );
+  }
+
+  /** Re-run the broker provider test (SSH, base image, storage, KVM/TCG). */
+  testComputerUseVmHost(vmHostId: string): Promise<ComputerUseVmHostTestResult> {
+    return this.request<ComputerUseVmHostTestResult>(
+      `/mcp/v1/admin/computer-use/vm-hosts/${encodeURIComponent(vmHostId)}/test`,
+      { method: 'POST', body: JSON.stringify({}) },
+      300_000,
+    );
+  }
+
+  /** Delete a provider registration (the broker refuses while VMs reference it). */
+  async deleteComputerUseVmHost(vmHostId: string): Promise<boolean> {
+    const response = await this.request<ComputerUseVmHostDeleteResult>(
+      `/mcp/v1/admin/computer-use/vm-hosts/${encodeURIComponent(vmHostId)}`,
+      { method: 'DELETE' },
+      60_000,
+    );
+    return response.ok === true;
+  }
+
+  /** Deploy a VM on a provider; the returned computer is in `starting`. */
+  async createComputerUseVm(input: ComputerUseVmComputerCreateInput): Promise<ComputerUseComputerInfo> {
+    const response = await this.request<{ computer: ComputerUseComputerInfo }>(
+      '/mcp/v1/admin/computer-use/computers/vm',
+      { method: 'POST', body: JSON.stringify(input) },
+      300_000,
+    );
+    return response.computer;
   }
 
   // -- vault ----------------------------------------------------------------

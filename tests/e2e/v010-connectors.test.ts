@@ -17,8 +17,14 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createContainer, type GatewayContainer } from '../../src/container.js';
-import { normalizeComputerStats } from '../../src/computer_use/broker-client.js';
+import {
+  normalizeComputer,
+  normalizeComputerStats,
+  normalizeVmHost,
+  serializeVmHostConfig,
+} from '../../src/computer_use/broker-client.js';
 import { loadConfig, type GatewayConfig } from '../../src/core/config.js';
+import { ErrorCodes, GatewayError } from '../../src/core/errors.js';
 import { createLogger } from '../../src/core/logger.js';
 import type {
   BrokerComputerSnapshot,
@@ -28,11 +34,20 @@ import type {
   BrokerEnrollmentCreated,
   BrokerEnrollmentSnapshot,
   BrokerHostComputerCreated,
+  BrokerVmHostCreateResult,
+  BrokerVmHostDeleteResult,
+  BrokerVmHostSnapshot,
+  BrokerVmHostTestResult,
   ComputerUseBrokerHealth,
   ComputerUseBrokerPort,
   ComputerUseFrameResult,
 } from '../../src/core/ports.js';
-import type { ComputerUseStats } from '../../src/core/types.js';
+import type {
+  ComputerUseStats,
+  ComputerUseVmHostConfig,
+  ComputerUseVmHostConfigInput,
+  ComputerUseVmHostDefaults,
+} from '../../src/core/types.js';
 
 const MASTER_KEY = `mcp_master_${'f'.repeat(48)}`;
 const VAULT_SECRET = 'v010-vault-secret-0123456789abcdefgh';
@@ -115,6 +130,47 @@ class FakeBroker implements ComputerUseBrokerPort {
   readonly connectorRemovals: Array<{
     computerId: string;
     input: { uninstall: boolean; removeComputer: boolean };
+  }> = [];
+  readonly vmHostsList: BrokerVmHostSnapshot[] = [
+    {
+      id: 'vmh_zues',
+      name: 'zues',
+      kind: 'libvirt',
+      config: {
+        sshHost: 'root@zues.lan',
+        sshUser: 'root',
+        host: 'zues.lan',
+        user: 'root',
+        baseImage: '/var/lib/libvirt/images/ubuntu-base.qcow2',
+        storageDir: '/var/lib/libvirt/images',
+        vmDir: null,
+        network: 'default',
+        template: 'ubuntu-xfce',
+        cloudImageUrl: null,
+        installBrowser: null,
+        defaults: null,
+      },
+      defaults: { vcpus: 2, memoryMb: 2_048, diskGb: 30 },
+      template: 'ubuntu-xfce',
+      baseReady: true,
+      state: 'ready',
+      lastError: null,
+      createdAt: '2026-10-31T09:00:00Z',
+    },
+  ];
+  readonly vmHostCreateRequests: Array<{
+    name: string;
+    kind: 'libvirt' | 'qemu';
+    config: ComputerUseVmHostConfigInput;
+  }> = [];
+  readonly vmHostTestRequests: string[] = [];
+  readonly vmHostDeleteRequests: string[] = [];
+  readonly vmComputerCreateRequests: Array<{
+    vmHostId: string;
+    name?: string | null;
+    vcpus?: number;
+    memoryMb?: number;
+    diskGb?: number;
   }> = [];
   token: string | null;
 
@@ -221,6 +277,7 @@ class FakeBroker implements ComputerUseBrokerPort {
         desktop: { viewer: 'wayland', width: 1920, height: 1080 },
         connector: { state: 'online', version: '0.12.0', lastSeen: '2026-10-30T12:00:00Z' },
         control: { held: false, holder: null, heldSince: null, expiresAt: null },
+        resources: null,
       },
       token: 'tok_host_abc123',
       expiresAt: '2026-10-30T12:15:00Z',
@@ -264,6 +321,117 @@ class FakeBroker implements ComputerUseBrokerPort {
   ): Promise<BrokerConnectorRemoved> {
     this.connectorRemovals.push({ computerId, input });
     return { ok: true, connectorRemoved: true, computerRemoved: input.removeComputer };
+  }
+
+  // -- v0.13.1 VM providers and VM deployment -------------------------------
+
+  async listVmHosts(): Promise<BrokerVmHostSnapshot[]> {
+    return this.vmHostsList;
+  }
+
+  async createVmHost(input: {
+    name: string;
+    kind: 'libvirt' | 'qemu';
+    config: ComputerUseVmHostConfigInput;
+  }): Promise<BrokerVmHostCreateResult> {
+    this.vmHostCreateRequests.push(input);
+    const defaults: ComputerUseVmHostDefaults = {
+      vcpus: input.config.defaults?.vcpus ?? 2,
+      memoryMb: input.config.defaults?.memoryMb ?? 2_048,
+      diskGb: input.config.defaults?.diskGb ?? 30,
+    };
+    const config: ComputerUseVmHostConfig = {
+      sshHost: input.config.sshHost ?? null,
+      sshUser: input.config.sshUser ?? null,
+      host: null,
+      user: null,
+      baseImage: input.config.baseImage,
+      storageDir: input.config.storageDir,
+      vmDir: null,
+      network: input.config.network ?? (input.kind === 'libvirt' ? 'default' : null),
+      template: 'ubuntu-xfce',
+      cloudImageUrl: input.config.cloudImageUrl ?? null,
+      installBrowser: input.config.installBrowser ?? null,
+      defaults,
+    };
+    return {
+      vmHost: {
+        id: 'vmh_new',
+        name: input.name,
+        kind: input.kind,
+        config,
+        defaults,
+        template: 'ubuntu-xfce',
+        baseReady: true,
+        state: 'ready',
+        lastError: null,
+        createdAt: '2026-10-31T10:00:00Z',
+      },
+      test: { ok: true, reachable: true, base_size_bytes: 123_456 },
+    };
+  }
+
+  async testVmHost(vmHostId: string): Promise<BrokerVmHostTestResult> {
+    this.vmHostTestRequests.push(vmHostId);
+    const host = this.vmHostsList.find((entry) => entry.id === vmHostId) ?? this.vmHostsList[0];
+    if (host === undefined) throw new Error('no vm host fixture');
+    if (vmHostId === 'vmh_broken') {
+      return {
+        ok: false,
+        vmHost: { ...host, id: vmHostId, state: 'error', baseReady: false, lastError: 'libvirt unreachable' },
+        details: { ok: false, problems: ['libvirt unreachable'] },
+      };
+    }
+    return {
+      ok: true,
+      vmHost: { ...host, id: vmHostId, state: 'ready', baseReady: true, lastError: null },
+      details: { ok: true, reachable: true },
+    };
+  }
+
+  async deleteVmHost(vmHostId: string): Promise<BrokerVmHostDeleteResult> {
+    this.vmHostDeleteRequests.push(vmHostId);
+    if (vmHostId === 'vmh_busy') {
+      throw new GatewayError(
+        ErrorCodes.UPSTREAM_ERROR,
+        'Computer Broker DELETE /api/vm-hosts/vmh_busy: vm host in use',
+        {
+          data: { status: 'BROKER_ERROR', reason: 'vm_host_in_use', details: { computers: ['cmp_x'] } },
+          httpStatus: 409,
+        },
+      );
+    }
+    return { ok: true, deleted: vmHostId };
+  }
+
+  async createVmComputer(input: {
+    vmHostId: string;
+    name?: string | null;
+    vcpus?: number;
+    memoryMb?: number;
+    diskGb?: number;
+  }): Promise<BrokerComputerSnapshot> {
+    this.vmComputerCreateRequests.push(input);
+    return {
+      id: 'cmp_vm_1',
+      name: input.name ?? 'vm-abc123',
+      template: 'ubuntu-xfce',
+      provider: 'vm',
+      state: 'starting',
+      viewer: 'frames',
+      error: null,
+      createdAt: '2026-10-31T10:05:00Z',
+      ttlAt: null,
+      desktop: { viewer: 'frames', width: 1280, height: 800 },
+      connector: null,
+      control: { held: false, holder: null, heldSince: null, expiresAt: null },
+      resources: {
+        vmHostId: input.vmHostId,
+        vcpus: input.vcpus ?? 2,
+        memoryMb: input.memoryMb ?? 2_048,
+        diskGb: input.diskGb ?? 30,
+      },
+    };
   }
 }
 
@@ -634,6 +802,199 @@ describe('v0.10 connectors, pairing and terminal', () => {
     expect(noBody.body).toMatchObject({ connectorRemoved: true, computerRemoved: false });
   });
 
+  // -------------------------------------------------------------------------
+  // v0.13.1 — VM providers and VM deployment
+  // -------------------------------------------------------------------------
+
+  it('lists the registered VM providers', async () => {
+    const listed = await http.admin('GET', '/computer-use/vm-hosts');
+    expect(listed.status).toBe(200);
+    expect(listed.body.vmHosts).toHaveLength(1);
+    expect(listed.body.vmHosts[0]).toEqual({
+      id: 'vmh_zues',
+      name: 'zues',
+      kind: 'libvirt',
+      config: {
+        sshHost: 'root@zues.lan',
+        sshUser: 'root',
+        host: 'zues.lan',
+        user: 'root',
+        baseImage: '/var/lib/libvirt/images/ubuntu-base.qcow2',
+        storageDir: '/var/lib/libvirt/images',
+        vmDir: null,
+        network: 'default',
+        template: 'ubuntu-xfce',
+        cloudImageUrl: null,
+        installBrowser: null,
+        defaults: null,
+      },
+      defaults: { vcpus: 2, memoryMb: 2_048, diskGb: 30 },
+      template: 'ubuntu-xfce',
+      baseReady: true,
+      state: 'ready',
+      lastError: null,
+      createdAt: '2026-10-31T09:00:00Z',
+    });
+  });
+
+  it('registers a VM provider, forwarding config and clamping defaults', async () => {
+    const created = await http.admin('POST', '/computer-use/vm-hosts', {
+      name: 'gpc',
+      kind: 'libvirt',
+      config: {
+        sshHost: 'root@gpc.lan',
+        sshUser: 'root',
+        baseImage: '/srv/images/base.qcow2',
+        storageDir: '/srv/images',
+        network: 'lab',
+        defaults: { vcpus: 99, memoryMb: 100, diskGb: 1_000 },
+        installBrowser: true,
+      },
+    });
+    expect(created.status).toBe(201);
+    expect(broker.vmHostCreateRequests.at(-1)).toEqual({
+      name: 'gpc',
+      kind: 'libvirt',
+      config: {
+        sshHost: 'root@gpc.lan',
+        sshUser: 'root',
+        baseImage: '/srv/images/base.qcow2',
+        storageDir: '/srv/images',
+        network: 'lab',
+        installBrowser: true,
+        defaults: { vcpus: 16, memoryMb: 512, diskGb: 500 },
+      },
+    });
+    expect(created.body.vmHost).toMatchObject({
+      id: 'vmh_new',
+      name: 'gpc',
+      kind: 'libvirt',
+      state: 'ready',
+      baseReady: true,
+    });
+    expect(created.body.test).toEqual({ ok: true, reachable: true, base_size_bytes: 123_456 });
+
+    // Broker snake_case config keys are accepted too.
+    const fromSnake = await http.admin('POST', '/computer-use/vm-hosts', {
+      name: 'gpc2',
+      kind: 'qemu',
+      config: { base_image: '/srv/images/base.qcow2', storage_dir: '/srv/images' },
+    });
+    expect(fromSnake.status).toBe(201);
+    expect(broker.vmHostCreateRequests.at(-1)?.config).toMatchObject({
+      baseImage: '/srv/images/base.qcow2',
+      storageDir: '/srv/images',
+    });
+  });
+
+  it('validates VM provider registration before the broker is called', async () => {
+    const missingName = await http.admin('POST', '/computer-use/vm-hosts', { kind: 'libvirt', config: {} });
+    expect(missingName.status).toBe(400);
+
+    const badKind = await http.admin('POST', '/computer-use/vm-hosts', {
+      name: 'x',
+      kind: 'vmware',
+      config: { baseImage: '/b', storageDir: '/s' },
+    });
+    expect(badKind.status).toBe(400);
+    expect(badKind.body.error.message).toContain("'kind' must be 'libvirt' or 'qemu'");
+
+    const missingConfig = await http.admin('POST', '/computer-use/vm-hosts', { name: 'x', kind: 'qemu' });
+    expect(missingConfig.status).toBe(400);
+
+    const missingBase = await http.admin('POST', '/computer-use/vm-hosts', {
+      name: 'x',
+      kind: 'qemu',
+      config: { storageDir: '/s' },
+    });
+    expect(missingBase.status).toBe(400);
+
+    const libvirtNoSsh = await http.admin('POST', '/computer-use/vm-hosts', {
+      name: 'x',
+      kind: 'libvirt',
+      config: { baseImage: '/b', storageDir: '/s' },
+    });
+    expect(libvirtNoSsh.status).toBe(400);
+    expect(libvirtNoSsh.body.error.message).toContain('sshHost');
+
+    const qemuWithSsh = await http.admin('POST', '/computer-use/vm-hosts', {
+      name: 'x',
+      kind: 'qemu',
+      config: { sshHost: 'root@h', baseImage: '/b', storageDir: '/s' },
+    });
+    expect(qemuWithSsh.status).toBe(400);
+  });
+
+  it('tests a VM provider and forwards a failed test result', async () => {
+    const ok = await http.admin('POST', '/computer-use/vm-hosts/vmh_zues/test');
+    expect(ok.status).toBe(200);
+    expect(ok.body.ok).toBe(true);
+    expect(ok.body.vmHost).toMatchObject({ id: 'vmh_zues', state: 'ready', baseReady: true });
+    expect(ok.body.details).toEqual({ ok: true, reachable: true });
+    expect(broker.vmHostTestRequests).toEqual(['vmh_zues']);
+
+    const broken = await http.admin('POST', '/computer-use/vm-hosts/vmh_broken/test');
+    expect(broken.status).toBe(200);
+    expect(broken.body.ok).toBe(false);
+    expect(broken.body.vmHost).toMatchObject({
+      id: 'vmh_broken',
+      state: 'error',
+      lastError: 'libvirt unreachable',
+    });
+    expect(broken.body.details).toEqual({ ok: false, problems: ['libvirt unreachable'] });
+  });
+
+  it('removes a VM provider and forwards the broker in-use refusal', async () => {
+    const removed = await http.admin('DELETE', '/computer-use/vm-hosts/vmh_new');
+    expect(removed.status).toBe(200);
+    expect(removed.body).toEqual({ ok: true, deleted: 'vmh_new' });
+    expect(broker.vmHostDeleteRequests).toEqual(['vmh_new']);
+
+    const inUse = await http.admin('DELETE', '/computer-use/vm-hosts/vmh_busy');
+    expect(inUse.status).toBe(409);
+    expect(inUse.body.error).toMatchObject({
+      code: ErrorCodes.UPSTREAM_ERROR,
+      data: { status: 'BROKER_ERROR', reason: 'vm_host_in_use' },
+    });
+    expect(inUse.body.error.data.details).toEqual({ computers: ['cmp_x'] });
+    expect(broker.vmHostDeleteRequests).toEqual(['vmh_new', 'vmh_busy']);
+  });
+
+  it('deploys a VM computer with clamped resource overrides', async () => {
+    const created = await http.admin('POST', '/computer-use/computers/vm', {
+      vmHostId: 'vmh_zues',
+      name: 'dev-vm',
+      vcpus: 99,
+      memoryMb: 100,
+      diskGb: 1_000,
+    });
+    expect(created.status).toBe(201);
+    expect(broker.vmComputerCreateRequests.at(-1)).toEqual({
+      vmHostId: 'vmh_zues',
+      name: 'dev-vm',
+      vcpus: 16,
+      memoryMb: 512,
+      diskGb: 500,
+    });
+    expect(created.body.computer).toMatchObject({
+      id: 'cmp_vm_1',
+      name: 'dev-vm',
+      provider: 'vm',
+      state: 'starting',
+      liveUrl: `${BROKER_URL}/#/d/cmp_vm_1`,
+      resources: { vmHostId: 'vmh_zues', vcpus: 16, memoryMb: 512, diskGb: 500 },
+    });
+
+    const missingHost = await http.admin('POST', '/computer-use/computers/vm', { name: 'x' });
+    expect(missingHost.status).toBe(400);
+    expect(missingHost.body.error.message).toContain("'vmHostId' is required");
+
+    const noName = await http.admin('POST', '/computer-use/computers/vm', { vmHostId: 'vmh_zues' });
+    expect(noName.status).toBe(201);
+    expect(noName.body.computer.name).toBe('vm-abc123');
+    expect(broker.vmComputerCreateRequests.at(-1)).toMatchObject({ vmHostId: 'vmh_zues', name: null });
+  });
+
   it('is master-only: agent keys are refused', async () => {
     const created = await http.admin('POST', '/keys/create', {
       name: 'connector-agent',
@@ -652,6 +1013,9 @@ describe('v0.10 connectors, pairing and terminal', () => {
       agentKey,
     );
     expect(deniedStats.status).toBe(403);
+
+    const deniedVmHosts = await http.admin('GET', '/computer-use/vm-hosts', undefined, agentKey);
+    expect(deniedVmHosts.status).toBe(403);
 
     const master = await http.admin('GET', '/computer-use/connectors');
     expect(master.status).toBe(200);
@@ -791,5 +1155,131 @@ describe('broker host stats normalisation', () => {
       addresses: [],
       collectedAt: null,
     });
+  });
+});
+
+describe('broker VM computer resources normalisation', () => {
+  it('maps vm_host_id and sizing onto ComputerUseComputerResources', () => {
+    const computer = normalizeComputer({
+      id: 'cmp_vm',
+      resources: {
+        vm_host_id: 'vmh_1',
+        vcpus: 4,
+        memory_mb: 4_096,
+        disk_gb: 60,
+        base_image: '/srv/images/base.qcow2',
+      },
+    });
+    expect(computer.resources).toEqual({
+      vmHostId: 'vmh_1',
+      vcpus: 4,
+      memoryMb: 4_096,
+      diskGb: 60,
+    });
+  });
+
+  it('accepts camelCase resources and collapses empty blocks to null', () => {
+    expect(
+      normalizeComputer({
+        id: 'cmp_vm2',
+        resources: { vmHostId: 'vmh_2', vcpus: 2, memoryMb: 2_048, diskGb: 30 },
+      }).resources,
+    ).toEqual({ vmHostId: 'vmh_2', vcpus: 2, memoryMb: 2_048, diskGb: 30 });
+    expect(normalizeComputer({ id: 'cmp_container' }).resources).toBeNull();
+    expect(normalizeComputer({ id: 'cmp_container', resources: { cpus: '2', memory: '2g' } }).resources).toBeNull();
+  });
+});
+
+describe('broker VM host normalisation', () => {
+  it('maps the broker snake_case provider JSON to the console shape', () => {
+    const host = normalizeVmHost({
+      id: 'vmh_1',
+      name: 'zues',
+      kind: 'libvirt',
+      config: {
+        ssh_host: 'root@zues.lan',
+        ssh_user: 'root',
+        host: 'zues.lan',
+        user: 'root',
+        base_image: '/var/lib/libvirt/images/base.qcow2',
+        storage_dir: '/var/lib/libvirt/images',
+        network: 'default',
+        cloud_image_url: 'https://images.example/base.qcow2',
+        install_browser: true,
+        defaults: { vcpus: 4, memory_mb: 4_096, disk_gb: 60 },
+      },
+      defaults: { vcpus: 4, memory_mb: 4_096, disk_gb: 60 },
+      template: 'ubuntu-xfce',
+      base_ready: true,
+      state: 'ready',
+      last_error: null,
+      created_at: '2026-10-31T09:00:00Z',
+    });
+    expect(host).toEqual({
+      id: 'vmh_1',
+      name: 'zues',
+      kind: 'libvirt',
+      config: {
+        sshHost: 'root@zues.lan',
+        sshUser: 'root',
+        host: 'zues.lan',
+        user: 'root',
+        baseImage: '/var/lib/libvirt/images/base.qcow2',
+        storageDir: '/var/lib/libvirt/images',
+        vmDir: null,
+        network: 'default',
+        template: null,
+        cloudImageUrl: 'https://images.example/base.qcow2',
+        installBrowser: true,
+        defaults: { vcpus: 4, memoryMb: 4_096, diskGb: 60 },
+      },
+      defaults: { vcpus: 4, memoryMb: 4_096, diskGb: 60 },
+      template: 'ubuntu-xfce',
+      baseReady: true,
+      state: 'ready',
+      lastError: null,
+      createdAt: '2026-10-31T09:00:00Z',
+    });
+  });
+
+  it('serialises the create input to the broker snake_case config', () => {
+    expect(
+      serializeVmHostConfig({
+        sshHost: 'root@gpc.lan',
+        sshUser: 'root',
+        baseImage: '/srv/images/base.qcow2',
+        storageDir: '/srv/images',
+        network: 'lab',
+        cloudImageUrl: 'https://images.example/base.qcow2',
+        installBrowser: true,
+        defaults: { vcpus: 4, memoryMb: 4_096, diskGb: 60 },
+      }),
+    ).toEqual({
+      base_image: '/srv/images/base.qcow2',
+      storage_dir: '/srv/images',
+      ssh_host: 'root@gpc.lan',
+      ssh_user: 'root',
+      network: 'lab',
+      cloud_image_url: 'https://images.example/base.qcow2',
+      install_browser: true,
+      defaults: { vcpus: 4, memory_mb: 4_096, disk_gb: 60 },
+    });
+  });
+
+  it('tolerates a partial provider payload', () => {
+    const host = normalizeVmHost({ id: 'vmh_bare' });
+    expect(host).toMatchObject({
+      id: 'vmh_bare',
+      name: 'unnamed',
+      kind: 'libvirt',
+      template: 'ubuntu-xfce',
+      baseReady: false,
+      state: 'new',
+      lastError: null,
+      createdAt: null,
+      defaults: { vcpus: 2, memoryMb: 2_048, diskGb: 30 },
+    });
+    expect(host.config.baseImage).toBeNull();
+    expect(host.config.defaults).toBeNull();
   });
 });

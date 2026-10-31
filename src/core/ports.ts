@@ -35,6 +35,7 @@ import type {
   ConfigProfileSummary,
   ComputerUseAvailabilityInput,
   ComputerUseComputerInfo,
+  ComputerUseComputerResources,
   ComputerUseComputersResponse,
   ComputerUseConnectorRemoveInput,
   ComputerUseConnectorRemoveResult,
@@ -52,6 +53,15 @@ import type {
   ComputerUseTerminalReadResult,
   ComputerUseTerminalSendInput,
   ComputerUseTerminalSession,
+  ComputerUseVmComputerCreateInput,
+  ComputerUseVmHostConfig,
+  ComputerUseVmHostConfigInput,
+  ComputerUseVmHostCreateInput,
+  ComputerUseVmHostCreateResult,
+  ComputerUseVmHostDefaults,
+  ComputerUseVmHostDeleteResult,
+  ComputerUseVmHostsResponse,
+  ComputerUseVmHostTestResult,
   CreateKeyInput,
   GatewaySettingsInfo,
   DelegationResult,
@@ -663,6 +673,8 @@ export interface BrokerComputerSnapshot {
   desktop: { viewer: string; width: number | null; height: number | null };
   connector: { state: string; version: string | null; lastSeen: string | null } | null;
   control: { held: boolean; holder: string | null; heldSince: string | null; expiresAt: string | null };
+  /** Resource sizing/provider linkage (`vm_host_id` for VM computers). */
+  resources: ComputerUseComputerResources | null;
 }
 
 export interface ComputerUseFrameResult {
@@ -737,6 +749,20 @@ export interface ComputerUseService {
     input: ComputerUseConnectorRemoveInput,
     updatedBy?: string,
   ): Promise<ComputerUseConnectorRemoveResult>;
+  // -- VM providers and VM deployment (v0.13.1) --
+  /** Registered VM providers (libvirt/KVM hosts and the local QEMU host). */
+  listVmHosts(): Promise<ComputerUseVmHostsResponse>;
+  /** Register a provider; the broker bootstraps its base image and tests it. */
+  createVmHost(input: ComputerUseVmHostCreateInput, updatedBy?: string): Promise<ComputerUseVmHostCreateResult>;
+  /** Re-run a provider's backend check (may bootstrap the base image). */
+  testVmHost(vmHostId: string, updatedBy?: string): Promise<ComputerUseVmHostTestResult>;
+  /** Remove a provider record; refused by the broker while VMs use it. */
+  deleteVmHost(vmHostId: string, updatedBy?: string): Promise<ComputerUseVmHostDeleteResult>;
+  /** Deploy (and boot) a VM on a registered provider. */
+  createVmComputer(
+    input: ComputerUseVmComputerCreateInput,
+    updatedBy?: string,
+  ): Promise<ComputerUseComputerInfo>;
   /** Router gate: refusal is returned, never thrown (the router owns audit). */
   checkCall(tool: ToolDescriptor, args: Record<string, unknown>): ComputerUseCallDecision;
   /** Built-in MCP client factory for the supervisor (null for other servers). */
@@ -808,6 +834,17 @@ export interface ComputerUseBrokerPort {
     computerId: string,
     input: { uninstall: boolean; removeComputer: boolean },
   ): Promise<BrokerConnectorRemoved>;
+  // -- VM providers and VM deployment (v0.13.1) --
+  listVmHosts(): Promise<BrokerVmHostSnapshot[]>;
+  createVmHost(input: {
+    name: string;
+    kind: 'libvirt' | 'qemu';
+    config: ComputerUseVmHostConfigInput;
+  }): Promise<BrokerVmHostCreateResult>;
+  testVmHost(vmHostId: string): Promise<BrokerVmHostTestResult>;
+  deleteVmHost(vmHostId: string): Promise<BrokerVmHostDeleteResult>;
+  /** Deploy (and boot) a VM computer on a registered provider. */
+  createVmComputer(input: ComputerUseVmComputerCreateInput): Promise<BrokerComputerSnapshot>;
 }
 
 export interface BrokerHandoff {
@@ -849,4 +886,41 @@ export interface BrokerConnectorRemoved {
   ok: boolean;
   connectorRemoved: boolean;
   computerRemoved: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// v0.13.1 — VM providers (libvirt/QEMU) and VM deployment
+// ---------------------------------------------------------------------------
+
+/** One broker VM provider, normalised from the broker's snake_case JSON. */
+export interface BrokerVmHostSnapshot {
+  id: string;
+  name: string;
+  kind: 'libvirt' | 'qemu';
+  /** Non-secret provider config, normalised to camelCase for the console. */
+  config: ComputerUseVmHostConfig;
+  defaults: ComputerUseVmHostDefaults;
+  template: string;
+  baseReady: boolean;
+  state: 'new' | 'ready' | 'error';
+  lastError: string | null;
+  createdAt: string | null;
+}
+
+export interface BrokerVmHostCreateResult {
+  vmHost: BrokerVmHostSnapshot;
+  /** Raw backend test payload from the broker's bootstrap test. */
+  test: Record<string, unknown> | null;
+}
+
+export interface BrokerVmHostTestResult {
+  ok: boolean;
+  vmHost: BrokerVmHostSnapshot;
+  details: Record<string, unknown> | null;
+}
+
+export interface BrokerVmHostDeleteResult {
+  ok: boolean;
+  /** Id of the deleted provider. */
+  deleted: string;
 }

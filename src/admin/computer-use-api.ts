@@ -25,6 +25,11 @@ import type {
   ComputerUseTerminalOpenInput,
   ComputerUseTerminalReadInput,
   ComputerUseTerminalSendInput,
+  ComputerUseVmComputerCreateInput,
+  ComputerUseVmHostConfigInput,
+  ComputerUseVmHostCreateInput,
+  ComputerUseVmHostDefaults,
+  ComputerUseVmHostKind,
 } from '../core/types.js';
 import { readJsonBody } from '../gateway/server.js';
 import type { AdminSubRouter } from './types.js';
@@ -195,6 +200,48 @@ export class ComputerUseApi implements AdminSubRouter {
           200,
           await this.deps.computerUse.removeConnector(computerId, parseConnectorRemove(body), principal.name),
         );
+        return true;
+      }
+
+      // GET /admin/computer-use/vm-hosts
+      if (rest.length === 1 && rest[0] === 'vm-hosts' && method === 'GET') {
+        this.requireMaster(req);
+        this.sendJson(res, 200, await this.deps.computerUse.listVmHosts());
+        return true;
+      }
+
+      // POST /admin/computer-use/vm-hosts {name,kind,config}
+      // Register a VM provider; the broker bootstraps + tests it (up to ~300 s).
+      if (rest.length === 1 && rest[0] === 'vm-hosts' && method === 'POST') {
+        const principal = this.requireMaster(req);
+        const body = await this.readObjectBody(req);
+        this.sendJson(res, 201, await this.deps.computerUse.createVmHost(parseVmHostCreate(body), principal.name));
+        return true;
+      }
+
+      // POST /admin/computer-use/vm-hosts/:id/test
+      if (rest.length === 3 && rest[0] === 'vm-hosts' && rest[2] === 'test' && method === 'POST') {
+        const principal = this.requireMaster(req);
+        const vmHostId = decodeURIComponent(rest[1] as string);
+        this.sendJson(res, 200, await this.deps.computerUse.testVmHost(vmHostId, principal.name));
+        return true;
+      }
+
+      // DELETE /admin/computer-use/vm-hosts/:id -> 409 while VMs reference it
+      if (rest.length === 2 && rest[0] === 'vm-hosts' && method === 'DELETE') {
+        const principal = this.requireMaster(req);
+        const vmHostId = decodeURIComponent(rest[1] as string);
+        this.sendJson(res, 200, await this.deps.computerUse.deleteVmHost(vmHostId, principal.name));
+        return true;
+      }
+
+      // POST /admin/computer-use/computers/vm {vmHostId,name?,vcpus?,memoryMb?,diskGb?}
+      // Deploy (and boot) a VM on a registered provider; the broker may take minutes.
+      if (rest.length === 2 && rest[0] === 'computers' && rest[1] === 'vm' && method === 'POST') {
+        const principal = this.requireMaster(req);
+        const body = await this.readObjectBody(req);
+        const computer = await this.deps.computerUse.createVmComputer(parseVmComputerCreate(body), principal.name);
+        this.sendJson(res, 201, { computer });
         return true;
       }
 
@@ -380,6 +427,122 @@ function parseConnectorRemove(body: Record<string, unknown>): ComputerUseConnect
     input.removeComputer = body.removeComputer;
   }
   return input;
+}
+
+function parseVmHostCreate(body: Record<string, unknown>): ComputerUseVmHostCreateInput {
+  if (typeof body.name !== 'string' || body.name.trim() === '') throw invalidParams("'name' is required");
+  if (typeof body.kind !== 'string' || body.kind.trim() === '') throw invalidParams("'kind' is required");
+  if (!isPlainObject(body.config)) throw invalidParams("'config' is required");
+  return {
+    name: body.name,
+    kind: body.kind as ComputerUseVmHostKind,
+    config: parseVmHostConfig(body.config),
+  };
+}
+
+/** Accept both console camelCase and broker snake_case config keys. */
+function parseVmHostConfig(raw: Record<string, unknown>): ComputerUseVmHostConfigInput {
+  const baseImage = optionalConfigString(raw, ['baseImage', 'base_image'], 'config.baseImage');
+  if (baseImage === null) throw invalidParams("'config.baseImage' is required");
+  const storageDir = optionalConfigString(raw, ['storageDir', 'storage_dir'], 'config.storageDir');
+  if (storageDir === null) throw invalidParams("'config.storageDir' is required");
+
+  const input: ComputerUseVmHostConfigInput = { baseImage, storageDir };
+  const sshHost = optionalConfigString(raw, ['sshHost', 'ssh_host'], 'config.sshHost');
+  if (sshHost !== null) input.sshHost = sshHost;
+  const sshUser = optionalConfigString(raw, ['sshUser', 'ssh_user'], 'config.sshUser');
+  if (sshUser !== null) input.sshUser = sshUser;
+  const network = optionalConfigString(raw, ['network'], 'config.network');
+  if (network !== null) input.network = network;
+  const cloudImageUrl = optionalConfigString(
+    raw,
+    ['cloudImageUrl', 'cloud_image_url'],
+    'config.cloudImageUrl',
+  );
+  if (cloudImageUrl !== null) input.cloudImageUrl = cloudImageUrl;
+  const installBrowser = optionalConfigBoolean(
+    raw,
+    ['installBrowser', 'install_browser'],
+    'config.installBrowser',
+  );
+  if (installBrowser !== null) input.installBrowser = installBrowser;
+
+  const defaultsRaw = pickFirst(raw, ['defaults']);
+  if (defaultsRaw !== undefined && defaultsRaw !== null) {
+    if (!isPlainObject(defaultsRaw)) throw invalidParams("'config.defaults' must be an object");
+    const defaults: Partial<ComputerUseVmHostDefaults> = {};
+    const vcpus = optionalConfigNumber(defaultsRaw, ['vcpus'], 'config.defaults.vcpus');
+    const memoryMb = optionalConfigNumber(
+      defaultsRaw,
+      ['memoryMb', 'memory_mb'],
+      'config.defaults.memoryMb',
+    );
+    const diskGb = optionalConfigNumber(defaultsRaw, ['diskGb', 'disk_gb'], 'config.defaults.diskGb');
+    if (vcpus !== undefined) defaults.vcpus = vcpus;
+    if (memoryMb !== undefined) defaults.memoryMb = memoryMb;
+    if (diskGb !== undefined) defaults.diskGb = diskGb;
+    if (Object.keys(defaults).length > 0) input.defaults = defaults;
+  }
+  return input;
+}
+
+function parseVmComputerCreate(body: Record<string, unknown>): ComputerUseVmComputerCreateInput {
+  const vmHostId = optionalConfigString(body, ['vmHostId', 'vm_host_id'], 'vmHostId');
+  if (vmHostId === null || vmHostId.trim() === '') throw invalidParams("'vmHostId' is required");
+  const input: ComputerUseVmComputerCreateInput = { vmHostId };
+  const name = optionalConfigString(body, ['name'], 'name');
+  if (name !== null) input.name = name;
+  const vcpus = optionalConfigNumber(body, ['vcpus'], 'vcpus');
+  if (vcpus !== undefined) input.vcpus = vcpus;
+  const memoryMb = optionalConfigNumber(body, ['memoryMb', 'memory_mb'], 'memoryMb');
+  if (memoryMb !== undefined) input.memoryMb = memoryMb;
+  const diskGb = optionalConfigNumber(body, ['diskGb', 'disk_gb'], 'diskGb');
+  if (diskGb !== undefined) input.diskGb = diskGb;
+  return input;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function pickFirst(record: Record<string, unknown>, keys: readonly string[]): unknown {
+  for (const key of keys) {
+    if (key in record && record[key] !== undefined) return record[key];
+  }
+  return undefined;
+}
+
+function optionalConfigString(
+  record: Record<string, unknown>,
+  keys: readonly string[],
+  field: string,
+): string | null {
+  const value = pickFirst(record, keys);
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw invalidParams(`'${field}' must be a string`);
+  return value.trim() === '' ? null : value;
+}
+
+function optionalConfigBoolean(
+  record: Record<string, unknown>,
+  keys: readonly string[],
+  field: string,
+): boolean | null {
+  const value = pickFirst(record, keys);
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'boolean') throw invalidParams(`'${field}' must be a boolean`);
+  return value;
+}
+
+function optionalConfigNumber(
+  record: Record<string, unknown>,
+  keys: readonly string[],
+  field: string,
+): number | undefined {
+  const value = pickFirst(record, keys);
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw invalidParams(`'${field}' must be a number`);
+  return value;
 }
 
 function parseTerminalOpen(deviceId: string, body: Record<string, unknown>): ComputerUseTerminalOpenInput {

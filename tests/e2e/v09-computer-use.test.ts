@@ -83,6 +83,7 @@ function computer(id: string, name: string, state = 'ready'): BrokerComputerSnap
     desktop: { viewer: 'rfb', width: 1280, height: 800 },
     connector: { state: 'online', version: '1.0.0', lastSeen: '2026-10-29T23:00:00Z' },
     control: { held: false, holder: null, heldSince: null, expiresAt: null },
+    resources: null,
   };
 }
 
@@ -200,6 +201,27 @@ class FakeBroker implements ComputerUseBrokerPort {
     _computerId: string,
     _input: { uninstall: boolean; removeComputer: boolean },
   ): Promise<never> {
+    throw new Error('not used in v0.9 computer-use tests');
+  }
+
+  // v0.13.1 VM-provider surface: not exercised by v0.9.
+  async listVmHosts(): Promise<never> {
+    throw new Error('not used in v0.9 computer-use tests');
+  }
+
+  async createVmHost(_input: unknown): Promise<never> {
+    throw new Error('not used in v0.9 computer-use tests');
+  }
+
+  async testVmHost(_vmHostId: string): Promise<never> {
+    throw new Error('not used in v0.9 computer-use tests');
+  }
+
+  async deleteVmHost(_vmHostId: string): Promise<never> {
+    throw new Error('not used in v0.9 computer-use tests');
+  }
+
+  async createVmComputer(_input: unknown): Promise<never> {
     throw new Error('not used in v0.9 computer-use tests');
   }
 }

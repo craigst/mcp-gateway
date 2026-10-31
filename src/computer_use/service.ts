@@ -24,6 +24,7 @@ import { createLogger, type Logger } from '../core/logger.js';
 import type {
   AuditService,
   BrokerDeviceSnapshot,
+  BrokerVmHostSnapshot,
   CatalogRepository,
   ComputerUseBrokerPort,
   ComputerUseCallDecision,
@@ -61,6 +62,15 @@ import type {
   ComputerUseTerminalSendInput,
   ComputerUseTerminalSession,
   ComputerUseToolInfo,
+  ComputerUseVmComputerCreateInput,
+  ComputerUseVmHostConfigInput,
+  ComputerUseVmHostCreateInput,
+  ComputerUseVmHostCreateResult,
+  ComputerUseVmHostDefaults,
+  ComputerUseVmHostDeleteResult,
+  ComputerUseVmHostInfo,
+  ComputerUseVmHostsResponse,
+  ComputerUseVmHostTestResult,
   ServerRecord,
   ToolDescriptor,
 } from '../core/types.js';
@@ -132,6 +142,18 @@ const MAX_TERMINAL_WAIT_S = 30;
 const ENROLLMENT_TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/;
 /** Fallback pairing window when the broker does not report the token expiry. */
 const HOST_INSTALL_TTL_MS = 15 * 60 * 1_000;
+
+/** VM provider kinds accepted by the broker. */
+const VM_HOST_KINDS: readonly string[] = ['libvirt', 'qemu'];
+/** VM resource bounds mirror the broker's VM_RESOURCE_SPEC. */
+const VM_RESOURCE_LIMITS = {
+  vcpus: { min: 1, max: 16, fallback: 2 },
+  memoryMb: { min: 512, max: 65_536, fallback: 2_048 },
+  diskGb: { min: 10, max: 500, fallback: 30 },
+} as const;
+/** Broker limits: names are at most 64 chars and contain no control characters. */
+const MAX_VM_HOST_NAME_LENGTH = 64;
+const MAX_VM_COMPUTER_NAME_LENGTH = 64;
 
 export interface ComputerUseServiceOptions {
   config: GatewayConfig;
@@ -682,6 +704,88 @@ export class DefaultComputerUseService implements ComputerUseService {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // VM providers and VM deployment (v0.13.1)
+  // -------------------------------------------------------------------------
+
+  async listVmHosts(): Promise<ComputerUseVmHostsResponse> {
+    const broker = this.requireBroker();
+    const hosts = await broker.listVmHosts();
+    return { vmHosts: hosts.map((host) => mapVmHostInfo(host)) };
+  }
+
+  async createVmHost(
+    input: ComputerUseVmHostCreateInput,
+    updatedBy = 'operator',
+  ): Promise<ComputerUseVmHostCreateResult> {
+    const name = requireVmName(input?.name, 'name', MAX_VM_HOST_NAME_LENGTH);
+    const kind = requireVmHostKind(input?.kind);
+    const config = validateVmHostConfig(kind, input?.config);
+    const broker = this.requireBroker();
+    // The broker bootstraps the base image and runs the backend test (up to 300 s).
+    const created = await broker.createVmHost({ name, kind, config });
+    this.logger.info('vm host created', {
+      vmHostId: created.vmHost.id,
+      name,
+      kind,
+      updatedBy,
+    });
+    return { vmHost: mapVmHostInfo(created.vmHost), test: created.test };
+  }
+
+  async testVmHost(vmHostId: string, updatedBy = 'operator'): Promise<ComputerUseVmHostTestResult> {
+    const id = requiredId(vmHostId, 'vmHostId');
+    const broker = this.requireBroker();
+    const result = await broker.testVmHost(id);
+    this.logger.info('vm host tested', {
+      vmHostId: id,
+      ok: result.ok,
+      state: result.vmHost.state,
+      updatedBy,
+    });
+    return {
+      ok: result.ok,
+      vmHost: mapVmHostInfo(result.vmHost),
+      details: result.details,
+    };
+  }
+
+  async deleteVmHost(vmHostId: string, updatedBy = 'operator'): Promise<ComputerUseVmHostDeleteResult> {
+    const id = requiredId(vmHostId, 'vmHostId');
+    const broker = this.requireBroker();
+    const result = await broker.deleteVmHost(id);
+    this.logger.info('vm host deleted', { vmHostId: result.deleted, updatedBy });
+    return { ok: result.ok, deleted: result.deleted };
+  }
+
+  async createVmComputer(
+    input: ComputerUseVmComputerCreateInput,
+    updatedBy = 'operator',
+  ): Promise<ComputerUseComputerInfo> {
+    const vmHostId = requiredId(input?.vmHostId, 'vmHostId');
+    const name =
+      input?.name === undefined || input?.name === null || String(input.name).trim() === ''
+        ? null
+        : requireVmName(input.name, 'name', MAX_VM_COMPUTER_NAME_LENGTH);
+    const vcpus = optionalVmResource(input?.vcpus, 'vcpus');
+    const memoryMb = optionalVmResource(input?.memoryMb, 'memoryMb');
+    const diskGb = optionalVmResource(input?.diskGb, 'diskGb');
+    const broker = this.requireBroker();
+    // Copying the base image and booting the domain can take minutes.
+    const computer = await broker.createVmComputer({ vmHostId, name, vcpus, memoryMb, diskGb });
+    this.invalidateCaches();
+    this.logger.info('vm computer created', {
+      computerId: computer.id,
+      vmHostId,
+      name,
+      vcpus,
+      memoryMb,
+      diskGb,
+      updatedBy,
+    });
+    return this.mapComputer(this.store.get(), computer);
+  }
+
   checkCall(tool: ToolDescriptor, args: Record<string, unknown>): ComputerUseCallDecision {
     if (this.managedId === null || tool.serverId !== this.managedId) return { allowed: true };
     const availability = this.store.get().availability;
@@ -1005,6 +1109,7 @@ export class DefaultComputerUseService implements ComputerUseService {
       desktop: computer.desktop,
       connector: computer.connector,
       control: computer.control,
+      resources: computer.resources,
       availability: merged,
       liveUrl: liveBase === null ? null : `${liveBase}/#/d/${encodeURIComponent(computer.id)}`,
     };
@@ -1177,6 +1282,107 @@ function buildHostInstallCommand(input: {
     '--backend wayland',
     `--name ${shellQuote(input.name)}`,
   ].join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// Helpers — v0.13.1 VM providers
+// ---------------------------------------------------------------------------
+
+function mapVmHostInfo(host: BrokerVmHostSnapshot): ComputerUseVmHostInfo {
+  return {
+    id: host.id,
+    name: host.name,
+    kind: host.kind,
+    config: host.config,
+    defaults: host.defaults,
+    template: host.template,
+    baseReady: host.baseReady,
+    state: host.state,
+    lastError: host.lastError,
+    createdAt: host.createdAt,
+  };
+}
+
+function requireVmName(value: unknown, field: string, maxLength: number): string {
+  if (typeof value !== 'string') throw invalidParams(`'${field}' is required`);
+  const cleaned = stripControlCharacters(value).replace(/\s+/g, ' ').trim();
+  if (cleaned === '') throw invalidParams(`'${field}' is required`);
+  if (cleaned.length > maxLength) {
+    throw invalidParams(`'${field}' must be at most ${maxLength} characters`);
+  }
+  return cleaned;
+}
+
+function requireVmHostKind(value: unknown): 'libvirt' | 'qemu' {
+  const kind = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!VM_HOST_KINDS.includes(kind)) throw invalidParams("'kind' must be 'libvirt' or 'qemu'");
+  return kind === 'qemu' ? 'qemu' : 'libvirt';
+}
+
+/** Validate/normalise the operator-provided provider config before it reaches the broker. */
+function validateVmHostConfig(kind: 'libvirt' | 'qemu', raw: unknown): ComputerUseVmHostConfigInput {
+  if (!isRecord(raw)) throw invalidParams("'config' must be an object");
+  const baseImage = requireVmConfigString(raw.baseImage, 'config.baseImage');
+  const storageDir = requireVmConfigString(raw.storageDir, 'config.storageDir');
+  const input: ComputerUseVmHostConfigInput = { baseImage, storageDir };
+
+  const sshHost = optionalVmConfigString(raw.sshHost, 'config.sshHost');
+  const sshUser = optionalVmConfigString(raw.sshUser, 'config.sshUser');
+  if (kind === 'libvirt') {
+    if (sshHost === null) throw invalidParams("'config.sshHost' is required for a libvirt VM host");
+    if (/\s/.test(sshHost)) throw invalidParams("'config.sshHost' must not contain whitespace");
+    input.sshHost = sshHost;
+  } else {
+    if (sshHost !== null) throw invalidParams("'config.sshHost' is only valid for a libvirt VM host");
+    if (sshUser !== null) throw invalidParams("'config.sshUser' is only valid for a libvirt VM host");
+  }
+  if (sshUser !== null) {
+    if (/\s/.test(sshUser)) throw invalidParams("'config.sshUser' must not contain whitespace");
+    input.sshUser = sshUser;
+  }
+
+  const network = optionalVmConfigString(raw.network, 'config.network');
+  if (network !== null) input.network = network;
+  const cloudImageUrl = optionalVmConfigString(raw.cloudImageUrl, 'config.cloudImageUrl');
+  if (cloudImageUrl !== null) input.cloudImageUrl = cloudImageUrl;
+  if (raw.installBrowser !== undefined && raw.installBrowser !== null) {
+    if (typeof raw.installBrowser !== 'boolean') throw invalidParams("'config.installBrowser' must be a boolean");
+    input.installBrowser = raw.installBrowser;
+  }
+  if (raw.defaults !== undefined && raw.defaults !== null) {
+    if (!isRecord(raw.defaults)) throw invalidParams("'config.defaults' must be an object");
+    const defaults: Partial<ComputerUseVmHostDefaults> = {};
+    if (raw.defaults.vcpus !== undefined) defaults.vcpus = clampVmResource(raw.defaults.vcpus, 'vcpus');
+    if (raw.defaults.memoryMb !== undefined) defaults.memoryMb = clampVmResource(raw.defaults.memoryMb, 'memoryMb');
+    if (raw.defaults.diskGb !== undefined) defaults.diskGb = clampVmResource(raw.defaults.diskGb, 'diskGb');
+    if (Object.keys(defaults).length > 0) input.defaults = defaults;
+  }
+  return input;
+}
+
+function requireVmConfigString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') throw invalidParams(`'${field}' is required`);
+  return value.trim();
+}
+
+function optionalVmConfigString(value: unknown, field: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw invalidParams(`'${field}' must be a string`);
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/** Clamp one VM resource to the broker's bounds (used for provider defaults). */
+function clampVmResource(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw invalidParams(`'${field}' must be a number`);
+  const limits = VM_RESOURCE_LIMITS[field as keyof typeof VM_RESOURCE_LIMITS];
+  return Math.min(limits.max, Math.max(limits.min, Math.round(value)));
+}
+
+/** Optional per-VM override; omitted means "use the provider defaults". */
+function optionalVmResource(value: unknown, field: 'vcpus' | 'memoryMb' | 'diskGb'): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  return clampVmResource(value, field);
 }
 
 function requiredId(value: string, field: string): string {

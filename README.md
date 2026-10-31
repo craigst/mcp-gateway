@@ -511,7 +511,7 @@ npm run lint           # eslint
 npm run build          # server + UI bundle
 ```
 
-The suite is **979 tests across 101 files**: unit suites per module, an integration suite that
+The suite is **995 tests across 101 files**: unit suites per module, an integration suite that
 boots a real gateway on an ephemeral port and spawns fixture MCP servers, and an end-to-end
 scenario covering vault → git import → catalog → execution → delegation → depth guard → escalation,
 plus jsdom UI tests. CI also builds the Docker image and smoke-tests `/health` inside the container.
@@ -541,7 +541,8 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 | v0.7.0 | Vaultwarden as the default password/API manager, 1Password option, unified Secrets page and password-manager references in configuration profiles | ✅ shipped |
 | v0.8.0 | RBAC API-key console: per-key activity, rename for bot references, pause/resume whole keys, MCP servers or individual tools | ✅ shipped |
 | **v0.9.0** | **Computer use: managed `computer-use` MCP server fronting a self-hosted Computer Broker, console fleet view with live frames, global and per-computer availability with reason/auto-resume, approval-gated destructive calls** | ✅ shipped |
-| **v0.13.0** | **VM providers: register KVM/QEMU hosts (Unraid/libvirt over SSH or local QEMU/KVM), deploy Ubuntu 24.04 cloud-image agent VMs, and manage/control them through the same Computer Use fleet, live viewer, stats and agent tools** | ✅ **current** |
+| **v0.13.1** | **VM providers in the gateway Connectors console: zues (libvirt) and gpc (QEMU/KVM) provider cards, per-provider running-VM attribution, add/test/delete providers and deploy VMs from the gateway UI** | ✅ **current** |
+| **v0.13.0** | **VM providers: register KVM/QEMU hosts (Unraid/libvirt over SSH or local QEMU/KVM), deploy Ubuntu 24.04 cloud-image agent VMs, and manage/control them through the same Computer Use fleet, live viewer, stats and agent tools** | ✅ shipped |
 | **v0.12.0** | **Physical-computer fleet management: one-line bash onboarding for a real PC, live CPU/RAM/disk stats in the console, pushed connector self-update and remote connector removal (service + identity), LAN-only enrolment; replaces the old DeviceBridge loop** | ✅ shipped |
 | **v0.11.0** | **Physical host desktops: register a real Linux PC (KDE Wayland) as a Computer — live frames, per-display views, absolute mouse/keyboard for people and agents; gateway fleet + live-desktop hand-off work unchanged** | ✅ shipped |
 | **v0.10.1** | **Seamless live desktop: gateway mints a one-time broker console sign-in hand-off so "Open live desktop" no longer asks for the broker password; one-time links expire in 60s and are audited** | ✅ shipped |

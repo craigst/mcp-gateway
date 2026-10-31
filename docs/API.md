@@ -1,4 +1,4 @@
-# Gateway API Contract (v0.13.0)
+# Gateway API Contract (v0.13.1)
 
 All JSON bodies are `application/json`. Auth is `Authorization: Bearer <key>` unless noted.
 Admin routes require a **master** key, except audit, delegations, escalations and tools which
@@ -37,7 +37,7 @@ Accepts a single request or a batch (max 20). `id` is echoed verbatim. Notificat
 // result
 {
   "protocolVersion": "2025-06-18",
-  "serverInfo": { "name": "mcp-gateway", "version": "0.13.0" },
+  "serverInfo": { "name": "mcp-gateway", "version": "0.13.1" },
   "capabilities": { "tools": { "listChanged": true }, "logging": {} },
   "_meta": { "gateway": { "key_id": "key_...", "key_type": "agent", "delegation_max_depth": 3 } }
 }
@@ -109,7 +109,7 @@ Depth > `MCP_DELEGATION_MAX_DEPTH` → `-32003`.
 
 | Route | Auth | Response |
 |---|---|---|
-| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.13.0", "uptimeMs": 1234 }` |
+| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.13.1", "uptimeMs": 1234 }` |
 | `GET /mcp/v1/metrics` | any key | `MetricsSnapshot` (see `src/core/ports.ts`) |
 
 ## 3. Admin API
@@ -355,6 +355,23 @@ must be reinstalled once; from 1.1.0 onward the console buttons work.
 `~/.config/computer-broker/connector.env` are intentionally left in place (re-running the
 installer with a fresh token re-pairs the same machine). Without `removeComputer` the broker
 keeps the computer row in `offline` state so it can be re-paired to the same record.
+
+### VM providers (v0.13)
+
+Master-only console APIs for the gateway Connectors page; all are proxied to the broker and use
+the same `ComputerUseVmHostInfo`/`ComputerUseComputerInfo` shapes.
+
+| Method | Route | Body | Result |
+|---|---|---|---|
+| `GET` | `/mcp/v1/admin/computer-use/vm-hosts` | — | `{ "vmHosts": ComputerUseVmHostInfo[] }` |
+| `POST` | `/mcp/v1/admin/computer-use/vm-hosts` | `{ name, kind: "libvirt"\|"qemu", config: { baseImage, storageDir, sshHost?, sshUser?, network?, defaults?, cloudImageUrl?, installBrowser? } }` | `201 { vmHost, test }` — runs the broker base/test check (may take up to 300 s) |
+| `POST` | `/mcp/v1/admin/computer-use/vm-hosts/:id/test` | — | `200 { ok, vmHost, details }` |
+| `DELETE` | `/mcp/v1/admin/computer-use/vm-hosts/:id` | — | `{ ok, deleted }`; `409 vm_host_in_use` while VMs reference it |
+| `POST` | `/mcp/v1/admin/computer-use/computers/vm` | `{ vmHostId, name?, vcpus?, memoryMb?, diskGb? }` | `201 { computer }` (provider `vm`, state `starting`) |
+
+Providers expose `defaults { vcpus, memoryMb, diskGb }`, `baseReady`, `state` and `lastError`.
+Computers carry `resources { vmHostId, vcpus, memoryMb, diskGb }` so the console can group VMs
+under the host running them.
 
 ### Terminal
 

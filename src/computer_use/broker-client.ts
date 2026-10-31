@@ -16,6 +16,11 @@
  *   GET  /api/computers/{id}/stats                 (live host stats)
  *   POST /api/computers/{id}/connector/update      (connector self-update)
  *   DELETE /api/computers/{id}/connector           (remote connector removal)
+ *   GET  /api/vm-hosts                             (VM providers)
+ *   POST /api/vm-hosts {name,kind,config}          (register + test a provider)
+ *   POST /api/vm-hosts/{id}/test                   (re-test a provider)
+ *   DELETE /api/vm-hosts/{id}                      (remove a provider)
+ *   POST /api/computers/vm {vm_host_id,...}        (deploy a VM computer)
  *   POST /mcp                                      (Streamable-HTTP MCP, JSON-RPC)
  *
  * Every authenticated call carries the operator-issued bearer token. The token
@@ -32,11 +37,22 @@ import type {
   BrokerEnrollmentSnapshot,
   BrokerHandoff,
   BrokerHostComputerCreated,
+  BrokerVmHostCreateResult,
+  BrokerVmHostDeleteResult,
+  BrokerVmHostSnapshot,
+  BrokerVmHostTestResult,
   ComputerUseBrokerHealth,
   ComputerUseBrokerPort,
   ComputerUseFrameResult,
 } from '../core/ports.js';
-import type { ComputerUseStats } from '../core/types.js';
+import type {
+  ComputerUseComputerResources,
+  ComputerUseStats,
+  ComputerUseVmComputerCreateInput,
+  ComputerUseVmHostConfig,
+  ComputerUseVmHostConfigInput,
+  ComputerUseVmHostDefaults,
+} from '../core/types.js';
 import { httpRequest, parseJsonBody, type RawHttpResponse } from './http.js';
 
 export interface BrokerClientOptions {
@@ -63,6 +79,14 @@ const HOST_CREATE_TIMEOUT_MS = 30_000;
 const CONNECTOR_UPDATE_TIMEOUT_MS = 240_000;
 /** Remote uninstall waits for the connector to acknowledge and disappear. */
 const CONNECTOR_REMOVE_TIMEOUT_MS = 30_000;
+/** Registering a VM provider runs `ensure_base` + a full backend test. */
+const VM_HOST_BOOTSTRAP_TIMEOUT_MS = 300_000;
+/** Re-testing a provider may also (re)download the base image. */
+const VM_HOST_TEST_TIMEOUT_MS = 300_000;
+/** Removing a provider is a store-only operation on the broker. */
+const VM_HOST_DELETE_TIMEOUT_MS = 60_000;
+/** Deploying a VM copies the base image and defines/boots the domain. */
+const VM_CREATE_TIMEOUT_MS = 300_000;
 
 export class BrokerHttpClient implements ComputerUseBrokerPort {
   readonly baseUrl: string;
@@ -280,6 +304,83 @@ export class BrokerHttpClient implements ComputerUseBrokerPort {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // VM providers and VM deployment (v0.13.1)
+  // -------------------------------------------------------------------------
+
+  async listVmHosts(): Promise<BrokerVmHostSnapshot[]> {
+    const response = await this.request('/api/vm-hosts');
+    const body = parseJsonBody(response.body);
+    if (!Array.isArray(body)) throw brokerShapeError('list vm hosts', body);
+    return body.map((item) => normalizeVmHost(item));
+  }
+
+  async createVmHost(input: {
+    name: string;
+    kind: 'libvirt' | 'qemu';
+    config: ComputerUseVmHostConfigInput;
+  }): Promise<BrokerVmHostCreateResult> {
+    const response = await this.request('/api/vm-hosts', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: input.name,
+        kind: input.kind,
+        config: serializeVmHostConfig(input.config),
+      }),
+      timeoutMs: VM_HOST_BOOTSTRAP_TIMEOUT_MS,
+    });
+    const record = expectObject(parseJsonBody(response.body), 'vm host creation');
+    const hostRecord = record.vm_host ?? record.vmHost;
+    if (!isRecord(hostRecord)) throw brokerShapeError('vm host creation', record);
+    return {
+      vmHost: normalizeVmHost(hostRecord),
+      test: isRecord(record.test) ? record.test : null,
+    };
+  }
+
+  async testVmHost(vmHostId: string): Promise<BrokerVmHostTestResult> {
+    const response = await this.request(`/api/vm-hosts/${encodeURIComponent(vmHostId)}/test`, {
+      method: 'POST',
+      body: '{}',
+      timeoutMs: VM_HOST_TEST_TIMEOUT_MS,
+    });
+    const record = expectObject(parseJsonBody(response.body), 'vm host test');
+    const hostRecord = record.vm_host ?? record.vmHost;
+    if (!isRecord(hostRecord)) throw brokerShapeError('vm host test', record);
+    return {
+      ok: record.ok !== false,
+      vmHost: normalizeVmHost(hostRecord),
+      details: isRecord(record.details) ? record.details : null,
+    };
+  }
+
+  async deleteVmHost(vmHostId: string): Promise<BrokerVmHostDeleteResult> {
+    const response = await this.request(`/api/vm-hosts/${encodeURIComponent(vmHostId)}`, {
+      method: 'DELETE',
+      timeoutMs: VM_HOST_DELETE_TIMEOUT_MS,
+    });
+    const record = expectObject(parseJsonBody(response.body), 'vm host deletion');
+    return {
+      ok: record.ok !== false,
+      deleted: typeof record.deleted === 'string' && record.deleted !== '' ? record.deleted : vmHostId,
+    };
+  }
+
+  async createVmComputer(input: ComputerUseVmComputerCreateInput): Promise<BrokerComputerSnapshot> {
+    const body: Record<string, unknown> = { vm_host_id: input.vmHostId };
+    if (input.name !== undefined && input.name !== null && input.name !== '') body.name = input.name;
+    if (input.vcpus !== undefined) body.vcpus = input.vcpus;
+    if (input.memoryMb !== undefined) body.memory_mb = input.memoryMb;
+    if (input.diskGb !== undefined) body.disk_gb = input.diskGb;
+    const response = await this.request('/api/computers/vm', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      timeoutMs: VM_CREATE_TIMEOUT_MS,
+    });
+    // The broker returns the public computer object directly (201).
+    return normalizeComputer(parseJsonBody(response.body));
+  }
+
   /** One JSON-RPC request against the broker's MCP endpoint. Notifications are fire-and-forget. */
   async rpc(method: string, params?: unknown, timeoutMs?: number): Promise<unknown> {
     const id = this.nextRpcId++;
@@ -391,7 +492,32 @@ export function normalizeComputer(raw: unknown): BrokerComputerSnapshot {
       heldSince: stringOrNull(control.held_since ?? control.heldSince),
       expiresAt: stringOrNull(control.expires_at ?? control.expiresAt),
     },
+    resources: normalizeComputerResources(record.resources),
   };
+}
+
+/**
+ * Normalise a broker computer's `resources` block. VM computers carry the
+ * provider id and sizing (`vm_host_id`, vcpus, memory_mb, disk_gb); container
+ * computers have no VM linkage, so they collapse to null.
+ */
+export function normalizeComputerResources(raw: unknown): ComputerUseComputerResources | null {
+  if (!isRecord(raw)) return null;
+  const resources: ComputerUseComputerResources = {
+    vmHostId: stringOrNull(raw.vm_host_id ?? raw.vmHostId),
+    vcpus: numberOrNull(raw.vcpus),
+    memoryMb: numberOrNull(raw.memory_mb ?? raw.memoryMb),
+    diskGb: numberOrNull(raw.disk_gb ?? raw.diskGb),
+  };
+  if (
+    resources.vmHostId === null &&
+    resources.vcpus === null &&
+    resources.memoryMb === null &&
+    resources.diskGb === null
+  ) {
+    return null;
+  }
+  return resources;
 }
 
 export function normalizeDevice(raw: unknown): BrokerDeviceSnapshot {
@@ -479,6 +605,92 @@ export function normalizeComputerStats(raw: unknown): ComputerUseStats {
 function recordOr(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
+
+// ---------------------------------------------------------------------------
+// VM providers (v0.13.1)
+// ---------------------------------------------------------------------------
+
+export function normalizeVmHost(raw: unknown): BrokerVmHostSnapshot {
+  const record = expectObject(raw, 'vm host');
+  const state = stringOr(record.state, 'new');
+  return {
+    id: requireString(record.id, 'vm host id'),
+    name: stringOr(record.name, 'unnamed'),
+    kind: record.kind === 'qemu' ? 'qemu' : 'libvirt',
+    config: normalizeVmHostConfig(record.config),
+    defaults: normalizeVmHostDefaults(record.defaults ?? recordOr(record.config).defaults),
+    template: stringOr(record.template, 'ubuntu-xfce'),
+    baseReady: record.base_ready === true || record.baseReady === true,
+    state: state === 'ready' || state === 'error' ? state : 'new',
+    lastError: stringOrNull(record.last_error ?? record.lastError),
+    createdAt: stringOrNull(record.created_at ?? record.createdAt),
+  };
+}
+
+export function normalizeVmHostConfig(raw: unknown): ComputerUseVmHostConfig {
+  const record = recordOr(raw);
+  const installBrowser =
+    record.install_browser === true || record.installBrowser === true
+      ? true
+      : record.install_browser === false || record.installBrowser === false
+        ? false
+        : null;
+  return {
+    sshHost: stringOrNull(record.ssh_host ?? record.sshHost),
+    sshUser: stringOrNull(record.ssh_user ?? record.sshUser),
+    host: stringOrNull(record.host),
+    user: stringOrNull(record.user),
+    baseImage: stringOrNull(record.base_image ?? record.baseImage),
+    storageDir: stringOrNull(record.storage_dir ?? record.storageDir),
+    vmDir: stringOrNull(record.vm_dir ?? record.vmDir),
+    network: stringOrNull(record.network),
+    template: stringOrNull(record.template),
+    cloudImageUrl: stringOrNull(record.cloud_image_url ?? record.cloudImageUrl),
+    installBrowser,
+    defaults: isRecord(record.defaults) ? normalizeVmHostDefaults(record.defaults) : null,
+  };
+}
+
+export function normalizeVmHostDefaults(raw: unknown): ComputerUseVmHostDefaults {
+  const record = recordOr(raw);
+  return {
+    vcpus: numberOr(record.vcpus ?? record.vcpu, 2),
+    memoryMb: numberOr(record.memory_mb ?? record.memoryMb, 2_048),
+    diskGb: numberOr(record.disk_gb ?? record.diskGb, 30),
+  };
+}
+
+/** Serialise the console-facing create input to the broker's snake_case config. */
+export function serializeVmHostConfig(input: ComputerUseVmHostConfigInput): Record<string, unknown> {
+  const config: Record<string, unknown> = {
+    base_image: input.baseImage,
+    storage_dir: input.storageDir,
+  };
+  if (input.sshHost !== undefined && input.sshHost !== null && input.sshHost !== '') {
+    config.ssh_host = input.sshHost;
+  }
+  if (input.sshUser !== undefined && input.sshUser !== null && input.sshUser !== '') {
+    config.ssh_user = input.sshUser;
+  }
+  if (input.network !== undefined && input.network !== null && input.network !== '') {
+    config.network = input.network;
+  }
+  if (input.cloudImageUrl !== undefined && input.cloudImageUrl !== null && input.cloudImageUrl !== '') {
+    config.cloud_image_url = input.cloudImageUrl;
+  }
+  if (input.installBrowser !== undefined && input.installBrowser !== null) {
+    config.install_browser = input.installBrowser;
+  }
+  if (input.defaults !== undefined && input.defaults !== null) {
+    const defaults: Record<string, number> = {};
+    if (input.defaults.vcpus !== undefined) defaults.vcpus = input.defaults.vcpus;
+    if (input.defaults.memoryMb !== undefined) defaults.memory_mb = input.defaults.memoryMb;
+    if (input.defaults.diskGb !== undefined) defaults.disk_gb = input.defaults.diskGb;
+    if (Object.keys(defaults).length > 0) config.defaults = defaults;
+  }
+  return config;
+}
+
 
 function firstRecord(value: unknown): unknown {
   return Array.isArray(value) ? value[0] : undefined;

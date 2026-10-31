@@ -1040,6 +1040,21 @@ export interface ComputerUseControlInfo {
   expiresAt: string | null;
 }
 
+/**
+ * Resource sizing/linkage for a computer. Container computers collapse to
+ * null; a VM computer carries the provider that owns it so the console can
+ * group VMs under their VM host. Unknown broker keys are preserved for
+ * forward compatibility.
+ */
+export interface ComputerUseComputerResources {
+  /** VM provider id (`vm_host_id` on the broker) when this is a VM. */
+  vmHostId: string | null;
+  vcpus: number | null;
+  memoryMb: number | null;
+  diskGb: number | null;
+  [key: string]: unknown;
+}
+
 export interface ComputerUseComputerInfo {
   id: string;
   name: string;
@@ -1053,6 +1068,8 @@ export interface ComputerUseComputerInfo {
   desktop: ComputerUseDesktopInfo;
   connector: ComputerUseConnectorInfo | null;
   control: ComputerUseControlInfo;
+  /** Resource sizing/provider linkage; null when the broker reports none. */
+  resources?: ComputerUseComputerResources | null;
   availability: ComputerUseAvailability;
   /** Link to the broker's own live desktop UI, when a public URL is configured. */
   liveUrl: string | null;
@@ -1263,4 +1280,112 @@ export interface ComputerUseConnectorRemoveResult {
   ok: boolean;
   connectorRemoved: boolean;
   computerRemoved: boolean;
+}
+
+
+// ---------------------------------------------------------------------------
+// v0.13.1 — VM providers and VM deployment from the console
+// ---------------------------------------------------------------------------
+
+export type ComputerUseVmHostKind = 'libvirt' | 'qemu';
+export type ComputerUseVmHostState = 'new' | 'ready' | 'error';
+
+/** Resource defaults a VM host applies to a VM that does not override them. */
+export interface ComputerUseVmHostDefaults {
+  vcpus: number;
+  memoryMb: number;
+  diskGb: number;
+}
+
+/**
+ * Non-secret provider config as stored by the broker, normalised to camelCase
+ * for the console. Which fields are populated depends on `kind`: a libvirt
+ * host carries the SSH target; a local QEMU host carries `vmDir`.
+ */
+export interface ComputerUseVmHostConfig {
+  sshHost: string | null;
+  sshUser: string | null;
+  /** Backend target host (libvirt). */
+  host: string | null;
+  /** Backend target user (libvirt). */
+  user: string | null;
+  baseImage: string | null;
+  storageDir: string | null;
+  vmDir: string | null;
+  network: string | null;
+  template: string | null;
+  cloudImageUrl: string | null;
+  installBrowser: boolean | null;
+  defaults: ComputerUseVmHostDefaults | null;
+}
+
+/** One registered VM provider (a libvirt/KVM server or the local QEMU host). */
+export interface ComputerUseVmHostInfo {
+  id: string;
+  name: string;
+  kind: ComputerUseVmHostKind;
+  config: ComputerUseVmHostConfig;
+  defaults: ComputerUseVmHostDefaults;
+  template: string;
+  /** The provider's base image is present and the backend test passed. */
+  baseReady: boolean;
+  state: ComputerUseVmHostState;
+  lastError: string | null;
+  createdAt: string | null;
+}
+
+/** Input to register a VM provider. */
+export interface ComputerUseVmHostCreateInput {
+  name: string;
+  kind: ComputerUseVmHostKind;
+  config: ComputerUseVmHostConfigInput;
+}
+
+/** What the operator supplies to add a VM provider. */
+export interface ComputerUseVmHostConfigInput {
+  /** libvirt: SSH target (`host` or `user@host`); required for libvirt. */
+  sshHost?: string | null;
+  sshUser?: string | null;
+  /** Base cloud image path on the VM host (required). */
+  baseImage: string;
+  /** Directory the provider stores disks/seeds under (required). */
+  storageDir: string;
+  network?: string | null;
+  defaults?: Partial<ComputerUseVmHostDefaults> | null;
+  cloudImageUrl?: string | null;
+  installBrowser?: boolean | null;
+}
+
+/** Result of registering a provider: the stored host plus the bootstrap test. */
+export interface ComputerUseVmHostCreateResult {
+  vmHost: ComputerUseVmHostInfo;
+  test: Record<string, unknown> | null;
+}
+
+/** Result of re-running a provider's backend test. */
+export interface ComputerUseVmHostTestResult {
+  ok: boolean;
+  vmHost: ComputerUseVmHostInfo;
+  details: Record<string, unknown> | null;
+}
+
+/** Result of removing a provider. */
+export interface ComputerUseVmHostDeleteResult {
+  ok: boolean;
+  deleted: string;
+}
+
+/** Console wiring for the VM provider list. */
+export interface ComputerUseVmHostsResponse {
+  vmHosts: ComputerUseVmHostInfo[];
+}
+
+/** Input to deploy a new VM on a registered provider. */
+export interface ComputerUseVmComputerCreateInput {
+  vmHostId: string;
+  /** Display name; the broker generates `vm-xxxxxx` when omitted. */
+  name?: string | null;
+  vcpus?: number;
+  memoryMb?: number;
+  diskGb?: number;
 }

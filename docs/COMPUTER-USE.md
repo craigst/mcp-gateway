@@ -715,11 +715,16 @@ of containers on the broker machine. Two provider kinds are supported:
   no libvirt required, but the base image must be pre-sized to the largest VM disk because the
   host has no `qemu-img`.
 
-Register a provider and deploy VMs in the **broker console** (Fleet → VM providers → Add VM
-provider, then Deploy VM). The gateway discovers the resulting computers automatically: they
-appear in **Computer Use** with `provider: vm`, a `frames` viewer, live preview, Start/Stop,
-stats and the same **Open live desktop** hand-off. VM creation is a broker operation — the
-gateway does not create providers itself.
+Register a provider and deploy VMs from either console:
+- **Gateway → Connectors → VM providers** (v0.13.1) lists the registered providers (zues/gpc),
+  their base-image readiness, defaults and **which VMs each host is running**, with Add/Test/
+  Delete provider and Deploy VM actions.
+- **Broker console → Fleet → VM providers** offers the same provider/deploy controls.
+
+The resulting VMs appear in the gateway **Computer Use** fleet with `provider: vm`, a `frames`
+viewer, live preview, Start/Stop, stats and the same **Open live desktop** hand-off. All VM
+provider operations are proxied through the gateway admin API to the broker; the broker remains
+the authority for VM lifecycle.
 
 Each VM boots an Ubuntu 24.04 cloud image with Xvfb + Xfce (optionally Chrome via the
 provider's install-browser option), installs the broker connector from the seed, and becomes
