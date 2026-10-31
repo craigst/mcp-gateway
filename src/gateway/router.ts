@@ -1,5 +1,6 @@
 import { ErrorCodes, GatewayError, accessDenied, asGatewayError, invalidParams, toolNotFound } from '../core/errors.js';
 import { newRequestId } from '../core/ids.js';
+import { ToolNameIndex } from '../catalog/names.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { GatewayConfig } from '../core/config.js';
 import type {
@@ -41,7 +42,7 @@ export interface RouterDeps {
 }
 
 const PROTOCOL_VERSION = '2025-06-18';
-const GATEWAY_VERSION = '0.13.1';
+const GATEWAY_VERSION = '0.14.0';
 
 /**
  * JSON-RPC method dispatch. Authorization, audit recording and escalation
@@ -107,6 +108,7 @@ export class JsonRpcRouter {
           const visibleTools = listed.tools.filter((tool) => !this.deps.policy.isServerPaused(key, tool.server_id));
           const tools = visibleTools.map((tool) => ({
             name: tool.name,
+            ...(tool.upstream_name === undefined ? {} : { upstream_name: tool.upstream_name }),
             description: tool.description,
             inputSchema: tool.inputSchema,
             server_id: tool.server_id,
@@ -483,19 +485,26 @@ export class JsonRpcRouter {
   /** Resolve a tool name to a visible tool, enforcing anti-probing semantics. */
   private resolveTool(key: AuthenticatedKey, name: string, serverId?: string): ToolDescriptor {
     const repository = this.deps.catalog.repository;
+    const index = new ToolNameIndex(repository.listTools(), repository.listServers());
     // Server-level grants are checked FIRST so an unpermitted server can never
     // leak tool existence (including high-privilege tools) through denials.
-    const candidates = (
-      serverId
-        ? repository.listToolsByServer(serverId)
-        : repository.listTools()
-    ).filter(
-      (tool) =>
-        (tool.name === name || tool.id === name) && this.deps.policy.isServerPermitted(key, tool.serverId),
-    );
+    const candidates = index
+      .resolve(name, serverId)
+      .filter((tool) => this.deps.policy.isServerPermitted(key, tool.serverId));
 
-    const visible = candidates.find((tool) => this.deps.policy.isToolPermitted(key, tool));
-    if (visible) return visible;
+    const visible = candidates.filter((tool) => this.deps.policy.isToolPermitted(key, tool));
+    if (visible.length === 1) return visible[0]!;
+    if (visible.length > 1) {
+      // Never pick the first match: `send_email` on four mailboxes is a
+      // confidentiality bug, not a convenience. Tell the caller how to qualify.
+      const qualified = candidates
+        .map((tool) => index.exposedName(tool))
+        .filter((exposed) => exposed !== name);
+      throw invalidParams(
+        `Tool name '${name}' is ambiguous; use one of: ${qualified.join(', ')}.`,
+        { candidates: qualified },
+      );
+    }
 
     const hiddenHighPrivilege = candidates.find((tool) => tool.highPrivilege);
     if (hiddenHighPrivilege) {

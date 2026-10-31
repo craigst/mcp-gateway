@@ -1,0 +1,28 @@
+# WireGuard-only deployment next to OpenMausBot on the USA VPS.
+#
+# OMB reaches the gateway at http://mcp-gateway:8080 (shared Docker network);
+# WG clients reach it at http://10.10.1.4:8484. Nothing is published publicly.
+services:
+  gateway:
+    image: localhost/mcp-gateway:0.14.0
+    container_name: mcp-gateway
+    restart: unless-stopped
+    env_file:
+      - ./gateway.env
+    ports:
+      - "127.0.0.1:8484:8080"
+      - "10.10.1.4:8484:8080"
+    volumes:
+      - ./data:/data
+      - ./certs:/certs:ro
+    networks:
+      default: {}
+      openmausbot_default:
+        aliases:
+          - mcp-gateway
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  openmausbot_default:
+    external: true

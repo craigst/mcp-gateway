@@ -1,4 +1,4 @@
-# Gateway API Contract (v0.13.1)
+# Gateway API Contract (v0.14.0)
 
 All JSON bodies are `application/json`. Auth is `Authorization: Bearer <key>` unless noted.
 Admin routes require a **master** key, except audit, delegations, escalations and tools which
@@ -37,7 +37,7 @@ Accepts a single request or a batch (max 20). `id` is echoed verbatim. Notificat
 // result
 {
   "protocolVersion": "2025-06-18",
-  "serverInfo": { "name": "mcp-gateway", "version": "0.13.1" },
+  "serverInfo": { "name": "mcp-gateway", "version": "0.14.0" },
   "capabilities": { "tools": { "listChanged": true }, "logging": {} },
   "_meta": { "gateway": { "key_id": "key_...", "key_type": "agent", "delegation_max_depth": 3 } }
 }
@@ -58,6 +58,13 @@ Accepts a single request or a batch (max 20). `id` is echoed verbatim. Notificat
   "total": 1
 }
 ```
+
+**Collision-safe names.** If two servers publish the same bare tool name, every
+one of them is exposed as `<server-slug>__<tool>` (e.g. `email-work__send_email`,
+`email-mum__send_email`). The `upstream_name` field is present only when the
+exposed name differs. `tools/call` accepts the exposed name, the tool id, or the
+bare name; a bare name with more than one permitted candidate fails with
+`-32602` and `data.details.candidates` listing the qualified names.
 
 ### `tools/search`
 ```jsonc
@@ -109,7 +116,7 @@ Depth > `MCP_DELEGATION_MAX_DEPTH` → `-32003`.
 
 | Route | Auth | Response |
 |---|---|---|
-| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.13.1", "uptimeMs": 1234 }` |
+| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.14.0", "uptimeMs": 1234 }` |
 | `GET /mcp/v1/metrics` | any key | `MetricsSnapshot` (see `src/core/ports.ts`) |
 
 ## 3. Admin API

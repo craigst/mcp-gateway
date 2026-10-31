@@ -4,6 +4,9 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 
 const LOG_LEVELS: readonly string[] = ['debug', 'info', 'warn', 'error', 'silent'];
 
+/** Approval-gated computer-use tools unless MCP_COMPUTER_APPROVAL_REQUIRED_TOOLS overrides. */
+const DEFAULT_COMPUTER_APPROVAL_TOOLS: readonly string[] = ['destroy_computer', 'device_exec'];
+
 /**
  * Computer Broker (computer use) configuration.
  *
@@ -30,6 +33,14 @@ export interface ComputerUseConfig {
    * to the public broker URL when unset.
    */
   installBaseUrl: string | null;
+  /**
+   * Computer-use tools that additionally require a supervisor approval ticket
+   * (MCP_COMPUTER_APPROVAL_REQUIRED_TOOLS, comma-separated). Defaults to
+   * `destroy_computer,device_exec`; an explicitly empty value disables all
+   * per-call approvals. The managed server row is rebuilt from this on every
+   * boot/sync, so changing it in SQLite alone does not survive.
+   */
+  approvalRequiredTools?: string[];
 }
 
 export interface GatewayConfig {
@@ -140,6 +151,10 @@ function loadComputerUse(env: NodeJS.ProcessEnv): ComputerUseConfig {
     publicBrokerUrl,
     caFile: trimOrNull(env.MCP_COMPUTER_BROKER_CA),
     installBaseUrl: httpBaseUrlOrNull(env.MCP_COMPUTER_INSTALL_BASE_URL, 'MCP_COMPUTER_INSTALL_BASE_URL'),
+    approvalRequiredTools:
+      env.MCP_COMPUTER_APPROVAL_REQUIRED_TOOLS === undefined
+        ? [...DEFAULT_COMPUTER_APPROVAL_TOOLS]
+        : boolList(env.MCP_COMPUTER_APPROVAL_REQUIRED_TOOLS),
   };
 }
 

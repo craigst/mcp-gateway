@@ -49,10 +49,16 @@ function normalizeLimit(limit: number): number {
   return Math.min(Math.max(0, Math.trunc(limit)), MAX_SEARCH_LIMIT);
 }
 
-function toResult(tool: ToolDescriptor, score: number): ToolSearchResult['tools'][number] {
+function toResult(
+  tool: ToolDescriptor,
+  score: number,
+  nameOf: (tool: ToolDescriptor) => string,
+): ToolSearchResult['tools'][number] {
+  const name = nameOf(tool);
   return {
     id: tool.id,
-    name: tool.name,
+    name,
+    ...(name === tool.name ? {} : { upstream_name: tool.name }),
     description: tool.description,
     server_id: tool.serverId,
     score,
@@ -63,13 +69,14 @@ export function rankTools(
   tools: ToolDescriptor[],
   query: string,
   limit: number,
+  nameOf: (tool: ToolDescriptor) => string = (tool) => tool.name,
 ): ToolSearchResult['tools'] {
   const normalizedLimit = normalizeLimit(limit);
   if (normalizedLimit === 0) return [];
 
   // Empty query: the whole (already scope-filtered) catalog, original order, score 0.
   if (query.trim() === '' || tokenize(query).length === 0) {
-    return tools.slice(0, normalizedLimit).map((tool) => toResult(tool, 0));
+    return tools.slice(0, normalizedLimit).map((tool) => toResult(tool, 0, nameOf));
   }
 
   const scored = tools
@@ -82,5 +89,5 @@ export function rankTools(
     return a.index - b.index;
   });
 
-  return scored.slice(0, normalizedLimit).map(({ tool, score }) => toResult(tool, score));
+  return scored.slice(0, normalizedLimit).map(({ tool, score }) => toResult(tool, score, nameOf));
 }

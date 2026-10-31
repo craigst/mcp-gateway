@@ -300,6 +300,8 @@ export interface ToolSearchResult {
   tools: Array<{
     id: string;
     name: string;
+    /** Present only when the exposed name differs from the upstream bare name. */
+    upstream_name?: string;
     description: string;
     server_id: string;
     score: number;

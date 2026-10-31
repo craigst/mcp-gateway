@@ -21,7 +21,7 @@ ENV NODE_ENV=production \
 # Multi-runtime pool: Node (image), Python via uv, git for the import engine,
 # and native binaries can execute directly.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git python3 python3-venv curl ca-certificates \
+ && apt-get install -y --no-install-recommends git python3 python3-venv curl ca-certificates openssh-client \
  && curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
  && rm -rf /var/lib/apt/lists/* /root/.cache
 

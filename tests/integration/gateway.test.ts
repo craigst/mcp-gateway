@@ -165,7 +165,7 @@ describe('gateway integration (live HTTP + stdio sub-server)', () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as { status: string; version: string };
     expect(body.status).toBe('ok');
-    expect(body.version).toBe('0.13.1');
+    expect(body.version).toBe('0.14.0');
   });
 
   it('rejects requests without a key (HTTP 401)', async () => {
@@ -192,14 +192,24 @@ describe('gateway integration (live HTTP + stdio sub-server)', () => {
   it('master key sees the complete catalog including high-privilege tools', async () => {
     const { body } = await rpc(masterKey, 'tools/list');
     const names = (body.result.tools as Array<{ name: string }>).map((tool) => tool.name);
-    expect(body.result.total).toBeGreaterThanOrEqual(5);
-    expect(names).toEqual(expect.arrayContaining(['echo', 'add', 'danger_delete', 'fail', 'slow']));
+    expect(body.result.total).toBeGreaterThanOrEqual(10);
+    // Two servers publish the same tool names, so every one is qualified.
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'echo__echo',
+        'echo__add',
+        'echo__danger_delete',
+        'echo__fail',
+        'echo__slow',
+        'echo_two__echo',
+      ]),
+    );
   });
 
   it('masks high-privilege and ungranted tools from an agent key', async () => {
     const { body } = await rpc(agentKey, 'tools/list');
     const names = (body.result.tools as Array<{ name: string }>).map((tool) => tool.name);
-    expect(names.sort()).toEqual(['add', 'echo', 'fail']);
+    expect(names.sort()).toEqual(['echo__add', 'echo__echo', 'echo__fail']);
     expect(names).not.toContain('danger_delete');
     expect(names).not.toContain('slow');
   });
@@ -211,7 +221,7 @@ describe('gateway integration (live HTTP + stdio sub-server)', () => {
 
     const echo = await rpc(agentKey, 'tools/search', { query: 'echo text', limit: 10 });
     expect(echo.body.result.total).toBe(1);
-    expect(echo.body.result.tools[0].name).toBe('echo');
+    expect(echo.body.result.tools[0].name).toBe('echo__echo');
   });
 
   it('returns zero-trust server menu', async () => {

@@ -48,7 +48,7 @@ export class HttpMcpClient implements McpClient {
     const result = await this.request<McpInitializeResult>('initialize', {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: this.options.clientInfo ?? { name: 'mcp-gateway', version: '0.13.1' },
+      clientInfo: this.options.clientInfo ?? { name: 'mcp-gateway', version: '0.14.0' },
     });
     this.serverInfo = result?.serverInfo ?? this.serverInfo;
     this.notify('notifications/initialized', {});

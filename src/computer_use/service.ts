@@ -873,7 +873,7 @@ export class DefaultComputerUseService implements ComputerUseService {
       sourceUrl: null,
       workDir: null,
       envFile: null,
-      approvalRequiredTools: [...APPROVAL_REQUIRED_TOOLS],
+      approvalRequiredTools: this.approvalRequiredTools(),
       configProfileIds: [],
       capabilities: existing?.capabilities,
       instructions: existing?.instructions ?? null,
@@ -886,6 +886,11 @@ export class DefaultComputerUseService implements ComputerUseService {
     };
     this.repository.upsertServer(record);
     this.managedId = record.id;
+  }
+
+  /** Approval gate from config; the managed row is rebuilt from this every sync. */
+  private approvalRequiredTools(): string[] {
+    return this.options.config.computerUse?.approvalRequiredTools ?? [...APPROVAL_REQUIRED_TOOLS];
   }
 
   private managedServerRecord(): ServerRecord | null {

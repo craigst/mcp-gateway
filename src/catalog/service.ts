@@ -16,6 +16,7 @@ import type {
   ToolSearchResult,
 } from '../core/types.js';
 import { rankTools } from './search.js';
+import { ToolNameIndex } from './names.js';
 
 export class DefaultCatalogService implements CatalogService {
   readonly repository: CatalogRepository;
@@ -26,10 +27,16 @@ export class DefaultCatalogService implements CatalogService {
     this.policy = policy;
   }
 
+  /** A stable name index over the whole catalog (never per key). */
+  private nameIndex(): ToolNameIndex {
+    return new ToolNameIndex(this.repository.listTools(), this.repository.listServers());
+  }
+
   /** CENSORED: filter by key scope before ranking; high-privilege tools stay hidden. */
   searchTools(key: AuthenticatedKey, query: string, limit: number): ToolSearchResult {
+    const index = this.nameIndex();
     const visible = this.repository.listTools().filter((tool) => this.policy.isToolPermitted(key, tool));
-    const tools = rankTools(visible, query, limit);
+    const tools = rankTools(visible, query, limit, (tool) => index.exposedName(tool));
     return { tools, total: tools.length, censored: true };
   }
 
@@ -41,6 +48,7 @@ export class DefaultCatalogService implements CatalogService {
     tools: Array<{
       id: string;
       name: string;
+      upstream_name?: string;
       description: string;
       server_id: string;
       inputSchema: JsonSchema;
@@ -48,17 +56,22 @@ export class DefaultCatalogService implements CatalogService {
     total: number;
   } {
     const serverId = options?.serverId;
+    const index = this.nameIndex();
     const tools = this.repository
       .listTools()
       .filter((tool) => (serverId === undefined ? true : tool.serverId === serverId))
       .filter((tool) => this.policy.isToolPermitted(key, tool))
-      .map((tool) => ({
-        id: tool.id,
-        name: tool.name,
-        description: tool.description,
-        server_id: tool.serverId,
-        inputSchema: tool.inputSchema,
-      }));
+      .map((tool) => {
+        const name = index.exposedName(tool);
+        return {
+          id: tool.id,
+          name,
+          ...(name === tool.name ? {} : { upstream_name: tool.name }),
+          description: tool.description,
+          server_id: tool.serverId,
+          inputSchema: tool.inputSchema,
+        };
+      });
     return { tools, total: tools.length };
   }
 

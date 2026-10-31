@@ -189,7 +189,18 @@ export interface CatalogService {
   listTools(
     key: AuthenticatedKey,
     options?: { serverId?: string },
-  ): { tools: Array<{ id: string; name: string; description: string; server_id: string; inputSchema: JsonSchema }>; total: number };
+  ): {
+    tools: Array<{
+      id: string;
+      name: string;
+      /** Present only when the exposed name differs from the upstream bare name. */
+      upstream_name?: string;
+      description: string;
+      server_id: string;
+      inputSchema: JsonSchema;
+    }>;
+    total: number;
+  };
   /** ZERO-TRUST server menu. */
   listPermittedServers(key: AuthenticatedKey): PermittedServerSummary[];
   /** Returns the tool only when the key may see it, else null (anti-probing). */
