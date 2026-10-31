@@ -31,6 +31,14 @@ the device fleet still need their waves. This is the plan for those waves.
   rows with one gateway row (`dsh-cleo-web`, `dsh-cleo-split`,
   `dsh-cleo-headless`). `console` stays stdio because its facade does not bind
   while the Odysseus console singleton is running.
+- **OMB OpenCode fix (2026-10-31 23:57):** the free Zen model
+  (`opencode/beam-free`) had hit its free-usage limit, not a gateway or MCP
+  fault. The DeepSeek key was added as an OpenCode provider key
+  (`opencodeGo.providerKeys.DEEPSEEK_API_KEY`) and Remy/Nora were moved to
+  `deepseek/deepseek-flash`. A test webhook run then completed in 8.4 s with
+  `llm.provider=deepseek llm.model=deepseek-flash`; its reply listed the
+  WhatsApp read tools and confirmed no send tools. Backup:
+  `/opt/mcp-gateway/backups/omb-opencode-20261031T235651Z`.
 - New HTTP facades on cleo: ssh 8816, n8n 8817, media 8818, media-devices 8819.
   `media-devices` needs the hub's `cleo-messages`/`cleo-media-registry` units,
   which are not installed on cleo, so bus-dependent tools return `Connection
