@@ -4,7 +4,7 @@
 # WG clients reach it at http://10.10.1.4:8484. Nothing is published publicly.
 services:
   gateway:
-    image: localhost/mcp-gateway:0.14.0
+    image: localhost/mcp-gateway:0.14.1
     container_name: mcp-gateway
     restart: unless-stopped
     env_file:

@@ -35,8 +35,8 @@ then `unable to verify the first certificate`).
 
 ```bash
 # on gpc (this checkout)
-npm run build && podman build -t localhost/mcp-gateway:0.14.0 .
-podman save localhost/mcp-gateway:0.14.0 | ssh root@10.10.1.4 'docker load'
+npm run build && podman build -t localhost/mcp-gateway:0.14.1 .
+podman save localhost/mcp-gateway:0.14.1 | ssh root@10.10.1.4 'docker load'
 
 # on the VPS
 install -d -m 700 /opt/mcp-gateway/{data,certs,backups}
@@ -102,6 +102,20 @@ The cutover stops the compose project (Caddy shares OMB's netns), rewrites
 `config.json` and `bots.json` atomically as uid 1001, starts it again, waits for
 `/api/health`, and asserts `/api/mcp/servers` shows exactly the 11 gateway
 entries.
+
+## DSH-only facades
+
+The OMB facades cover 20 servers; DSH also used `ssh`, `n8n`, `media` and
+`media-devices` directly over stdio. `scripts/vps/create_dsh_facades.sh` creates
+HTTP facades for them on cleo (ports 8816-8819) with per-facade API keys. Register
+those as gateway servers exactly like the OMB ones, then give the DSH key the
+extra servers. `console` (Odysseus, port 8820) is intentionally left out: it does
+not bind while the Odysseus console singleton is running.
+
+`media-devices` needs the hub's message/registry units (`cleo-messages`,
+`cleo-media-registry`); those are not installed on cleo, so the tools that need
+the bus return `Connection refused` even though the facade is healthy. The plain
+media-bridge tools (`media_probe`, TV/Kodi) work.
 
 ## Verification
 

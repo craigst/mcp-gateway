@@ -42,7 +42,7 @@ export interface RouterDeps {
 }
 
 const PROTOCOL_VERSION = '2025-06-18';
-const GATEWAY_VERSION = '0.14.0';
+const GATEWAY_VERSION = '0.14.1';
 
 /**
  * JSON-RPC method dispatch. Authorization, audit recording and escalation
@@ -372,6 +372,31 @@ export class JsonRpcRouter {
       }
       throw gatewayError;
     } finally {
+      // One structured line per tool call: which bot key reached which upstream
+      // MCP server and tool. No arguments (they may carry secrets); the audit
+      // row keeps the payload for the operator.
+      if (request.method === 'tools/call') {
+        const callParams = request.params;
+        const requestedName =
+          callParams !== null && typeof callParams === 'object' && !Array.isArray(callParams)
+            ? (callParams as { name?: unknown }).name
+            : undefined;
+        const serverName =
+          serverId === null ? null : this.deps.catalog.repository.getServer(serverId)?.name ?? serverId;
+        const toolName =
+          toolId === null
+            ? (typeof requestedName === 'string' ? requestedName : null)
+            : this.deps.catalog.repository.getTool(toolId)?.name ?? toolId;
+        this.logger.info('tool call', {
+          key: ctx.key?.name ?? null,
+          keyType: ctx.key?.keyType ?? null,
+          server: serverName,
+          tool: toolName,
+          status,
+          latency_ms: Number((performance.now() - started).toFixed(2)),
+          ...(denialReason === null ? {} : { reason: denialReason }),
+        });
+      }
       if (!isNotification || status !== 'ok') {
         try {
           this.deps.audit.record({
