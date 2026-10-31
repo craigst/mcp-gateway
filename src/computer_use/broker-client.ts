@@ -442,7 +442,7 @@ export function normalizeComputerStats(raw: unknown): ComputerUseStats {
   return {
     hostname: stringOr(record.hostname ?? record.host, 'unknown'),
     os: stringOr(record.os ?? record.platform ?? record.distro, 'unknown'),
-    uptimeSeconds: numberOrNull(record.uptime_seconds ?? record.uptimeSeconds ?? record.uptime),
+    uptimeSeconds: numberOrNull(record.uptime_seconds ?? record.uptimeSeconds ?? record.uptime_s ?? record.uptime),
     load: numberArray(record.load ?? record.load_avg ?? record.loadavg),
     cpu: {
       cores: numberOr(cpu.cores ?? record.cores ?? record.cpu_count, 0),

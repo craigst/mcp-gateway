@@ -704,6 +704,34 @@ no stats/update/remove; reinstall it once with the one-line command (or the exis
 installer). Device connectors (shell/files/terminal) are separate from host-computer
 connectors; the Physical computers panel only manages the latter.
 
+### VM providers (v0.13)
+
+The broker can deploy agent computers as **full VMs** on registered KVM/QEMU hosts, instead
+of containers on the broker machine. Two provider kinds are supported:
+
+- `libvirt` — a remote Linux host over SSH (for example the Unraid **zues** server: `root@zues`,
+  `virsh` + `qemu-img`), with qcow2 overlays of an Ubuntu cloud image.
+- `qemu` — the broker host's own `/dev/kvm` using `qemu-system-x86_64` (for example **gpc**);
+  no libvirt required, but the base image must be pre-sized to the largest VM disk because the
+  host has no `qemu-img`.
+
+Register a provider and deploy VMs in the **broker console** (Fleet → VM providers → Add VM
+provider, then Deploy VM). The gateway discovers the resulting computers automatically: they
+appear in **Computer Use** with `provider: vm`, a `frames` viewer, live preview, Start/Stop,
+stats and the same **Open live desktop** hand-off. VM creation is a broker operation — the
+gateway does not create providers itself.
+
+Each VM boots an Ubuntu 24.04 cloud image with Xvfb + Xfce (optionally Chrome via the
+provider's install-browser option), installs the broker connector from the seed, and becomes
+`ready` when it enrols (typically 3–8 minutes; the card stays `starting` while cloud-init
+runs). VMs use NAT networking: they reach the broker outbound and expose no inbound ports.
+The control lease, keyboard bar, pointer handling, stats and agent `computer_*` tools are
+identical to other frames computers. One synthetic display (1280×800) is exposed; there is
+no multi-display or GPU passthrough on VMs yet, and no snapshots/clones.
+
+See the broker repo's `docs/VM-PROVIDERS.md` for provider configs, base-image preparation,
+API (`/api/vm-hosts`, `/api/computers/vm`) and limits.
+
 ## Runbook / failure modes
 
 | Symptom | Likely cause | Action |
