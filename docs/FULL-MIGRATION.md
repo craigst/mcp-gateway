@@ -1,8 +1,9 @@
 # Full migration: every agent uses only the MCP gateway
 
-Status: **OMB and this DSH desktop are done**; the developer harnesses, the
-ai-messenger/Odysseus/CubeFarm/n8n agents, the server runtimes and the device
-fleet still need their waves. This is the plan for those waves.
+Status (2026-10-31): **OMB, the gpc DSH, and the cleo DSH web / split-sandbox /
+headless profiles are on the gateway.** The developer harnesses (Claude Code,
+opencode), the ai-messenger/Odysseus/CubeFarm/n8n agents, the server runtimes and
+the device fleet still need their waves. This is the plan for those waves.
 
 ## 1. Goal and invariants
 
@@ -19,13 +20,31 @@ fleet still need their waves. This is the plan for those waves.
 6. Rollback is per wave: the old config and old upstream key stay valid until
    the wave's acceptance gate passes.
 
+## 0. Executed so far (2026-10-31)
+
+- Gateway **v0.14.1** on the VPS: **25 servers**, 650 tools, all running; one
+  structured `tool call` log line per call (key/server/tool/status/latency).
+- OMB: 11 per-bot keys, 11 entries, `verify_per_bot.py` 11/11 pass (key matches
+  entry, only its own servers, one denied probe each, audit attribution).
+- gpc DSH: `dsh-harness-vps2`, 25 servers/650 tools; ssh/n8n/media facades added.
+- cleo DSH: `web`/`split-sandbox`/`headless` profiles replaced their stdio MCP
+  rows with one gateway row (`dsh-cleo-web`, `dsh-cleo-split`,
+  `dsh-cleo-headless`). `console` stays stdio because its facade does not bind
+  while the Odysseus console singleton is running.
+- New HTTP facades on cleo: ssh 8816, n8n 8817, media 8818, media-devices 8819.
+  `media-devices` needs the hub's `cleo-messages`/`cleo-media-registry` units,
+  which are not installed on cleo, so bus-dependent tools return `Connection
+  refused`; `media_probe`/Kodi tools work. `n8n`'s 207-char legacy API key is
+  rejected by n8n (401) — a pre-existing key issue, not the facade.
+
 ## 2. Current state (2026-10-31)
 
 | Agent | Host | Config | Today | Status |
 |---|---|---|---|---|
 | 11 OMB bots | VPS | `/data/.openmausbot/{config,bots}.json` | 11 `gateway-<bot>` entries, one key each | **done** |
 | DSH desktop | gpc | `~/.dsh/profiles/desktop/cordis.patch.yml` | `http://10.10.1.4:8484/mcp/v1` | **done** |
-| DSH web / headless / split-sandbox | cleo | `~/.dsh/profiles/*/cordis.patch.yml` | direct rows and `BRAIN_URL` | wave 1 |
+| DSH web / split-sandbox | cleo | `~/.dsh/profiles/*/cordis.patch.yml` | one `gateway` row + the local `console` row | **done (console exception)** |
+| DSH headless | cleo | `~/.dsh/profiles/headless/cordis.patch.yml` | one `gateway` row (brain-only key) | **done** |
 | Claude Code | gpc, cleo | `~/.claude.json` | `qdrant`, `credcheck`, `vault`, `mobile-mcp`, `godot` | wave 1 |
 | opencode | gpc, cleo | `~/.config/opencode/opencode.json` | 18 MCP servers (`n8n`, `homeassistant`, `postgres`, `searxng`, `adguard`, `unifi`, `cloudflare`, `ssh`, …) | wave 1 |
 | Odysseus app | cleo | app config / SQLite | connectors and tool rows | wave 2 |
