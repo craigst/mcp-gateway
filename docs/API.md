@@ -1,4 +1,4 @@
-# Gateway API Contract (v0.11.0)
+# Gateway API Contract (v0.12.0)
 
 All JSON bodies are `application/json`. Auth is `Authorization: Bearer <key>` unless noted.
 Admin routes require a **master** key, except audit, delegations, escalations and tools which
@@ -37,7 +37,7 @@ Accepts a single request or a batch (max 20). `id` is echoed verbatim. Notificat
 // result
 {
   "protocolVersion": "2025-06-18",
-  "serverInfo": { "name": "mcp-gateway", "version": "0.11.0" },
+  "serverInfo": { "name": "mcp-gateway", "version": "0.12.0" },
   "capabilities": { "tools": { "listChanged": true }, "logging": {} },
   "_meta": { "gateway": { "key_id": "key_...", "key_type": "agent", "delegation_max_depth": 3 } }
 }
@@ -109,7 +109,7 @@ Depth > `MCP_DELEGATION_MAX_DEPTH` → `-32003`.
 
 | Route | Auth | Response |
 |---|---|---|
-| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.11.0", "uptimeMs": 1234 }` |
+| `GET /mcp/v1/health` | none | `{ "status": "ok", "version": "0.12.0", "uptimeMs": 1234 }` |
 | `GET /mcp/v1/metrics` | any key | `MetricsSnapshot` (see `src/core/ports.ts`) |
 
 ## 3. Admin API
@@ -317,6 +317,44 @@ the new machine must be able to reach it — without one the request fails with 
 error. `GET /` is also the polling source for the wizard: it reports the same
 `publicBrokerUrl` and the current pending `enrollments`, so the console can detect the new
 device appearing after the token is claimed.
+
+### Physical computers (v0.12)
+
+Host computers (a real Linux PC, not a broker-provisioned container) are created and managed
+through these console-only routes. They are **master-only**, like the connector routes above.
+
+| Method | Route | Body | Result |
+|---|---|---|---|
+| `POST` | `/mcp/v1/admin/computer-use/connectors/computers` | `{ "name": "studio-pc" }` | `ComputerUseHostComputer` — the broker computer plus a one-time `install.command` |
+| `GET` | `/mcp/v1/admin/computer-use/computers/:id/stats` | — | `ComputerUseStats` — hostname, OS, uptime, load, CPU, memory, swap, disk, IPv4 addresses |
+| `POST` | `/mcp/v1/admin/computer-use/computers/:id/connector/update` | — | `ComputerUseConnectorUpdateResult` — pushes the current connector build to the PC (up to ~240 s; the connector restarts itself) |
+| `DELETE` | `/mcp/v1/admin/computer-use/computers/:id/connector` | `{ "removeComputer"?: boolean }` | `ComputerUseConnectorRemoveResult` — remotely disables/stops the connector service and deletes its identity; `removeComputer` also destroys the broker computer record |
+
+The one-line installer is built from `MCP_COMPUTER_INSTALL_BASE_URL` (the gateway/broker LAN
+address, e.g. `https://10.10.1.4:7443`), falling back to the configured public broker URL.
+It is intended to be run on the new PC **inside its desktop session**, because the connector
+captures `WAYLAND_DISPLAY`, `DISPLAY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` and
+`XAUTHORITY` so its systemd `--user` service can drive the graphical session. The token is
+single-use and expires (15 minutes by default); the PC appears in the fleet as soon as the
+connector enrols.
+
+The broker also enforces a **local-network-only** gate on enrollment and the public installer
+routes (`POST /api/enrollments`, `POST /api/computers/host`, `/install/*`): non-local source
+addresses get `403 local_network_required`. Operators can widen the allow-list with
+`BRK_ENROLL_ALLOW_CIDRS` on the broker, or disable the gate with `BRK_ENROLL_LOCAL_ONLY=false`.
+
+Connector updates are server-pushed: the broker builds a source-only bundle of the connector
+package, computes its sha256, and asks the running connector to download it through a
+single-use update token. The connector verifies the hash, installs dependencies, atomically
+swaps its package directory, replies, and exits with status 1 so its systemd unit restarts it
+with the new code. Connectors older than **1.1.0** do not understand the update/remove ops and
+must be reinstalled once; from 1.1.0 onward the console buttons work.
+
+`DELETE .../connector` is irreversible on the PC: the connector's identity is deleted and
+`computer-broker-connector-<kind>.service` is disabled. The package, venv and
+`~/.config/computer-broker/connector.env` are intentionally left in place (re-running the
+installer with a fresh token re-pairs the same machine). Without `removeComputer` the broker
+keeps the computer row in `offline` state so it can be re-paired to the same record.
 
 ### Terminal
 

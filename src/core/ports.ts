@@ -36,11 +36,17 @@ import type {
   ComputerUseAvailabilityInput,
   ComputerUseComputerInfo,
   ComputerUseComputersResponse,
+  ComputerUseConnectorRemoveInput,
+  ComputerUseConnectorRemoveResult,
+  ComputerUseConnectorUpdateResult,
   ComputerUseConnectorsResponse,
   ComputerUseEnrollmentInput,
   ComputerUseEnrollmentResponse,
+  ComputerUseHostComputer,
+  ComputerUseHostComputerInput,
   ComputerUseOverview,
   ComputerUseSettingsInput,
+  ComputerUseStats,
   ComputerUseTerminalOpenInput,
   ComputerUseTerminalReadInput,
   ComputerUseTerminalReadResult,
@@ -718,6 +724,19 @@ export interface ComputerUseService {
   sendTerminal(input: ComputerUseTerminalSendInput): Promise<{ ok: true }>;
   readTerminal(input: ComputerUseTerminalReadInput): Promise<ComputerUseTerminalReadResult>;
   closeTerminal(input: { deviceId: string; session: string }): Promise<{ ok: true }>;
+  // -- physical host computers, stats and connector lifecycle (v0.12) --
+  /** Create a host computer on the broker and return its one-line installer. */
+  createHostComputer(input: ComputerUseHostComputerInput, updatedBy?: string): Promise<ComputerUseHostComputer>;
+  /** Live stats (CPU/memory/disk/network) for a host computer. */
+  computerStats(computerId: string): Promise<ComputerUseStats>;
+  /** Ask the host connector to update itself in place (broker long-poll). */
+  updateConnector(computerId: string, updatedBy?: string): Promise<ComputerUseConnectorUpdateResult>;
+  /** Remove the host connector remotely, optionally destroying the computer. */
+  removeConnector(
+    computerId: string,
+    input: ComputerUseConnectorRemoveInput,
+    updatedBy?: string,
+  ): Promise<ComputerUseConnectorRemoveResult>;
   /** Router gate: refusal is returned, never thrown (the router owns audit). */
   checkCall(tool: ToolDescriptor, args: Record<string, unknown>): ComputerUseCallDecision;
   /** Built-in MCP client factory for the supervisor (null for other servers). */
@@ -777,6 +796,18 @@ export interface ComputerUseBrokerPort {
   createHandoff(input: { to: string; ttlSeconds: number }): Promise<BrokerHandoff>;
   /** One operation against a connected device connector (`exec.argv`, `term.*`, …). */
   deviceCall(deviceId: string, op: string, args?: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
+  // -- physical host computers, stats and connector lifecycle (v0.12) --
+  /** Create a physical host computer and mint its one-time enrolment token. */
+  createHostComputer(name: string): Promise<BrokerHostComputerCreated>;
+  /** Live host statistics, normalised from the broker's snake_case payload. */
+  computerStats(computerId: string): Promise<ComputerUseStats>;
+  /** Self-update the host's connector (the broker may hold this for minutes). */
+  updateConnector(computerId: string): Promise<BrokerConnectorUpdate>;
+  /** Remove the host connector remotely, optionally destroying the computer. */
+  removeConnector(
+    computerId: string,
+    input: { uninstall: boolean; removeComputer: boolean },
+  ): Promise<BrokerConnectorRemoved>;
 }
 
 export interface BrokerHandoff {
@@ -793,4 +824,29 @@ export interface BrokerTerminalSession {
 export interface BrokerTerminalRead {
   lines: string[];
   changed: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// v0.12 — physical host computers, stats, connector lifecycle
+// ---------------------------------------------------------------------------
+
+export interface BrokerHostComputerCreated {
+  computer: BrokerComputerSnapshot;
+  /** Plaintext, single-use enrolment token — returned exactly once. */
+  token: string;
+  /** Broker-reported pairing expiry, when known. */
+  expiresAt: string | null;
+}
+
+export interface BrokerConnectorUpdate {
+  ok: boolean;
+  version: string | null;
+  connectorVersion: string | null;
+  result: unknown;
+}
+
+export interface BrokerConnectorRemoved {
+  ok: boolean;
+  connectorRemoved: boolean;
+  computerRemoved: boolean;
 }

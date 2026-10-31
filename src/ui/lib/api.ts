@@ -18,11 +18,16 @@ import type {
   ComputerUseAvailabilityInput,
   ComputerUseComputerInfo,
   ComputerUseComputersResponse,
+  ComputerUseConnectorRemoveInput,
+  ComputerUseConnectorRemoveResult,
+  ComputerUseConnectorUpdateResult,
   ComputerUseConnectorsResponse,
   ComputerUseEnrollmentInput,
   ComputerUseEnrollmentResponse,
+  ComputerUseHostComputer,
   ComputerUseOverview,
   ComputerUseSettingsInput,
+  ComputerUseStats,
   ComputerUseTerminalOpenInput,
   ComputerUseTerminalReadInput,
   ComputerUseTerminalReadResult,
@@ -1503,6 +1508,60 @@ export class ApiClient {
       30_000,
     );
     return response.ok ?? false;
+  }
+
+  // -- v0.12 physical computers (one-line host install, stats, connector) --
+
+  /**
+   * Create a physical ("host") computer and mint the one-line bash installer
+   * for it. The enrollment token inside the command is single-use.
+   */
+  createHostComputer(name: string): Promise<ComputerUseHostComputer> {
+    return this.request<ComputerUseHostComputer>(
+      '/mcp/v1/admin/computer-use/connectors/computers',
+      { method: 'POST', body: JSON.stringify({ name }) },
+      60_000,
+    );
+  }
+
+  /** Live system stats from a connected host connector (CPU/RAM/disk/uptime). */
+  getComputerUseStats(computerId: string): Promise<ComputerUseStats> {
+    return this.request<ComputerUseStats>(
+      `/mcp/v1/admin/computer-use/computers/${encodeURIComponent(computerId)}/stats`,
+      {},
+      30_000,
+    );
+  }
+
+  /**
+   * Push the broker's current connector bundle to a host and restart it.
+   * The update is brokered and can legitimately take a few minutes.
+   */
+  updateComputerUseConnector(computerId: string): Promise<ComputerUseConnectorUpdateResult> {
+    return this.request<ComputerUseConnectorUpdateResult>(
+      `/mcp/v1/admin/computer-use/computers/${encodeURIComponent(computerId)}/connector/update`,
+      { method: 'POST', body: JSON.stringify({}) },
+      300_000,
+    );
+  }
+
+  /**
+   * Remove a host connector. With `removeComputer` the host computer record is
+   * destroyed too; otherwise the computer stays listed without a connector.
+   * DELETE carries a JSON body — `request()` supports it via `RequestInit`.
+   */
+  removeComputerUseConnector(
+    computerId: string,
+    input: ComputerUseConnectorRemoveInput = {},
+  ): Promise<ComputerUseConnectorRemoveResult> {
+    return this.request<ComputerUseConnectorRemoveResult>(
+      `/mcp/v1/admin/computer-use/computers/${encodeURIComponent(computerId)}/connector`,
+      {
+        method: 'DELETE',
+        body: JSON.stringify({ removeComputer: input.removeComputer === true }),
+      },
+      60_000,
+    );
   }
 
   // -- vault ----------------------------------------------------------------

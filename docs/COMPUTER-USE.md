@@ -667,6 +667,43 @@ layout; frames are polled roughly every 900 ms, so this is remote monitoring/con
 than a game stream. `computer_windows` is not implemented for a host; the broker reports
 not-supported. See the broker repo's `docs/HOST-DESKTOP.md` for the full story.
 
+### Managing physical PCs from the console (v0.12)
+
+**Connectors → Physical computers** is the new one-stop panel for the Computer Use host fleet.
+It replaces the old DeviceBridge loop with:
+
+- **One-line onboarding.** *Add physical computer* creates the broker computer and a one-time
+  enrollment, then shows a single copyable bash command. Set
+  `MCP_COMPUTER_INSTALL_BASE_URL` to the address the PC must reach — the gateway/broker LAN IP
+  (for example `https://10.10.1.4:7443`); without it the command falls back to the configured
+  public broker URL. Run the command **inside the PC's desktop session**: the installer
+  downloads the connector from the broker, installs it as a systemd `--user` service, records
+  the graphical-session environment, and prints how to check it. The token is single-use and
+  expires after 15 minutes.
+- **Live stats.** Each online host card is polled every 5 seconds for hostname, OS, uptime,
+  load, CPU %, memory and swap, disk usage, and IPv4 addresses. The broker obtains this from
+  the connector's `system.stats` op; the broker console's computer page has the same panel.
+- **Pushed connector updates.** *Update connector* asks the broker to build the current
+  connector bundle, serve it through a single-use update token, and tell the running connector
+  to self-update. The connector verifies the sha256, installs requirements, atomically swaps
+  its package, replies, and exits so systemd restarts it on the new build. Connectors older
+  than 1.1.0 need one manual reinstall before they understand the update op.
+- **Remote removal.** *Remove connector* confirms, hands back any live control lease, and asks
+  the connector to disable `computer-broker-connector-<kind>.service` and delete its identity.
+  Optionally it also removes the broker computer record. The package and venv stay on the PC;
+  re-running the one-liner with a fresh token re-pairs it.
+
+The broker only accepts enrollment and installer requests from **local networks** by default
+(`403 local_network_required` otherwise). The allow-list can be widened with
+`BRK_ENROLL_ALLOW_CIDRS` on the broker, or disabled with `BRK_ENROLL_LOCAL_ONLY=false` — do that
+only if the installer endpoint is behind a trusted reverse proxy on the LAN.
+
+**Connector compatibility:** `system.stats` and the pushed update/remove ops are advertised by
+connector **1.1.0+**. A connector from v0.11 or earlier still works for remote desktop but has
+no stats/update/remove; reinstall it once with the one-line command (or the existing checkout
+installer). Device connectors (shell/files/terminal) are separate from host-computer
+connectors; the Physical computers panel only manages the latter.
+
 ## Runbook / failure modes
 
 | Symptom | Likely cause | Action |

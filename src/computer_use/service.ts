@@ -40,15 +40,21 @@ import type {
   ComputerUseBrokerInfo,
   ComputerUseComputerInfo,
   ComputerUseComputersResponse,
+  ComputerUseConnectorRemoveInput,
+  ComputerUseConnectorRemoveResult,
+  ComputerUseConnectorUpdateResult,
   ComputerUseConnectorsResponse,
   ComputerUseCounts,
   ComputerUseDeviceInfo,
   ComputerUseEnrollmentInput,
   ComputerUseEnrollmentKind,
   ComputerUseEnrollmentResponse,
+  ComputerUseHostComputer,
+  ComputerUseHostComputerInput,
   ComputerUseOverview,
   ComputerUseSettingsInfo,
   ComputerUseSettingsInput,
+  ComputerUseStats,
   ComputerUseTerminalOpenInput,
   ComputerUseTerminalReadInput,
   ComputerUseTerminalReadResult,
@@ -124,6 +130,8 @@ const MAX_TERMINAL_LINES = 2_000;
 const MAX_TERMINAL_WAIT_S = 30;
 /** Pairing tokens are opaque but constrained so they can safely be shell-quoted. */
 const ENROLLMENT_TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/;
+/** Fallback pairing window when the broker does not report the token expiry. */
+const HOST_INSTALL_TTL_MS = 15 * 60 * 1_000;
 
 export interface ComputerUseServiceOptions {
   config: GatewayConfig;
@@ -586,6 +594,94 @@ export class DefaultComputerUseService implements ComputerUseService {
     return { ok: true };
   }
 
+  // -------------------------------------------------------------------------
+  // Physical host computers, stats and connector lifecycle (v0.12)
+  // -------------------------------------------------------------------------
+
+  async createHostComputer(
+    input: ComputerUseHostComputerInput,
+    updatedBy = 'operator',
+  ): Promise<ComputerUseHostComputer> {
+    const name = normalizeConnectorName(input?.name);
+    const settings = this.store.get();
+    const base = this.installBaseUrl(settings);
+    const broker = this.requireBroker();
+    const created = await broker.createHostComputer(name);
+    const token = typeof created.token === 'string' ? created.token.trim() : '';
+    if (!ENROLLMENT_TOKEN_PATTERN.test(token)) {
+      throw new GatewayError(ErrorCodes.UPSTREAM_ERROR, 'Computer Broker returned an unexpected host enrolment token', {
+        data: { status: 'BROKER_SHAPE_ERROR', reason: 'ENROLLMENT_TOKEN_INVALID' },
+        httpStatus: 502,
+      });
+    }
+    const connectorUrl = `wss://${new URL(base).host}/connector`;
+    const expiresAt = created.expiresAt ?? new Date(Date.now() + HOST_INSTALL_TTL_MS).toISOString();
+    this.invalidateCaches();
+    this.logger.info('host computer created', { computerId: created.computer.id, name, updatedBy });
+    return {
+      computer: this.mapComputer(settings, created.computer),
+      install: {
+        command: buildHostInstallCommand({ publicBase: base, connectorUrl, token, name }),
+        brokerUrl: base,
+        connectorUrl,
+        caUrl: `${base}/install/broker-ca.pem`,
+        expiresAt,
+      },
+    };
+  }
+
+  async computerStats(computerId: string): Promise<ComputerUseStats> {
+    const id = requiredId(computerId, 'computerId');
+    return this.requireBroker().computerStats(id);
+  }
+
+  async updateConnector(computerId: string, updatedBy = 'operator'): Promise<ComputerUseConnectorUpdateResult> {
+    const id = requiredId(computerId, 'computerId');
+    const broker = this.requireBroker();
+    // The broker holds this request until the connector reports back (up to 240 s).
+    const result = await broker.updateConnector(id);
+    this.invalidateCaches();
+    this.logger.info('host connector update finished', {
+      computerId: id,
+      ok: result.ok,
+      version: result.version,
+      connectorVersion: result.connectorVersion,
+      updatedBy,
+    });
+    return {
+      ok: result.ok,
+      version: result.version,
+      connectorVersion: result.connectorVersion,
+      result: result.result,
+    };
+  }
+
+  async removeConnector(
+    computerId: string,
+    input: ComputerUseConnectorRemoveInput,
+    updatedBy = 'operator',
+  ): Promise<ComputerUseConnectorRemoveResult> {
+    const id = requiredId(computerId, 'computerId');
+    if (input?.removeComputer !== undefined && typeof input.removeComputer !== 'boolean') {
+      throw invalidParams("'removeComputer' must be a boolean");
+    }
+    const removeComputer = input?.removeComputer === true;
+    const broker = this.requireBroker();
+    const result = await broker.removeConnector(id, { uninstall: true, removeComputer });
+    this.invalidateCaches();
+    this.logger.info('host connector removed', {
+      computerId: id,
+      connectorRemoved: result.connectorRemoved,
+      computerRemoved: result.computerRemoved,
+      updatedBy,
+    });
+    return {
+      ok: result.ok,
+      connectorRemoved: result.connectorRemoved,
+      computerRemoved: result.computerRemoved,
+    };
+  }
+
   checkCall(tool: ToolDescriptor, args: Record<string, unknown>): ComputerUseCallDecision {
     if (this.managedId === null || tool.serverId !== this.managedId) return { allowed: true };
     const availability = this.store.get().availability;
@@ -751,6 +847,16 @@ export class DefaultComputerUseService implements ComputerUseService {
       );
     }
     return this.broker;
+  }
+
+  /**
+   * Base URL advertised to a new host. Prefers MCP_COMPUTER_INSTALL_BASE_URL
+   * (the address this gateway/broker will be reachable at), then the console's
+   * public broker URL.
+   */
+  private installBaseUrl(settings: StoredComputerUseSettings): string {
+    const configured = this.options.config.computerUse?.installBaseUrl ?? null;
+    return requireInstallBaseUrl(configured ?? settings.publicBrokerUrl ?? settings.brokerUrl);
   }
 
   /** Terminal operations need a live connector that advertises the `term.*` policy. */
@@ -1033,6 +1139,44 @@ function buildInstallCommand(input: {
 /** POSIX single-quote a value: `'` becomes `'\''`. */
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Resolve and validate the base URL a new host's installer must reach. */
+function requireInstallBaseUrl(value: string | null): string {
+  const message =
+    'A public install base URL is required to create a host computer. Set MCP_COMPUTER_INSTALL_BASE_URL ' +
+    '(or the public broker URL in Computer-use settings) to the address the new PC can reach.';
+  if (value === null || value === '') throw invalidParams(message);
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw invalidParams(message);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw invalidParams(message);
+  return value.replace(/\/+$/, '');
+}
+
+/**
+ * One-line installer for a physical host:
+ *   curl … | bash -s -- --broker 'wss://…/connector' --enroll '<token>'
+ *     --kind computer --backend wayland --name '<name>'
+ */
+function buildHostInstallCommand(input: {
+  publicBase: string;
+  connectorUrl: string;
+  token: string;
+  name: string;
+}): string {
+  return [
+    `curl -fsSLk ${shellQuote(`${input.publicBase}/install/install-connector.sh`)}`,
+    '| bash -s --',
+    `--broker ${shellQuote(input.connectorUrl)}`,
+    `--enroll ${shellQuote(input.token)}`,
+    '--kind computer',
+    '--backend wayland',
+    `--name ${shellQuote(input.name)}`,
+  ].join(' ');
 }
 
 function requiredId(value: string, field: string): string {

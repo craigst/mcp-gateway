@@ -10,6 +10,12 @@ const { apiMock } = vi.hoisted(() => ({
     sendComputerUseTerminal: vi.fn(),
     readComputerUseTerminal: vi.fn(),
     closeComputerUseTerminal: vi.fn(),
+    listComputerUseComputers: vi.fn(),
+    getComputerUseStats: vi.fn(),
+    createHostComputer: vi.fn(),
+    updateComputerUseConnector: vi.fn(),
+    removeComputerUseConnector: vi.fn(),
+    computerUseLiveDesktopUrl: vi.fn(),
   },
 }));
 
@@ -22,11 +28,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { ToastProvider } from '../../src/ui/components/Toasts.js';
 import { ConnectorsPage } from '../../src/ui/pages/connectors/ConnectorsPage.js';
 import type {
+  ComputerUseAvailability,
   ComputerUseBrokerInfo,
+  ComputerUseComputerInfo,
+  ComputerUseComputersResponse,
   ComputerUseConnectorsResponse,
   ComputerUseDeviceInfo,
   ComputerUseEnrollmentInfo,
   ComputerUseEnrollmentResponse,
+  ComputerUseHostComputer,
+  ComputerUseStats,
 } from '../../src/core/types.js';
 
 const NOW = Date.now();
@@ -140,6 +151,109 @@ const connectedResponse: ComputerUseConnectorsResponse = {
   counts: { devices: 3, online: 2, pendingEnrollments: 0 },
 };
 
+// ---------------------------------------------------------------------------
+// v0.12 physical computers (host fleet, stats, one-line install, connector)
+// ---------------------------------------------------------------------------
+
+const availableAvailability: ComputerUseAvailability = {
+  available: true,
+  state: 'available',
+  reason: null,
+  until: null,
+  updatedAt: '2026-10-29T22:00:00.000Z',
+  updatedBy: 'operator',
+};
+
+function makeHostComputer(
+  overrides: Partial<ComputerUseComputerInfo> & { id: string; name: string },
+): ComputerUseComputerInfo {
+  return {
+    template: 'physical-host',
+    provider: 'host',
+    state: 'online',
+    viewer: 'rfbtouch',
+    error: null,
+    createdAt: '2026-10-30T20:00:00.000Z',
+    ttlAt: null,
+    desktop: { viewer: 'rfbtouch', width: 2560, height: 1440 },
+    connector: { state: 'online', version: '1.0.0', lastSeen: new Date(NOW - 10_000).toISOString() },
+    control: { held: false, holder: null, heldSince: null, expiresAt: null },
+    availability: availableAvailability,
+    liveUrl: null,
+    ...overrides,
+  };
+}
+
+const studioComputer = makeHostComputer({ id: 'host-studio', name: 'studio-pc' });
+
+const containerComputer: ComputerUseComputerInfo = {
+  ...makeHostComputer({ id: 'comp-alpha', name: 'Desktop Alpha' }),
+  template: 'ubuntu-desktop',
+  provider: 'docker',
+  viewer: 'vnc',
+  desktop: { viewer: 'vnc', width: 1920, height: 1080 },
+};
+
+const emptyFleet: ComputerUseComputersResponse = {
+  broker: brokerOnline,
+  availability: availableAvailability,
+  computers: [],
+};
+
+const hostFleet: ComputerUseComputersResponse = {
+  broker: brokerOnline,
+  availability: availableAvailability,
+  computers: [studioComputer, containerComputer],
+};
+
+const studioStats: ComputerUseStats = {
+  hostname: 'studio-pc.local',
+  os: 'Ubuntu 24.04',
+  uptimeSeconds: 7_500,
+  load: [0.42, 0.3, 0.2],
+  cpu: { cores: 8, percent: 12 },
+  memory: {
+    totalBytes: 16 * 1024 ** 3,
+    usedBytes: 8 * 1024 ** 3,
+    availableBytes: 8 * 1024 ** 3,
+    percent: 48,
+  },
+  swap: { totalBytes: 2 * 1024 ** 3, usedBytes: 0, percent: 0 },
+  disk: { path: '/', totalBytes: 512 * 1024 ** 3, usedBytes: 312 * 1024 ** 3, percent: 61 },
+  addresses: [
+    { iface: 'lo', address: '127.0.0.1' },
+    { iface: 'enp0s31f6', address: '10.10.1.20' },
+  ],
+  collectedAt: new Date(NOW - 3_000).toISOString(),
+};
+
+const hostInstallCommand =
+  "curl -fsSLk 'https://10.10.1.4:7443/install/install-connector.sh' | bash -s -- --broker 'wss://10.10.1.4:7443/connector' --enroll 'tok_host' --kind computer --backend wayland --name 'studio-pc'";
+
+const hostComputerResponse: ComputerUseHostComputer = {
+  computer: studioComputer,
+  install: {
+    command: hostInstallCommand,
+    brokerUrl: 'https://10.10.1.4:7443',
+    connectorUrl: 'wss://10.10.1.4:7443/connector',
+    caUrl: 'https://10.10.1.4:7443/install/broker-ca.pem',
+    expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
+  },
+};
+
+const connectorUpdateResult = {
+  ok: true,
+  version: '1.1.0',
+  connectorVersion: '1.0.0',
+  result: { updated: true },
+};
+
+const connectorRemoveResult = {
+  ok: true,
+  connectorRemoved: true,
+  computerRemoved: true,
+};
+
 beforeEach(() => {
   apiMock.getComputerUseConnectors.mockResolvedValue(connectorsResponse);
   apiMock.createComputerUseEnrollment.mockResolvedValue(enrollmentResponse);
@@ -148,6 +262,15 @@ beforeEach(() => {
   apiMock.readComputerUseTerminal.mockResolvedValue({ session: 'sess-42', lines: [], changed: false });
   apiMock.sendComputerUseTerminal.mockResolvedValue(true);
   apiMock.closeComputerUseTerminal.mockResolvedValue(true);
+  apiMock.listComputerUseComputers.mockResolvedValue(emptyFleet);
+  apiMock.getComputerUseStats.mockResolvedValue(studioStats);
+  apiMock.createHostComputer.mockResolvedValue(hostComputerResponse);
+  apiMock.updateComputerUseConnector.mockResolvedValue(connectorUpdateResult);
+  apiMock.removeComputerUseConnector.mockResolvedValue(connectorRemoveResult);
+  apiMock.computerUseLiveDesktopUrl.mockImplementation(
+    (computerId: string) =>
+      `/mcp/v1/admin/computer-use/computers/${computerId}/live-desktop`,
+  );
 });
 
 afterEach(() => {
@@ -333,5 +456,127 @@ describe('Connectors page', () => {
 
     expect(screen.queryByRole('button', { name: /Revoke pairing/ })).toBeNull();
     expect(screen.getByText('No pending pairings')).toBeTruthy();
+  });
+});
+
+describe('Connectors page — physical computers (v0.12)', () => {
+  it('lists host computers with live stats and hides container desktops', async () => {
+    apiMock.listComputerUseComputers.mockResolvedValue(hostFleet);
+
+    render(
+      <ToastProvider>
+        <ConnectorsPage />
+      </ToastProvider>,
+    );
+
+    const card = await screen.findByRole('article', { name: 'Physical computer studio-pc' });
+
+    // Compact stats strip: CPU / memory / disk / uptime.
+    expect(await within(card).findByText('12%')).toBeTruthy();
+    expect(within(card).getByText('48%')).toBeTruthy();
+    expect(within(card).getByText('61%')).toBeTruthy();
+    expect(within(card).getByText('2h 5m')).toBeTruthy();
+    expect(within(card).getByText(/studio-pc\.local/)).toBeTruthy();
+    expect(within(card).getByText(/10\.10\.1\.20/)).toBeTruthy();
+    expect(within(card).getByText('connector v1.0.0')).toBeTruthy();
+
+    // Remote-desktop host only: the container desktop is not listed here.
+    expect(screen.queryByText('Desktop Alpha')).toBeNull();
+
+    // Live desktop hand-off and connector lifecycle actions.
+    const liveLink = within(card).getByRole('link', { name: 'Open live desktop for studio-pc' });
+    expect(liveLink.getAttribute('href')).toBe(
+      '/mcp/v1/admin/computer-use/computers/host-studio/live-desktop',
+    );
+    expect(within(card).getByRole('button', { name: 'Update connector on studio-pc' })).toBeTruthy();
+    expect(within(card).getByRole('button', { name: 'Remove connector on studio-pc' })).toBeTruthy();
+    await waitFor(() => expect(apiMock.getComputerUseStats).toHaveBeenCalledWith('host-studio'));
+  });
+
+  it('creates a physical computer and shows the one-line bash installer', async () => {
+    apiMock.listComputerUseComputers.mockResolvedValue(hostFleet);
+
+    render(
+      <ToastProvider>
+        <ConnectorsPage />
+      </ToastProvider>,
+    );
+    await screen.findByRole('article', { name: 'Physical computer studio-pc' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add physical computer' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add physical computer' });
+
+    const nameInput = within(dialog).getByLabelText(/Computer name/) as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: 'render-01' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create install command' }));
+
+    await waitFor(() => expect(apiMock.createHostComputer).toHaveBeenCalledWith('render-01'));
+
+    const command = await within(dialog).findByLabelText('Physical computer install command');
+    expect(command.textContent).toContain(hostInstallCommand);
+    expect(command.textContent).toContain('--kind computer --backend wayland');
+    expect(within(dialog).getByText(/single-use/i)).toBeTruthy();
+    expect(within(dialog).getByText(/systemd --user/)).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Copy install command' })).toBeTruthy();
+
+    // Closing refreshes the list so the new (offline) host shows up.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Add physical computer' })).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(apiMock.listComputerUseComputers.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it('updates a host connector after confirmation and shows the new version', async () => {
+    apiMock.listComputerUseComputers.mockResolvedValue(hostFleet);
+
+    render(
+      <ToastProvider>
+        <ConnectorsPage />
+      </ToastProvider>,
+    );
+    const card = await screen.findByRole('article', { name: 'Physical computer studio-pc' });
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Update connector on studio-pc' }));
+    const dialog = await screen.findByRole('dialog', { name: /Update connector on studio-pc/ });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update connector' }));
+
+    await waitFor(() =>
+      expect(apiMock.updateComputerUseConnector).toHaveBeenCalledWith('host-studio'),
+    );
+    expect(await screen.findByText(/is now running connector v1\.1\.0/)).toBeTruthy();
+    await waitFor(() =>
+      expect(apiMock.listComputerUseComputers.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it('removes a host connector and optionally the computer', async () => {
+    apiMock.listComputerUseComputers.mockResolvedValue(hostFleet);
+
+    render(
+      <ToastProvider>
+        <ConnectorsPage />
+      </ToastProvider>,
+    );
+    const card = await screen.findByRole('article', { name: 'Physical computer studio-pc' });
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Remove connector on studio-pc' }));
+    const dialog = await screen.findByRole('dialog', { name: /Remove connector from studio-pc/ });
+    fireEvent.click(within(dialog).getByRole('checkbox'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove connector' }));
+
+    await waitFor(() =>
+      expect(apiMock.removeComputerUseConnector).toHaveBeenCalledWith('host-studio', {
+        removeComputer: true,
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: /Remove connector from studio-pc/ })).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(apiMock.listComputerUseComputers.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
   });
 });

@@ -23,6 +23,13 @@ export interface ComputerUseConfig {
   publicBrokerUrl: string | null;
   /** Optional PEM CA bundle for the broker's self-signed certificate. */
   caFile: string | null;
+  /**
+   * Base URL baked into one-line host installers (MCP_COMPUTER_INSTALL_BASE_URL).
+   * This is the address the new PC must use to reach the broker — typically the
+   * gateway/broker's future LAN address, e.g. https://10.10.1.4:7443. Falls back
+   * to the public broker URL when unset.
+   */
+  installBaseUrl: string | null;
 }
 
 export interface GatewayConfig {
@@ -132,7 +139,27 @@ function loadComputerUse(env: NodeJS.ProcessEnv): ComputerUseConfig {
     brokerToken: trimOrNull(env.MCP_COMPUTER_BROKER_TOKEN),
     publicBrokerUrl,
     caFile: trimOrNull(env.MCP_COMPUTER_BROKER_CA),
+    installBaseUrl: httpBaseUrlOrNull(env.MCP_COMPUTER_INSTALL_BASE_URL, 'MCP_COMPUTER_INSTALL_BASE_URL'),
   };
+}
+
+/** Optional base URL: trimmed, validated as absolute http(s), trailing slashes removed. */
+function httpBaseUrlOrNull(value: string | undefined, name: string): string | null {
+  const trimmed = trimOrNull(value);
+  if (trimmed === null) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`${name} must be an absolute http(s) URL`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`${name} must use http or https`);
+  }
+  if (parsed.pathname !== '/' || parsed.search !== '' || parsed.hash !== '') {
+    throw new Error(`${name} must be a base URL without a path, query or fragment`);
+  }
+  return trimmed.replace(/\/+$/, '');
 }
 
 function trimOrNull(value: string | undefined): string | null {

@@ -12,6 +12,10 @@
  *   POST /api/enrollments {kind,ttl_s}             (mint a single-use pairing token)
  *   DELETE /api/enrollments/{id}                   (revoke)
  *   POST /api/devices/{id}/call {op,args}          (one device operation)
+ *   POST /api/computers/host {name}                (create + pair a physical host)
+ *   GET  /api/computers/{id}/stats                 (live host stats)
+ *   POST /api/computers/{id}/connector/update      (connector self-update)
+ *   DELETE /api/computers/{id}/connector           (remote connector removal)
  *   POST /mcp                                      (Streamable-HTTP MCP, JSON-RPC)
  *
  * Every authenticated call carries the operator-issued bearer token. The token
@@ -21,14 +25,18 @@ import { ErrorCodes, GatewayError } from '../core/errors.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type {
   BrokerComputerSnapshot,
+  BrokerConnectorRemoved,
+  BrokerConnectorUpdate,
   BrokerDeviceSnapshot,
   BrokerEnrollmentCreated,
   BrokerEnrollmentSnapshot,
   BrokerHandoff,
+  BrokerHostComputerCreated,
   ComputerUseBrokerHealth,
   ComputerUseBrokerPort,
   ComputerUseFrameResult,
 } from '../core/ports.js';
+import type { ComputerUseStats } from '../core/types.js';
 import { httpRequest, parseJsonBody, type RawHttpResponse } from './http.js';
 
 export interface BrokerClientOptions {
@@ -49,6 +57,12 @@ interface JsonRpcResult {
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const FRAME_TIMEOUT_MS = 15_000;
+/** Creating a host computer may provision a desktop on the broker. */
+const HOST_CREATE_TIMEOUT_MS = 30_000;
+/** The broker holds the connector self-update open until the connector reports. */
+const CONNECTOR_UPDATE_TIMEOUT_MS = 240_000;
+/** Remote uninstall waits for the connector to acknowledge and disappear. */
+const CONNECTOR_REMOVE_TIMEOUT_MS = 30_000;
 
 export class BrokerHttpClient implements ComputerUseBrokerPort {
   readonly baseUrl: string;
@@ -202,6 +216,70 @@ export class BrokerHttpClient implements ComputerUseBrokerPort {
     return body.data ?? null;
   }
 
+  // -------------------------------------------------------------------------
+  // Physical host computers, stats and connector lifecycle (v0.12)
+  // -------------------------------------------------------------------------
+
+  async createHostComputer(name: string): Promise<BrokerHostComputerCreated> {
+    const response = await this.request('/api/computers/host', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+      timeoutMs: HOST_CREATE_TIMEOUT_MS,
+    });
+    const record = expectObject(parseJsonBody(response.body), 'host computer');
+    const computerRecord = isRecord(record.computer) ? record.computer : record;
+    const enrollment = isRecord(record.enrollment) ? record.enrollment : {};
+    return {
+      computer: normalizeComputer(computerRecord),
+      token: requireString(record.token ?? computerRecord.token, 'host enrolment token'),
+      expiresAt: stringOrNull(
+        record.expires_at ??
+          record.expiresAt ??
+          record.enrollment_expires_at ??
+          enrollment.expires_at ??
+          enrollment.expiresAt ??
+          computerRecord.expires_at,
+      ),
+    };
+  }
+
+  async computerStats(computerId: string): Promise<ComputerUseStats> {
+    const response = await this.request(`/api/computers/${encodeURIComponent(computerId)}/stats`);
+    return normalizeComputerStats(expectObject(parseJsonBody(response.body), 'computer stats'));
+  }
+
+  async updateConnector(computerId: string): Promise<BrokerConnectorUpdate> {
+    const response = await this.request(`/api/computers/${encodeURIComponent(computerId)}/connector/update`, {
+      method: 'POST',
+      body: '{}',
+      timeoutMs: CONNECTOR_UPDATE_TIMEOUT_MS,
+    });
+    const record = expectObject(parseJsonBody(response.body), 'connector update');
+    return {
+      ok: record.ok !== false,
+      version: stringOrNull(record.version),
+      connectorVersion: stringOrNull(record.connector_version ?? record.connectorVersion),
+      result: record.result ?? null,
+    };
+  }
+
+  async removeConnector(
+    computerId: string,
+    input: { uninstall: boolean; removeComputer: boolean },
+  ): Promise<BrokerConnectorRemoved> {
+    const response = await this.request(`/api/computers/${encodeURIComponent(computerId)}/connector`, {
+      method: 'DELETE',
+      body: JSON.stringify({ uninstall: input.uninstall, remove_computer: input.removeComputer }),
+      timeoutMs: CONNECTOR_REMOVE_TIMEOUT_MS,
+    });
+    const record = expectObject(parseJsonBody(response.body), 'connector removal');
+    return {
+      ok: record.ok !== false,
+      connectorRemoved: record.connector_removed === true,
+      computerRemoved: record.computer_removed === true,
+    };
+  }
+
   /** One JSON-RPC request against the broker's MCP endpoint. Notifications are fire-and-forget. */
   async rpc(method: string, params?: unknown, timeoutMs?: number): Promise<unknown> {
     const id = this.nextRpcId++;
@@ -343,6 +421,84 @@ export function normalizeEnrollment(raw: unknown): BrokerEnrollmentSnapshot {
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim());
+}
+
+/**
+ * Normalise a broker stats payload into `ComputerUseStats`. The broker emits
+ * snake_case JSON from `psutil`-style probe data; missing sections become empty
+ * values so a partially-equipped host still renders.
+ */
+export function normalizeComputerStats(raw: unknown): ComputerUseStats {
+  const record = expectObject(raw, 'computer stats');
+  const cpu = recordOr(record.cpu);
+  const memory = recordOr(record.memory ?? record.mem);
+  const swap = recordOr(record.swap);
+  const disk = recordOr(record.disk ?? firstRecord(record.disks));
+  const addresses = Array.isArray(record.addresses)
+    ? record.addresses
+    : Array.isArray(record.network)
+      ? record.network
+      : [];
+  return {
+    hostname: stringOr(record.hostname ?? record.host, 'unknown'),
+    os: stringOr(record.os ?? record.platform ?? record.distro, 'unknown'),
+    uptimeSeconds: numberOrNull(record.uptime_seconds ?? record.uptimeSeconds ?? record.uptime),
+    load: numberArray(record.load ?? record.load_avg ?? record.loadavg),
+    cpu: {
+      cores: numberOr(cpu.cores ?? record.cores ?? record.cpu_count, 0),
+      percent: numberOr(cpu.percent ?? record.cpu_percent, 0),
+    },
+    memory: {
+      totalBytes: numberOr(memory.total_bytes ?? memory.total, 0),
+      usedBytes: numberOr(memory.used_bytes ?? memory.used, 0),
+      availableBytes: numberOr(memory.available_bytes ?? memory.available, 0),
+      percent: numberOr(memory.percent, 0),
+    },
+    swap: {
+      totalBytes: numberOr(swap.total_bytes ?? swap.total, 0),
+      usedBytes: numberOr(swap.used_bytes ?? swap.used, 0),
+      percent: numberOr(swap.percent, 0),
+    },
+    disk: {
+      path: stringOr(disk.path ?? disk.mount ?? disk.mountpoint, '/'),
+      totalBytes: numberOr(disk.total_bytes ?? disk.total, 0),
+      usedBytes: numberOr(disk.used_bytes ?? disk.used, 0),
+      percent: numberOr(disk.percent, 0),
+    },
+    addresses: addresses
+      .filter(isRecord)
+      .map((entry) => ({
+        iface: stringOr(entry.iface ?? entry.interface ?? entry.name, ''),
+        address: stringOr(entry.address ?? entry.ip ?? entry.addr, ''),
+      }))
+      .filter((entry) => entry.iface !== '' || entry.address !== ''),
+    collectedAt: stringOrNull(record.collected_at ?? record.collectedAt ?? record.timestamp),
+  };
+}
+
+function recordOr(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function firstRecord(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : undefined;
+}
+
+function numberArray(value: unknown): number[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item));
+  }
+  if (isRecord(value)) {
+    // Older probes report load as `{one, five, fifteen}`.
+    return [value.one ?? value['1'], value.five ?? value['5'], value.fifteen ?? value['15']].filter(
+      (item): item is number => typeof item === 'number' && Number.isFinite(item),
+    );
+  }
+  return [];
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
 function extractDetail(parsed: unknown): unknown {

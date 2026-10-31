@@ -41,7 +41,7 @@ export interface RouterDeps {
 }
 
 const PROTOCOL_VERSION = '2025-06-18';
-const GATEWAY_VERSION = '0.11.0';
+const GATEWAY_VERSION = '0.12.0';
 
 /**
  * JSON-RPC method dispatch. Authorization, audit recording and escalation

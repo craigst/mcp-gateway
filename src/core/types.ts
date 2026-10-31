@@ -1192,3 +1192,75 @@ export interface ComputerUseTerminalReadResult {
   lines: string[];
   changed: boolean;
 }
+
+
+// ---------------------------------------------------------------------------
+// v0.12 — physical host onboarding, host stats and connector lifecycle
+// ---------------------------------------------------------------------------
+
+/** Request to create (and pair) a physical host computer from the console. */
+export interface ComputerUseHostComputerInput {
+  /** Human label for the machine; used in the generated install command. */
+  name?: string | null;
+}
+
+/**
+ * One-line installer for a physical host. The connector runs in `computer`
+ * mode against the Wayland desktop backend, so the host owns its own display
+ * instead of a broker-hosted container.
+ */
+export interface ComputerUseHostInstall {
+  /** One-liner to paste on the new Linux PC. */
+  command: string;
+  /** Broker base URL reachable from the new PC (https). */
+  brokerUrl: string;
+  /** Connector websocket endpoint (wss). */
+  connectorUrl: string;
+  /** CA download URL used by the installer bootstrap. */
+  caUrl: string;
+  /** End of the pairing window (broker token expiry, or a 15 minute default). */
+  expiresAt: string;
+}
+
+/** A newly created host computer plus the command that pairs it. */
+export interface ComputerUseHostComputer {
+  computer: ComputerUseComputerInfo;
+  install: ComputerUseHostInstall;
+}
+
+/** Live host statistics, normalised from the broker's snake_case payload. */
+export interface ComputerUseStats {
+  hostname: string;
+  os: string;
+  uptimeSeconds: number | null;
+  load: number[];
+  cpu: { cores: number; percent: number };
+  memory: { totalBytes: number; usedBytes: number; availableBytes: number; percent: number };
+  swap: { totalBytes: number; usedBytes: number; percent: number };
+  disk: { path: string; totalBytes: number; usedBytes: number; percent: number };
+  addresses: Array<{ iface: string; address: string }>;
+  collectedAt: string | null;
+}
+
+/** Result of asking a host connector to update itself in place. */
+export interface ComputerUseConnectorUpdateResult {
+  ok: boolean;
+  /** Broker version the connector now runs against (or reports). */
+  version: string | null;
+  connectorVersion: string | null;
+  /** Raw per-step connector result, kept for diagnostics. */
+  result: unknown;
+}
+
+/** Remote connector removal options. */
+export interface ComputerUseConnectorRemoveInput {
+  /** Also destroy the broker computer record once the connector is gone. */
+  removeComputer?: boolean;
+}
+
+/** Result of remotely removing a host connector (and optionally the computer). */
+export interface ComputerUseConnectorRemoveResult {
+  ok: boolean;
+  connectorRemoved: boolean;
+  computerRemoved: boolean;
+}

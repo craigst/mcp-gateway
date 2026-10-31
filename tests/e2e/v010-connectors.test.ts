@@ -17,17 +17,22 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createContainer, type GatewayContainer } from '../../src/container.js';
-import type { GatewayConfig } from '../../src/core/config.js';
+import { normalizeComputerStats } from '../../src/computer_use/broker-client.js';
+import { loadConfig, type GatewayConfig } from '../../src/core/config.js';
 import { createLogger } from '../../src/core/logger.js';
 import type {
   BrokerComputerSnapshot,
+  BrokerConnectorRemoved,
+  BrokerConnectorUpdate,
   BrokerDeviceSnapshot,
   BrokerEnrollmentCreated,
   BrokerEnrollmentSnapshot,
+  BrokerHostComputerCreated,
   ComputerUseBrokerHealth,
   ComputerUseBrokerPort,
   ComputerUseFrameResult,
 } from '../../src/core/ports.js';
+import type { ComputerUseStats } from '../../src/core/types.js';
 
 const MASTER_KEY = `mcp_master_${'f'.repeat(48)}`;
 const VAULT_SECRET = 'v010-vault-secret-0123456789abcdefgh';
@@ -57,6 +62,7 @@ function buildConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
       brokerToken: 'brk_admin_token',
       publicBrokerUrl: BROKER_URL,
       caFile: null,
+      installBaseUrl: 'https://10.10.1.4:7443',
     },
     ...overrides,
   };
@@ -103,6 +109,13 @@ class FakeBroker implements ComputerUseBrokerPort {
   readonly enrollmentRequests: Array<{ kind: 'device' | 'computer'; ttlSeconds: number }> = [];
   readonly revoked: string[] = [];
   readonly deviceCalls: Array<{ deviceId: string; op: string; args: Record<string, unknown> }> = [];
+  readonly hostComputerRequests: string[] = [];
+  readonly statsRequests: string[] = [];
+  readonly connectorUpdates: string[] = [];
+  readonly connectorRemovals: Array<{
+    computerId: string;
+    input: { uninstall: boolean; removeComputer: boolean };
+  }> = [];
   token: string | null;
 
   constructor(token: string | null) {
@@ -188,6 +201,69 @@ class FakeBroker implements ComputerUseBrokerPort {
     if (op === 'term.read') return { lines: ['$ echo hi', 'hi'], changed: true };
     if (op === 'term.send' || op === 'term.close') return { ok: true };
     return {};
+  }
+
+  // -- v0.12 host computers, stats and connector lifecycle -------------------
+
+  async createHostComputer(name: string): Promise<BrokerHostComputerCreated> {
+    this.hostComputerRequests.push(name);
+    return {
+      computer: {
+        id: 'cmp_host_1',
+        name,
+        template: 'host',
+        provider: 'host',
+        state: 'ready',
+        viewer: 'wayland',
+        error: null,
+        createdAt: '2026-10-30T12:00:00Z',
+        ttlAt: null,
+        desktop: { viewer: 'wayland', width: 1920, height: 1080 },
+        connector: { state: 'online', version: '0.12.0', lastSeen: '2026-10-30T12:00:00Z' },
+        control: { held: false, holder: null, heldSince: null, expiresAt: null },
+      },
+      token: 'tok_host_abc123',
+      expiresAt: '2026-10-30T12:15:00Z',
+    };
+  }
+
+  async computerStats(computerId: string): Promise<ComputerUseStats> {
+    this.statsRequests.push(computerId);
+    return {
+      hostname: 'gpc',
+      os: 'Ubuntu 24.04 LTS',
+      uptimeSeconds: 93_784,
+      load: [0.42, 0.51, 0.48],
+      cpu: { cores: 16, percent: 12.5 },
+      memory: {
+        totalBytes: 34_359_738_368,
+        usedBytes: 9_833_050_112,
+        availableBytes: 24_526_688_256,
+        percent: 28.6,
+      },
+      swap: { totalBytes: 8_589_934_592, usedBytes: 0, percent: 0 },
+      disk: { path: '/', totalBytes: 1_000_204_886_016, usedBytes: 247_390_928_896, percent: 24.7 },
+      addresses: [{ iface: 'enp5s0', address: '10.10.1.4' }],
+      collectedAt: '2026-10-30T12:05:00Z',
+    };
+  }
+
+  async updateConnector(computerId: string): Promise<BrokerConnectorUpdate> {
+    this.connectorUpdates.push(computerId);
+    return {
+      ok: true,
+      version: '0.12.0',
+      connectorVersion: '0.12.1',
+      result: { updated: true, steps: ['download', 'restart'] },
+    };
+  }
+
+  async removeConnector(
+    computerId: string,
+    input: { uninstall: boolean; removeComputer: boolean },
+  ): Promise<BrokerConnectorRemoved> {
+    this.connectorRemovals.push({ computerId, input });
+    return { ok: true, connectorRemoved: true, computerRemoved: input.removeComputer };
   }
 }
 
@@ -459,6 +535,105 @@ describe('v0.10 connectors, pairing and terminal', () => {
     expect(badBody.status).toBe(400);
   });
 
+  it('creates a physical host computer with a one-line Wayland installer', async () => {
+    const created = await http.admin('POST', '/computer-use/connectors/computers', { name: 'gpc' });
+    expect(created.status).toBe(200);
+    expect(broker.hostComputerRequests).toEqual(['gpc']);
+    expect(created.body.computer).toMatchObject({
+      id: 'cmp_host_1',
+      name: 'gpc',
+      provider: 'host',
+      viewer: 'wayland',
+      state: 'ready',
+      liveUrl: `${BROKER_URL}/#/d/cmp_host_1`,
+    });
+    expect(created.body.install).toMatchObject({
+      brokerUrl: 'https://10.10.1.4:7443',
+      connectorUrl: 'wss://10.10.1.4:7443/connector',
+      caUrl: 'https://10.10.1.4:7443/install/broker-ca.pem',
+      expiresAt: '2026-10-30T12:15:00Z',
+    });
+
+    const command = created.body.install.command as string;
+    expect(command.startsWith('curl -fsSLk ')).toBe(true);
+    expect(command).toContain("'https://10.10.1.4:7443/install/install-connector.sh'");
+    expect(command).toContain('| bash -s --');
+    expect(command).toContain("--broker 'wss://10.10.1.4:7443/connector'");
+    expect(command).toContain("--enroll 'tok_host_abc123'");
+    expect(command).toContain('--kind computer');
+    expect(command).toContain('--backend wayland');
+    expect(command).toContain("--name 'gpc'");
+  });
+
+  it('defaults the host name and validates host/remove request bodies', async () => {
+    const created = await http.admin('POST', '/computer-use/connectors/computers', {});
+    expect(created.status).toBe(200);
+    expect(broker.hostComputerRequests.at(-1)).toBe('linux-pc');
+
+    const badName = await http.admin('POST', '/computer-use/connectors/computers', { name: 42 });
+    expect(badName.status).toBe(400);
+
+    const badRemove = await http.admin('DELETE', '/computer-use/computers/cmp_host_1/connector', {
+      removeComputer: 'yes',
+    });
+    expect(badRemove.status).toBe(400);
+  });
+
+  it('serves live host stats', async () => {
+    const stats = await http.admin('GET', '/computer-use/computers/cmp_host_1/stats');
+    expect(stats.status).toBe(200);
+    expect(broker.statsRequests).toEqual(['cmp_host_1']);
+    expect(stats.body).toEqual({
+      hostname: 'gpc',
+      os: 'Ubuntu 24.04 LTS',
+      uptimeSeconds: 93_784,
+      load: [0.42, 0.51, 0.48],
+      cpu: { cores: 16, percent: 12.5 },
+      memory: {
+        totalBytes: 34_359_738_368,
+        usedBytes: 9_833_050_112,
+        availableBytes: 24_526_688_256,
+        percent: 28.6,
+      },
+      swap: { totalBytes: 8_589_934_592, usedBytes: 0, percent: 0 },
+      disk: { path: '/', totalBytes: 1_000_204_886_016, usedBytes: 247_390_928_896, percent: 24.7 },
+      addresses: [{ iface: 'enp5s0', address: '10.10.1.4' }],
+      collectedAt: '2026-10-30T12:05:00Z',
+    });
+  });
+
+  it('updates the host connector in place and removes it remotely', async () => {
+    const updated = await http.admin('POST', '/computer-use/computers/cmp_host_1/connector/update');
+    expect(updated.status).toBe(200);
+    expect(broker.connectorUpdates).toEqual(['cmp_host_1']);
+    expect(updated.body).toEqual({
+      ok: true,
+      version: '0.12.0',
+      connectorVersion: '0.12.1',
+      result: { updated: true, steps: ['download', 'restart'] },
+    });
+
+    const removed = await http.admin('DELETE', '/computer-use/computers/cmp_host_1/connector', {
+      removeComputer: true,
+    });
+    expect(removed.status).toBe(200);
+    expect(removed.body).toEqual({ ok: true, connectorRemoved: true, computerRemoved: true });
+    expect(broker.connectorRemovals.at(-1)).toEqual({
+      computerId: 'cmp_host_1',
+      input: { uninstall: true, removeComputer: true },
+    });
+
+    const kept = await http.admin('DELETE', '/computer-use/computers/cmp_host_1/connector', {});
+    expect(kept.status).toBe(200);
+    expect(kept.body).toEqual({ ok: true, connectorRemoved: true, computerRemoved: false });
+    expect(broker.connectorRemovals.at(-1)?.input).toEqual({ uninstall: true, removeComputer: false });
+
+    // An absent body is treated as `{}`, i.e. keep the computer record.
+    const noBody = await http.admin('DELETE', '/computer-use/computers/cmp_host_1/connector');
+    expect(noBody.status).toBe(200);
+    expect(noBody.body).toMatchObject({ connectorRemoved: true, computerRemoved: false });
+  });
+
   it('is master-only: agent keys are refused', async () => {
     const created = await http.admin('POST', '/keys/create', {
       name: 'connector-agent',
@@ -469,6 +644,14 @@ describe('v0.10 connectors, pairing and terminal', () => {
 
     const denied = await http.admin('GET', '/computer-use/connectors', undefined, agentKey);
     expect(denied.status).toBe(403);
+
+    const deniedStats = await http.admin(
+      'GET',
+      '/computer-use/computers/cmp_host_1/stats',
+      undefined,
+      agentKey,
+    );
+    expect(deniedStats.status).toBe(403);
 
     const master = await http.admin('GET', '/computer-use/connectors');
     expect(master.status).toBe(200);
@@ -495,6 +678,7 @@ describe('v0.10 connectors without a public broker URL', () => {
         brokerToken: null,
         publicBrokerUrl: null,
         caFile: null,
+        installBaseUrl: null,
       },
     });
     container = startContainer(config);
@@ -510,5 +694,102 @@ describe('v0.10 connectors without a public broker URL', () => {
     const created = await http.admin('POST', '/computer-use/connectors/enrollments', { kind: 'device' });
     expect(created.status).toBe(400);
     expect(created.body.error.message).toContain('public broker URL');
+
+    const host = await http.admin('POST', '/computer-use/connectors/computers', { name: 'gpc' });
+    expect(host.status).toBe(400);
+    expect(host.body.error.message).toContain('install base URL');
+  });
+});
+
+describe('v0.12 host installer base URL fallback', () => {
+  let container: GatewayContainer | null = null;
+
+  afterAll(async () => {
+    await container?.stop();
+    container = null;
+    rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  it('falls back to the public broker URL when MCP_COMPUTER_INSTALL_BASE_URL is unset', async () => {
+    const broker = new FakeBroker('brk_admin_token');
+    const config = buildConfig({
+      dataDir: join(rootDir, 'fallback', 'data'),
+      dbPath: join(rootDir, 'fallback', 'data', 'gateway.db'),
+      computerUse: {
+        enabled: true,
+        brokerUrl: BROKER_URL,
+        brokerToken: 'brk_admin_token',
+        publicBrokerUrl: BROKER_URL,
+        caFile: null,
+        installBaseUrl: null,
+      },
+    });
+    container = startContainer(config, broker);
+    const http = makeHttp((await container.start()).url);
+
+    const created = await http.admin('POST', '/computer-use/connectors/computers', { name: 'gpc' });
+    expect(created.status).toBe(200);
+    expect(created.body.install.brokerUrl).toBe(BROKER_URL);
+    expect(created.body.install.connectorUrl).toBe('wss://broker.test:7443/connector');
+    expect(created.body.install.command).toContain(`${BROKER_URL}/install/install-connector.sh`);
+  });
+});
+
+describe('MCP_COMPUTER_INSTALL_BASE_URL', () => {
+  it('is read, validated and normalised by loadConfig', () => {
+    const config = loadConfig({ MCP_COMPUTER_INSTALL_BASE_URL: 'https://10.10.1.4:7443/' });
+    expect(config.computerUse?.installBaseUrl).toBe('https://10.10.1.4:7443');
+
+    expect(() => loadConfig({ MCP_COMPUTER_INSTALL_BASE_URL: 'ftp://10.10.1.4' })).toThrow(/http/);
+    expect(() => loadConfig({ MCP_COMPUTER_INSTALL_BASE_URL: 'not-a-url' })).toThrow(/absolute/);
+  });
+});
+
+describe('broker host stats normalisation', () => {
+  it('maps the broker snake_case stats payload to ComputerUseStats', () => {
+    const stats = normalizeComputerStats({
+      hostname: 'gpc',
+      os: 'Ubuntu 24.04 LTS',
+      uptime_seconds: 93_784,
+      load: [0.42, 0.51, 0.48],
+      cpu: { cores: 16, percent: 12.5 },
+      memory: { total_bytes: 34_359_738_368, used_bytes: 9_833_050_112, available_bytes: 24_526_688_256, percent: 28.6 },
+      swap: { total_bytes: 8_589_934_592, used_bytes: 0, percent: 0 },
+      disk: { path: '/', total_bytes: 1_000_204_886_016, used_bytes: 247_390_928_896, percent: 24.7 },
+      addresses: [{ iface: 'enp5s0', address: '10.10.1.4' }],
+      collected_at: '2026-10-30T12:05:00Z',
+    });
+    expect(stats).toEqual({
+      hostname: 'gpc',
+      os: 'Ubuntu 24.04 LTS',
+      uptimeSeconds: 93_784,
+      load: [0.42, 0.51, 0.48],
+      cpu: { cores: 16, percent: 12.5 },
+      memory: {
+        totalBytes: 34_359_738_368,
+        usedBytes: 9_833_050_112,
+        availableBytes: 24_526_688_256,
+        percent: 28.6,
+      },
+      swap: { totalBytes: 8_589_934_592, usedBytes: 0, percent: 0 },
+      disk: { path: '/', totalBytes: 1_000_204_886_016, usedBytes: 247_390_928_896, percent: 24.7 },
+      addresses: [{ iface: 'enp5s0', address: '10.10.1.4' }],
+      collectedAt: '2026-10-30T12:05:00Z',
+    });
+  });
+
+  it('tolerates a partial probe payload', () => {
+    const stats = normalizeComputerStats({ hostname: 'bare' });
+    expect(stats).toMatchObject({
+      hostname: 'bare',
+      os: 'unknown',
+      uptimeSeconds: null,
+      load: [],
+      cpu: { cores: 0, percent: 0 },
+      memory: { totalBytes: 0, usedBytes: 0, availableBytes: 0, percent: 0 },
+      disk: { path: '/' },
+      addresses: [],
+      collectedAt: null,
+    });
   });
 });

@@ -18,7 +18,9 @@ import type { ComputerUseService, KeyService } from '../core/ports.js';
 import type {
   AuthenticatedKey,
   ComputerUseAvailabilityInput,
+  ComputerUseConnectorRemoveInput,
   ComputerUseEnrollmentInput,
+  ComputerUseHostComputerInput,
   ComputerUseSettingsInput,
   ComputerUseTerminalOpenInput,
   ComputerUseTerminalReadInput,
@@ -152,6 +154,50 @@ export class ComputerUseApi implements AdminSubRouter {
         }
       }
 
+      // POST /admin/computer-use/connectors/computers {name}
+      // Create a physical host computer and return its one-line installer.
+      if (rest.length === 2 && rest[0] === 'connectors' && rest[1] === 'computers' && method === 'POST') {
+        const principal = this.requireMaster(req);
+        const body = await this.readObjectBody(req);
+        this.sendJson(res, 200, await this.deps.computerUse.createHostComputer(parseHostComputer(body), principal.name));
+        return true;
+      }
+
+      // GET /admin/computer-use/computers/:id/stats
+      if (rest.length === 3 && rest[0] === 'computers' && rest[2] === 'stats' && method === 'GET') {
+        this.requireMaster(req);
+        const computerId = decodeURIComponent(rest[1] as string);
+        this.sendJson(res, 200, await this.deps.computerUse.computerStats(computerId));
+        return true;
+      }
+
+      // POST /admin/computer-use/computers/:id/connector/update
+      if (
+        rest.length === 4 &&
+        rest[0] === 'computers' &&
+        rest[2] === 'connector' &&
+        rest[3] === 'update' &&
+        method === 'POST'
+      ) {
+        const principal = this.requireMaster(req);
+        const computerId = decodeURIComponent(rest[1] as string);
+        this.sendJson(res, 200, await this.deps.computerUse.updateConnector(computerId, principal.name));
+        return true;
+      }
+
+      // DELETE /admin/computer-use/computers/:id/connector {removeComputer?}
+      if (rest.length === 3 && rest[0] === 'computers' && rest[2] === 'connector' && method === 'DELETE') {
+        const principal = this.requireMaster(req);
+        const computerId = decodeURIComponent(rest[1] as string);
+        const body = await this.readOptionalObjectBody(req);
+        this.sendJson(
+          res,
+          200,
+          await this.deps.computerUse.removeConnector(computerId, parseConnectorRemove(body), principal.name),
+        );
+        return true;
+      }
+
       // GET /admin/computer-use/computers/:id/live-desktop -> 302 to the broker
       // console with a one-time sign-in handoff (no second password prompt).
       if (rest.length === 3 && rest[0] === 'computers' && rest[2] === 'live-desktop' && method === 'GET') {
@@ -248,6 +294,14 @@ export class ComputerUseApi implements AdminSubRouter {
     return body as Record<string, unknown>;
   }
 
+  /** Like `readObjectBody`, but an absent body is treated as `{}`. */
+  private async readOptionalObjectBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+    const length = Number.parseInt(String(req.headers['content-length'] ?? '0'), 10);
+    const chunked = req.headers['transfer-encoding'] !== undefined;
+    if (!chunked && (!Number.isFinite(length) || length <= 0)) return {};
+    return this.readObjectBody(req);
+  }
+
   private sendJson(res: ServerResponse, status: number, payload: unknown): void {
     const body = JSON.stringify(payload);
     res.writeHead(status, {
@@ -309,6 +363,21 @@ function parseEnrollment(body: Record<string, unknown>): ComputerUseEnrollmentIn
   if ('allowTerminal' in body) {
     if (typeof body.allowTerminal !== 'boolean') throw invalidParams("'allowTerminal' must be a boolean");
     input.allowTerminal = body.allowTerminal;
+  }
+  return input;
+}
+
+function parseHostComputer(body: Record<string, unknown>): ComputerUseHostComputerInput {
+  const input: ComputerUseHostComputerInput = {};
+  if ('name' in body) input.name = optionalStringOrNull(body, 'name');
+  return input;
+}
+
+function parseConnectorRemove(body: Record<string, unknown>): ComputerUseConnectorRemoveInput {
+  const input: ComputerUseConnectorRemoveInput = {};
+  if ('removeComputer' in body) {
+    if (typeof body.removeComputer !== 'boolean') throw invalidParams("'removeComputer' must be a boolean");
+    input.removeComputer = body.removeComputer;
   }
   return input;
 }

@@ -11,6 +11,7 @@ import { AddLinuxPcDialog } from './AddLinuxPcDialog.js';
 import { BrokerStatusCard } from './BrokerStatusCard.js';
 import { DevicesSection } from './DevicesSection.js';
 import { PendingPairingsSection } from './PendingPairingsSection.js';
+import { PhysicalComputersSection } from './PhysicalComputersSection.js';
 import { TerminalDialog } from './TerminalDialog.js';
 import {
   enrollmentKindLabel,
@@ -143,6 +144,8 @@ export function ConnectorsPage() {
         error={connectors.error}
         onRetry={refresh}
       />
+
+      <PhysicalComputersSection />
 
       <PendingPairingsSection
         enrollments={enrollments}

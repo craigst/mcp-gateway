@@ -182,6 +182,26 @@ class FakeBroker implements ComputerUseBrokerPort {
   ): Promise<unknown> {
     return {};
   }
+
+  // v0.12 host/stats/connector-lifecycle surface: not exercised by v0.9.
+  async createHostComputer(_name: string): Promise<never> {
+    throw new Error('not used in v0.9 computer-use tests');
+  }
+
+  async computerStats(_computerId: string): Promise<never> {
+    throw new Error('not used in v0.9 computer-use tests');
+  }
+
+  async updateConnector(_computerId: string): Promise<never> {
+    throw new Error('not used in v0.9 computer-use tests');
+  }
+
+  async removeConnector(
+    _computerId: string,
+    _input: { uninstall: boolean; removeComputer: boolean },
+  ): Promise<never> {
+    throw new Error('not used in v0.9 computer-use tests');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +276,7 @@ describe('v0.9 computer use (configured from env)', () => {
         brokerToken: 'brk_env_token',
         publicBrokerUrl: BROKER_URL,
         caFile: null,
+        installBaseUrl: null,
       },
     });
     mkdirSync(config.dataDir, { recursive: true });
@@ -471,6 +492,7 @@ describe('v0.9 computer use (configured from the console)', () => {
         brokerToken: null,
         publicBrokerUrl: null,
         caFile: null,
+        installBaseUrl: null,
       },
     });
     mkdirSync(config.dataDir, { recursive: true });
