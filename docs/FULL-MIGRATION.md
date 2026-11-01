@@ -38,7 +38,10 @@ the device fleet still need their waves. This is the plan for those waves.
   `deepseek/deepseek-flash`. A test webhook run then completed in 8.4 s with
   `llm.provider=deepseek llm.model=deepseek-flash`; its reply listed the
   WhatsApp read tools and confirmed no send tools. Backup:
-  `/opt/mcp-gateway/backups/omb-opencode-20261031T235651Z`.
+  `/opt/mcp-gateway/backups/omb-opencode-20261031T235651Z`. The OMB default
+  model for new bots was also moved from `opencode-go/qwen3.8-flash` to
+  `deepseek/deepseek-flash`, so a new bot cannot inherit the unavailable Go
+  model; backup `/opt/mcp-gateway/backups/omb-default-model-20261101T000006Z`.
 - New HTTP facades on cleo: ssh 8816, n8n 8817, media 8818, media-devices 8819.
   `media-devices` needs the hub's `cleo-messages`/`cleo-media-registry` units,
   which are not installed on cleo, so bus-dependent tools return `Connection
