@@ -239,3 +239,51 @@ configured server.
   has the corresponding row.
 - No direct upstream credential remains in an agent config; old keys are revoked.
 - A full backup/restore of the gateway and OMB is rehearsed.
+
+## 2026-11-01 — devices, .lan console, Vaultwarden, and the WG fallback
+
+### Devices
+Enrolled through the broker admin API and SSH (one-time tokens; temporary admin
+tokens revoked afterwards):
+
+| Device | How | State |
+|---|---|---|
+| `cleo` | SSH, install-connector.sh, terminal enabled | online |
+| `doc` (Pi5) | installed `python3-venv` via sudo, then SSH enroll | online |
+| `roof` | SSH enroll, terminal enabled | online |
+| `us-vps` | SSH (root), terminal enabled | enrolled; connector offline until the home WG path returns (it dials the broker on gpc) |
+| `gpc` | already enrolled | online |
+
+### `.lan` console and Homepage
+- AdGuard rewrite `mcp-gateway.lan → 10.10.254.49` (the gpc tunnel host).
+- Homepage tile **MCP Gateway** in **System**: `http://mcp-gateway.lan:8484/`.
+- Vaultwarden login: `local-ui/mcp-gateway/webui-login`, alias
+  `mcp-gateway-webui-login`, username `admin`, URI
+  `http://mcp-gateway.lan:8484/`. The stored password is the gateway's current
+  `MCP_UI_PASSWORD`; a login POST with it returns 200 + session cookie.
+- Verified from gpc, doc and roof: `mcp-gateway.lan` resolves and the console
+  returns HTTP 200.
+
+### WireGuard outage and fallback
+The home WAN address changed and the UDM Pro SE rebooted; `wg.evoonline.co.uk`
+updated to `86.131.61.197`, the VPS endpoint watcher updated the live peer after
+`resolvectl flush-caches`, but the UDM's `vpn` subsystem stayed in `error` and
+WireGuard handshakes stopped. Fallback, with gpc as the home anchor:
+
+- `mcp-gateway-ui-tunnel.service` (gpc): SSH local forward
+  `0.0.0.0:8484 → VPS 127.0.0.1:8484`.
+- `mcp-gateway-upstream-tunnel.service` (gpc): SSH remote forwards for the 23
+  HTTP MCP facades (`287xx`), the broker (`27443`) and DeviceBridge (`28443`),
+  bound to the VPS docker bridge IPs.
+- Gateway `servers.url` for the 23 HTTP servers → `172.19.0.1:2<port>`;
+  `computer-use` → `https://gpc.lan:27443/mcp`; `devicebridge` →
+  `https://devicebridge.lan:28443/mcp`.
+- Compose `extra_hosts`: `gpc.lan` and `devicebridge.lan` → `172.19.0.1`
+  (certificate SANs include both names).
+- UFW allows only the docker subnets to `28700:28899`, `27443`, `28443`.
+- DSH gateway URL is `http://mcp-gateway.lan:8484/mcp/v1`.
+
+Revert when the UDM's VPN subsystem is healthy again: point the rewrite back at
+`10.10.1.4`, restore the original gateway URLs, remove `extra_hosts`, stop the
+two gpc tunnel units. The gateway data backup from before the URL change is
+`/opt/mcp-gateway/backups/gateway.db.bak-tunnel-20261101T002121Z`.
