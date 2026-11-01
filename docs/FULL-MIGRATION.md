@@ -287,3 +287,41 @@ Revert when the UDM's VPN subsystem is healthy again: point the rewrite back at
 `10.10.1.4`, restore the original gateway URLs, remove `extra_hosts`, stop the
 two gpc tunnel units. The gateway data backup from before the URL change is
 `/opt/mcp-gateway/backups/gateway.db.bak-tunnel-20261101T002121Z`.
+
+## 2026-11-01 — OMB MCP-access admin for Cleo and Sentinel
+
+Both bots have the **same 9 `omb` admin tools** in their gateway keys:
+`omb_bots`, `omb_servers`, `omb_list_grants`, `omb_bot_prompt`, `omb_bot_soul`,
+`omb_grant_servers`, `omb_revoke_grant`, `omb_set_bot_servers`,
+`omb_set_bot_profile`.
+
+Setup/fixes:
+- The gateway's `omb` server had no config profile (it returned HTTP 404). Added
+  `cleo-omb-auth` (`X-API-Key` for the cleo OMB MCP facade) and applied it; the
+  server test now returns 9 tools.
+- The OMB MCP server's SSH host was `root@10.10.1.4` (WireGuard, currently down).
+  Changed `~/.config/omb-mcp/env` to `root@74.208.55.116` (backup
+  `env.bak-before-public-*`); the `omb_*` tools now work over the public SSH path.
+
+Checks:
+- Cleo: `omb_bots` and `omb_servers` read OK; a no-op
+  `omb_set_bot_servers` on Cleo (same `["gateway-cleo"]`, `confirm`=bot id)
+  returned `before`/`after` and `isError:false` — the write path works.
+- Sentinel: `omb_bots` read OK (same admin tool set).
+- This is **OMB MCP-access admin**, not the gateway master/admin API. The
+  gateway master key and web-console credentials remain operator-only; bots
+  cannot mint gateway keys or change gateway server definitions.
+- Souls updated via `omb_set_bot_profile` (Cleo 7,481 bytes, Sentinel 3,707;
+  `drift:false`). Both now carry the usage and limits section.
+- Shared 2nd-brain memories:
+  `db6dee82-7266-4c28-969a-19538dd6ff5b` (how),
+  `42742049-6a20-4e4f-a1fc-c9fd2a87f027` (admin limits),
+  `2c031e95-b668-4493-ae1f-9bc212dec2c7` (gateway use limits).
+- Internal OMB messages sent and acknowledged by both; no access was changed by
+  them. Backup before soul edits:
+  `/opt/mcp-gateway/backups/omb-bots-before-admin-prompts-20261101T003617Z.json`.
+
+Limits recorded for both: never change own/Sentinel security access without
+Craig's approval; never remove `omb`, `brain` or a `gateway-*` entry; prefer
+time-limited grants; read before write; report bot, before/after, grant id and
+reason; never expose keys; 128-tool cap; changes take effect next turn.
