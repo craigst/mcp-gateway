@@ -14,6 +14,7 @@ import { invalidParams } from '../core/errors.js';
 import { nowIso } from '../core/ids.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type {
+  WatcherAutoLike,
   WatcherContact,
   WatcherMode,
   WatcherOverview,
@@ -28,12 +29,21 @@ const MAX_CONTACTS = 2000;
 const MAX_KEY_LENGTH = 128;
 const MAX_NAME_LENGTH = 200;
 
+const DEFAULT_AUTO_LIKE: WatcherAutoLike = {
+  cleoPosts: true,
+  mentions: true,
+  cleoPostComments: false,
+  selectedAccounts: false,
+  cleoAccounts: ['livecleo', 'livecleotv'],
+};
+
 const DEFAULT_SETTINGS: WatcherSettings = {
   enabled: true,
   mode: 'all',
   selected: [],
   autoReply: false,
   draftOnly: true,
+  autoLike: DEFAULT_AUTO_LIKE,
   updatedAt: null,
   updatedBy: null,
 };
@@ -68,6 +78,42 @@ function cleanKey(raw: unknown): string {
     throw invalidParams(`Contact key “${key}” contains unsupported characters.`);
   }
   return key;
+}
+
+function normalizeAutoLike(raw: unknown, fallback: WatcherAutoLike): WatcherAutoLike {
+  if (raw === undefined || raw === null) return { ...fallback, cleoAccounts: [...fallback.cleoAccounts] };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw invalidParams('autoLike must be an object.');
+  }
+  const value = raw as Record<string, unknown>;
+  const bool = (key: keyof WatcherAutoLike, from: boolean): boolean => {
+    const candidate = value[key];
+    if (candidate === undefined) return from;
+    if (typeof candidate !== 'boolean') throw invalidParams(`autoLike.${key} must be true or false.`);
+    return candidate;
+  };
+  const accountsRaw = value.cleoAccounts;
+  let accounts = fallback.cleoAccounts;
+  if (accountsRaw !== undefined) {
+    if (!Array.isArray(accountsRaw)) throw invalidParams('autoLike.cleoAccounts must be an array.');
+    if (accountsRaw.length > 20) throw invalidParams('At most 20 Cleo accounts may be watched.');
+    accounts = [];
+    for (const entry of accountsRaw) {
+      if (typeof entry !== 'string') throw invalidParams('Each Cleo account must be a username.');
+      const handle = entry.trim().replace(/^@/u, '');
+      if (!/^[A-Za-z0-9._]{1,30}$/u.test(handle)) {
+        throw invalidParams(`“${entry}” is not a valid Instagram username.`);
+      }
+      if (!accounts.includes(handle)) accounts.push(handle);
+    }
+  }
+  return {
+    cleoPosts: bool('cleoPosts', fallback.cleoPosts),
+    mentions: bool('mentions', fallback.mentions),
+    cleoPostComments: bool('cleoPostComments', fallback.cleoPostComments),
+    selectedAccounts: bool('selectedAccounts', fallback.selectedAccounts),
+    cleoAccounts: accounts,
+  };
 }
 
 function cleanName(raw: unknown): string {
@@ -117,6 +163,7 @@ export class WatcherService {
       // These invariants hold even if an older row said otherwise.
       autoReply: false,
       draftOnly: true,
+      autoLike: normalizeAutoLike((saved as Partial<WatcherSettings>).autoLike, DEFAULT_AUTO_LIKE),
       selected: Array.isArray(saved.selected) ? saved.selected.map(String) : [],
     };
   }
@@ -163,12 +210,15 @@ export class WatcherService {
       );
     }
     const selected = [...new Set(input.selected.map(cleanKey))];
+    const existing = this.getSettings(source);
+    const autoLike = normalizeAutoLike(input.autoLike, existing.autoLike);
     const settings: WatcherSettings = {
       enabled: input.enabled,
       mode,
       selected,
       autoReply: false,
       draftOnly: true,
+      autoLike,
       updatedAt: nowIso(),
       updatedBy: actor,
     };

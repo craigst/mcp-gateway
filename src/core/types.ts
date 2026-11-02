@@ -1408,6 +1408,19 @@ export interface WatcherContact {
   kind: 'person' | 'group';
 }
 
+export interface WatcherAutoLike {
+  /** Like a new post from any configured Cleo account. */
+  cleoPosts: boolean;
+  /** Like a new comment that mentions the logged-in account. */
+  mentions: boolean;
+  /** Like new comments on Cleo's posts (excluding Cleo's own / self). */
+  cleoPostComments: boolean;
+  /** Like new posts from the Instagram selected-contact allowlist. */
+  selectedAccounts: boolean;
+  /** Cleo accounts whose posts/comments are watched. */
+  cleoAccounts: string[];
+}
+
 export interface WatcherSettings {
   enabled: boolean;
   mode: WatcherMode;
@@ -1417,6 +1430,8 @@ export interface WatcherSettings {
   autoReply: boolean;
   /** Always true: replies require explicit operator confirmation. */
   draftOnly: boolean;
+  /** Optional likes only; written replies/comments/mentions stay drafts. */
+  autoLike: WatcherAutoLike;
   updatedAt: string | null;
   updatedBy: string | null;
 }
@@ -1427,6 +1442,7 @@ export interface WatcherSettingsInput {
   selected: string[];
   /** Must be false; true is refused while draft mode is on. */
   autoReply?: boolean;
+  autoLike?: WatcherAutoLike;
 }
 
 export interface WatcherOverview {

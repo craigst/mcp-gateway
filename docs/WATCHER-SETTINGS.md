@@ -75,8 +75,8 @@ GET returns `{settings, contacts, contactsUpdatedAt}`; POST accepts
 - Catalogs synced: **107 WhatsApp contacts/groups**, **13 Instagram contacts**.
 - Saved an Instagram selection, got it back, restored `all`; `autoReply: true`
   returned HTTP 400 with the draft-mode message.
-- Watcher unit suite: **10/10 pass** (filters, cursor advance, catalog, LID).
-- Gateway tests: **1013 pass**.
+- Watcher unit suite: **11/11 pass** (filters, cursor advance, catalog, LID).
+- Gateway tests: **1014 pass**.
 - WhatsApp and Instagram tools still answer through the gateway after the
   0.14.2 restart; heal timer reports 0 missing profiles.
 
@@ -85,3 +85,29 @@ GET returns `{settings, contacts, contactsUpdatedAt}`; POST accepts
 - cleo watcher code: `remy_watchers.py.bak-before-watcher-settings-*`
 - gateway compose: `/opt/mcp-gateway/backups/docker-compose.yml.pre-0.14.2-*`
 - gateway DB: `/opt/mcp-gateway/backups/gateway.db.pre-0.14.2-*`
+
+## Instagram auto-like
+
+The Instagram card has an **Auto-like (Instagram)** section. Liking is the only
+automatic action; comments, replies and mentions stay drafts.
+
+| Toggle | Default | Behaviour |
+|---|---|---|
+| **New posts from Cleo** | ON | Likes a new post from any account in **Cleo accounts** (`livecleo`, `livecleotv` by default). |
+| **Comments that mention me** | ON | Polls the activity feed for `mention`, `reply_to_comment` and `usertag`; likes a new comment that references the logged-in account. |
+| **New comments on Cleo's posts** | OFF | Polls the latest posts from Cleo accounts and likes new comments by other people. Cleo's own comments and the watcher account's comments are excluded. Off by default. |
+| **New posts from selected accounts** | OFF | Likes new posts from the Instagram contacts chosen in **Selected contacts only**. Off by default. |
+
+**First-run baseline:** the first automation poll after a toggle is enabled marks
+the current posts/comments/activity as seen and performs **no likes**. Only items
+arriving afterwards are liked, so enabling a toggle never likes a backlog.
+Disabling and re-enabling a toggle creates a new baseline at that moment.
+
+Polling: automation/activity every **15 minutes** (`REMY_INSTAGRAM_AUTOMATION_INTERVAL_SECONDS`),
+DMs every **30 minutes**, settings every 15 seconds. The watcher account is
+`cra1gst`; it likes Cleo's posts and comments from that account, never posts
+comments itself. Every activity/comment match is also published as a draft
+webhook event for Remy, subject to the same selected-contact push filter.
+
+State is kept in the watcher's SQLite `meta` table (`ig:auto:*`, `ig:seen:*`);
+the `instagram-activity` cursor is separate from the DM cursor.

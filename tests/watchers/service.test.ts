@@ -45,6 +45,54 @@ describe('WatcherService', () => {
     expect(watcher.getSettings('whatsapp').selected).toEqual([]);
   });
 
+  it('persists Instagram auto-like options and validates usernames', () => {
+    const watcher = service();
+    expect(watcher.getSettings('instagram').autoLike).toEqual({
+      cleoPosts: true,
+      mentions: true,
+      cleoPostComments: false,
+      selectedAccounts: false,
+      cleoAccounts: ['livecleo', 'livecleotv'],
+    });
+    const saved = watcher.update(
+      'instagram',
+      {
+        enabled: true,
+        mode: 'all',
+        selected: [],
+        autoLike: {
+          cleoPosts: false,
+          mentions: true,
+          cleoPostComments: true,
+          selectedAccounts: false,
+          cleoAccounts: ['@livecleo'],
+        },
+      },
+      'craig',
+    );
+    expect(saved.settings.autoLike.cleoPosts).toBe(false);
+    expect(saved.settings.autoLike.cleoPostComments).toBe(true);
+    expect(saved.settings.autoLike.cleoAccounts).toEqual(['livecleo']);
+    expect(() =>
+      watcher.update(
+        'instagram',
+        {
+          enabled: true,
+          mode: 'all',
+          selected: [],
+          autoLike: {
+            cleoPosts: true,
+            mentions: true,
+            cleoPostComments: false,
+            selectedAccounts: false,
+            cleoAccounts: ['bad handle'],
+          },
+        },
+        'craig',
+      ),
+    ).toThrow(/valid Instagram username/);
+  });
+
   it('rejects malformed contact keys and dedupes the catalog', () => {
     const watcher = service();
     const result = watcher.syncContacts('instagram', [

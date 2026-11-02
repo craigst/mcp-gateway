@@ -11,6 +11,13 @@ const { apiMock } = vi.hoisted(() => ({
         selected: [],
         autoReply: false,
         draftOnly: true,
+        autoLike: {
+          cleoPosts: true,
+          mentions: true,
+          cleoPostComments: false,
+          selectedAccounts: false,
+          cleoAccounts: ['livecleo', 'livecleotv'],
+        },
         updatedAt: null,
         updatedBy: null,
       },

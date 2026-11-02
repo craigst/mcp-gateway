@@ -11,6 +11,7 @@ import { SkeletonCards } from '../../components/Skeleton.js';
 import { CheckboxField, GhostButton, PrimaryButton, SecondaryButton, TextInput } from '../../components/Form.js';
 import { useToast } from '../../components/Toasts.js';
 import type {
+  WatcherAutoLike,
   WatcherContact,
   WatcherMode,
   WatcherOverview,
@@ -21,6 +22,7 @@ interface FormState {
   enabled: boolean;
   mode: WatcherMode;
   selected: string[];
+  autoLike: WatcherAutoLike;
 }
 
 interface Copy {
@@ -61,6 +63,10 @@ function formFromOverview(overview: WatcherOverview): FormState {
     enabled: overview.settings.enabled,
     mode: overview.settings.mode,
     selected: [...overview.settings.selected],
+    autoLike: {
+      ...overview.settings.autoLike,
+      cleoAccounts: [...overview.settings.autoLike.cleoAccounts],
+    },
   };
 }
 
@@ -78,7 +84,18 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
   const copy = COPY[source];
   const toast = useToast();
   const watcher = useAsyncData(() => api.getWatcher(source), [source]);
-  const [form, setForm] = useState<FormState>({ enabled: true, mode: 'all', selected: [] });
+  const [form, setForm] = useState<FormState>({
+    enabled: true,
+    mode: 'all',
+    selected: [],
+    autoLike: {
+      cleoPosts: true,
+      mentions: true,
+      cleoPostComments: false,
+      selectedAccounts: false,
+      cleoAccounts: ['livecleo', 'livecleotv'],
+    },
+  });
   const [search, setSearch] = useState('');
   const [manualKey, setManualKey] = useState('');
   const [saving, setSaving] = useState(false);
@@ -111,7 +128,8 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
     watcher.status === 'ready' &&
     (form.enabled !== watcher.data.settings.enabled ||
       form.mode !== watcher.data.settings.mode ||
-      JSON.stringify(form.selected) !== JSON.stringify(watcher.data.settings.selected));
+      JSON.stringify(form.selected) !== JSON.stringify(watcher.data.settings.selected) ||
+      JSON.stringify(form.autoLike) !== JSON.stringify(watcher.data.settings.autoLike));
 
   const setSelected = (next: string[]): void => {
     setForm((current) => ({ ...current, selected: [...new Set(next)] }));
@@ -144,6 +162,7 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
         mode: form.mode,
         selected: form.selected,
         autoReply: false,
+        autoLike: form.autoLike,
       });
       toast('success', `${copy.title.split(' →')[0]} watcher settings saved. The watcher picks them up within 30 seconds.`);
       watcher.reload();
@@ -381,6 +400,92 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
               )}
             </div>
           </div>
+
+          {source === 'instagram' && (
+            <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/10 p-3.5">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold text-slate-100">Auto-like (Instagram)</p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">
+                    Likes happen automatically only when you enable them. Remy never posts comments, replies or
+                    mentions on its own — those stay as drafts for your confirmation.
+                  </p>
+                </div>
+                <Badge tone="success">LIKES ONLY</Badge>
+              </div>
+
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                {([
+                  {
+                    key: 'cleoPosts',
+                    label: 'New posts from Cleo',
+                    hint: 'Likes a new post from any Cleo account below.',
+                  },
+                  {
+                    key: 'mentions',
+                    label: 'Comments that mention me',
+                    hint: 'Likes a new comment that mentions your account.',
+                  },
+                  {
+                    key: 'cleoPostComments',
+                    label: "New comments on Cleo's posts",
+                    hint: "Off by default. Likes comments from other people; never Cleo's own comments or yours.",
+                  },
+                  {
+                    key: 'selectedAccounts',
+                    label: 'New posts from selected accounts',
+                    hint: 'Uses your Instagram selected-contact allowlist. Off by default.',
+                  },
+                ] as const).map((item) => (
+                  <label
+                    key={item.key}
+                    className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2.5 transition hover:border-slate-700"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.autoLike[item.key]}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          autoLike: { ...current.autoLike, [item.key]: event.target.checked },
+                        }))
+                      }
+                      className="mt-0.5 h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 accent-emerald-500"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-xs font-medium text-slate-200">{item.label}</span>
+                      <span className="mt-0.5 block text-[10px] leading-relaxed text-slate-500">{item.hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              {(form.autoLike.cleoPosts || form.autoLike.cleoPostComments) && (
+                <div className="mt-3">
+                  <p className="mb-1 text-[11px] font-medium text-slate-300">Cleo accounts</p>
+                  <TextInput
+                    value={form.autoLike.cleoAccounts.join(', ')}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        autoLike: {
+                          ...current.autoLike,
+                          cleoAccounts: event.target.value
+                            .split(',')
+                            .map((handle) => handle.trim().replace(/^@/u, ''))
+                            .filter((handle) => handle !== ''),
+                        },
+                      }))
+                    }
+                    placeholder="livecleo, livecleotv"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Comma-separated. Instagram polling checks these accounts for new posts and comments.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 pt-3">
             <div className="text-[11px] text-slate-500">
