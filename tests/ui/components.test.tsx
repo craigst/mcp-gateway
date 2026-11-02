@@ -161,4 +161,29 @@ describe('Layout', () => {
     expect(screen.getAllByRole('button', { name: 'Sign out' }).length).toBeGreaterThan(0);
     expect(screen.queryByText('Set API key')).toBeNull();
   });
+
+  it('pins the sidebar to the viewport and scrolls only the navigation inside it', () => {
+    const { container } = render(
+      <Layout current="dashboard" onNavigate={() => {}} user="operator" onSignOut={() => {}}>
+        <div>page content</div>
+      </Layout>,
+    );
+
+    // jsdom has no layout engine, so assert the classes that keep the shell
+    // usable on a long page: a viewport-height sticky sidebar. Without them the
+    // aside stretches to the document height and scrolling a long page drags
+    // the whole menu out of view.
+    const aside = container.querySelector('aside');
+    expect(aside).not.toBeNull();
+    expect(aside?.className).toContain('md:sticky');
+    expect(aside?.className).toContain('md:top-0');
+    expect(aside?.className).toContain('md:h-dvh');
+    expect(aside?.className).toContain('md:overflow-hidden');
+
+    // The nav is the only scroll area inside the sidebar, so a short viewport
+    // scrolls the menu instead of the page.
+    const nav = screen.getByRole('navigation', { name: 'Primary' });
+    expect(nav.className).toContain('min-h-0');
+    expect(nav.className).toContain('overflow-y-auto');
+  });
 });

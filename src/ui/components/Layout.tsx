@@ -142,8 +142,15 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
 
   return (
     <div className="flex min-h-screen bg-slate-950 text-slate-100">
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-slate-800 bg-slate-950/95 md:flex">
-        <div className="flex items-center gap-2.5 border-b border-slate-800 px-4 py-4">
+      {/*
+       * The sidebar is pinned to the viewport. Without `sticky top-0 h-dvh` it
+       * is a stretched flex item: it grows to the full document height, so a
+       * long page scrolls the navigation out of view and the operator has to
+       * scroll back up to change page. The nav keeps its own scroll area
+       * (`min-h-0 overflow-y-auto`) for viewports too short for all items.
+       */}
+      <aside className="hidden w-60 shrink-0 flex-col border-r border-slate-800 bg-slate-950/95 md:sticky md:top-0 md:flex md:h-dvh md:overflow-hidden">
+        <div className="flex shrink-0 items-center gap-2.5 border-b border-slate-800 px-4 py-4">
           <span
             aria-hidden="true"
             className="flex h-9 w-9 items-center justify-center rounded-lg bg-sky-500/15 text-base font-bold text-sky-300"
@@ -155,10 +162,10 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
             <p className="text-[11px] text-slate-500">zero-trust control plane</p>
           </div>
         </div>
-        <nav aria-label="Primary" className="flex-1 space-y-1 overflow-y-auto p-2">
+        <nav aria-label="Primary" className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
           {NAV_ITEMS.map((item) => navButton(item, false))}
         </nav>
-        <div className="space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
+        <div className="shrink-0 space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
           <p>v0.14.1 · MCP 2025-06-18</p>
           <div className="rounded-lg border border-slate-800 px-2.5 py-2">
             <div className="flex items-center gap-2">
