@@ -2,7 +2,7 @@
 
 Status: **implemented and deployed (gateway 0.14.2, 2026-11-02).**
 
-The Configurations page now has one card per source:
+The Configurations page has a **Push to Remy** heading with quick links at the top, then one card per source:
 
 - **WhatsApp → Remy**
 - **Instagram → Remy**

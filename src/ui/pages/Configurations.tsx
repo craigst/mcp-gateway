@@ -75,10 +75,35 @@ export function ConfigurationsPage({ onNavigate }: ConfigurationsPageProps) {
     }
   };
 
+  const scrollToWatcher = (source: 'whatsapp' | 'instagram'): void => {
+    document.getElementById(`watcher-${source}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   return (
     <div className="space-y-5">
-      <WatcherCard source="whatsapp" />
-      <WatcherCard source="instagram" />
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold text-slate-100">Push to Remy</h2>
+          <p className="mt-0.5 max-w-3xl text-xs leading-relaxed text-slate-400">
+            Choose which messages reach Remy. Replies always stay as drafts for your confirmation — auto-reply is
+            disabled.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <SecondaryButton onClick={() => scrollToWatcher('whatsapp')} className="px-2 py-1 text-xs">
+            WhatsApp settings
+          </SecondaryButton>
+          <SecondaryButton onClick={() => scrollToWatcher('instagram')} className="px-2 py-1 text-xs">
+            Instagram settings
+          </SecondaryButton>
+        </div>
+      </div>
+      <div id="watcher-whatsapp" className="scroll-mt-4">
+        <WatcherCard source="whatsapp" />
+      </div>
+      <div id="watcher-instagram" className="scroll-mt-4">
+        <WatcherCard source="instagram" />
+      </div>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-slate-100">Configuration profiles</h2>
