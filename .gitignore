@@ -48,3 +48,8 @@ logs/
 # local/private catalog + import configs (never commit)
 catalog.local.json
 *.local.json
+
+# Local checkout of the standalone HERE HGV MCP server (own repo)
+here-hgv-mcp/
+__pycache__/
+*.pyc

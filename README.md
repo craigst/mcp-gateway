@@ -176,6 +176,33 @@ POST /mcp/v1/admin/catalog/install
 { "sourceId": "cat_…", "entryId": "example-mcp", "start": true, "test": true }
 ```
 
+### Worked example: HERE HGV navigation (`here-hgv`)
+
+[`craigst/here-hgv-mcp`](https://github.com/craigst/here-hgv-mcp) is a managed stdio server
+installed through the Git-URL path and granted to specific OMB bots. It exposes 14 tools —
+truck-aware Routing v8 (`vehicle[height|width|length|grossWeight|weightPerAxle|axleCount|…]`),
+matrix, isoline, waypoint optimisation, live traffic incidents/flow, UK HGV Levy tolls,
+geocoding/search/autosuggest, static maps and a flexible-polyline decoder.
+
+```bash
+# 1. import (build is shell-free: the manifest uses `npm run setup`)
+POST /mcp/v1/admin/catalog/import-url
+{ "url": "https://github.com/craigst/here-hgv-mcp", "name": "here-hgv", "start": false }
+
+# 2. inject HERE_API_KEY from an encrypted config profile, then start + test
+POST /mcp/v1/admin/config-profiles/{profileId}/apply
+{ "serverIds": ["srv_…"], "restart": true, "test": true }
+
+# 3. grant the server to bot keys (appends a ServerGrant to each key)
+PATCH /mcp/v1/admin/keys/{keyId}   { "serverGrants": [ … , { "serverId": "srv_…" } ] }
+```
+
+`scripts/vps/register_here_hgv.py` performs all three steps idempotently and prints the
+per-bot tool counts (OMB caps a bot at 127 tools). Research behind the tool surface — including
+why the HERE Platform Maven token is not a Location Services API key, and what HERE's own
+MCP/“AI” products can and cannot do — is in
+[`docs/HERE-API-RESEARCH.md`](./docs/HERE-API-RESEARCH.md).
+
 ### Vault Warden
 
 Dangerous Vaultwarden tools are approval-gated: an agent call returns
