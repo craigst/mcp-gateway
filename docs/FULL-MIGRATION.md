@@ -325,3 +325,27 @@ Limits recorded for both: never change own/Sentinel security access without
 Craig's approval; never remove `omb`, `brain` or a `gateway-*` entry; prefer
 time-limited grants; read before write; report bot, before/after, grant id and
 reason; never expose keys; 128-tool cap; changes take effect next turn.
+
+## 2026-11-02 — Vaultwarden console login visibility
+
+The gateway console credential was already in Vaultwarden, but only in the
+organization collection `security-agent`, which the web vault shows under the
+organization, not under **My vault**. The owner (`evocraigst@proton.me`,
+`access_all=1` on org `Security Agent`) can see it, but the technical item name
+was easy to miss.
+
+Added a second, clearly named item:
+- **MCP Gateway (admin)** in the `cleo` and `infra` collections of the
+  **Security Agent** organization; username `admin`; URI
+  `http://mcp-gateway.lan:8484/`; same current `MCP_UI_PASSWORD`.
+- The original `local-ui/mcp-gateway/webui-login` remains in the
+  `security-agent` collection.
+
+Vaultwarden UI: open the **Security Agent** organization in the left sidebar,
+not **My vault**, then search `MCP Gateway`. The browser extension needs the
+organization vault selected to autofill the `.lan` URL. A login POST with the
+stored password returns 200 + session cookie.
+
+The gateway's `vaultwarden` server had briefly returned HTTP 404 because its
+config profile was not loaded; reapplying `omb-vaultwarden-auth` restored the
+47 tools. The profile is persisted in `servers.config_profile_ids`.
