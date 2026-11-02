@@ -349,3 +349,36 @@ stored password returns 200 + session cookie.
 The gateway's `vaultwarden` server had briefly returned HTTP 404 because its
 config profile was not loaded; reapplying `omb-vaultwarden-auth` restored the
 47 tools. The profile is persisted in `servers.config_profile_ids`.
+
+## 2026-11-02 — gateway 404 outage (Nora and all bots)
+
+Symptom: every upstream tool returned `Remote MCP server returned HTTP 404`.
+Nora's calls at 16:53 all failed; the gateway was healthy and all servers showed
+`running`.
+
+Cause: the servers had their auth config profiles attached
+(`servers.config_profile_ids`) but the live HTTP clients were not sending the
+profile headers, so each cleo facade answered 404 (missing `X-API-Key`). The
+profile association was persisted; the runtime headers were stale. Reapplying
+the profile restarts the server and resolves the header.
+
+Fix:
+- Reapplied all 24 attached profiles (`cleo-*-auth` / `omb-*-auth`); each test
+  returned `ok` with the expected tool count. All 25 servers now test clean;
+  `computer-use` returns 26 tools.
+- The home→VPS upstream tunnel unit was in a 269-restart loop because an orphan
+  `sshd-session` on the VPS still held ports 287xx. Killed the orphan, reset and
+  restarted the unit; 48 listeners active. Added sshd
+  `ClientAliveInterval 30` / `ClientAliveCountMax 3` so a dead client cannot
+  leave the ports held for hours.
+- Self-heal: `scripts/vps/heal_gateway_profiles.py` every 5 minutes
+  (`mcp-gateway-heal.timer`) tests each profiled server and re-applies the
+  profile only when the failure is 401/403/404; transport failures are skipped.
+- Usage visibility: the console **Audit** page has the per-call key/server/tool
+  records (676 entries at the time of the fix). `scripts/vps/usage_report.py`
+  prints per-key calls/errors and error servers; run on the VPS:
+  `python3 /opt/mcp-gateway/usage_report.py --since 6h`.
+
+Verified after the fix: `omb-nora` unifi/searxng/brain/homepage/adguard/cloudflare
+all return data; `omb-remy` WhatsApp `list_chats`/`list_messages` return data;
+`dsh-harness-vps2` computer-use `list_devices` returns all 5 devices.

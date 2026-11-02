@@ -1,0 +1,11 @@
+[Unit]
+Description=Check MCP gateway profile headers every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=mcp-gateway-heal.service
+
+[Install]
+WantedBy=timers.target

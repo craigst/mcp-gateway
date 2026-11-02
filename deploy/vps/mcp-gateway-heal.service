@@ -1,0 +1,9 @@
+[Unit]
+Description=Re-apply missing MCP gateway config-profile headers
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/mcp-gateway/heal_gateway_profiles.py
+Nice=10
