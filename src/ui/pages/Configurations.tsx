@@ -12,6 +12,7 @@ import { DangerButton, GhostButton, PrimaryButton, SecondaryButton } from '../co
 import { useToast } from '../components/Toasts.js';
 import { ConfigProfileDialog } from '../pages/configurations/ConfigProfileDialog.js';
 import { ApplyProfileDialog } from '../pages/configurations/ApplyProfileDialog.js';
+import { WatcherCard } from '../pages/configurations/WatcherCard.js';
 import { countCredentialRefs, countEncrypted, countVaultRefs } from '../pages/configurations/shared.js';
 import type { PageKey } from '../components/Layout.js';
 import type { ConfigProfileSummary, ServerRecord } from '../../core/types.js';
@@ -76,6 +77,8 @@ export function ConfigurationsPage({ onNavigate }: ConfigurationsPageProps) {
 
   return (
     <div className="space-y-5">
+      <WatcherCard source="whatsapp" />
+      <WatcherCard source="instagram" />
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-slate-100">Configuration profiles</h2>

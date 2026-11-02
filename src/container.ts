@@ -52,6 +52,9 @@ import { DefaultServerUpdateService } from './updates/index.js';
 import { UpdatesApi } from './admin/updates-api.js';
 import { ServerInspectorService } from './inspector/index.js';
 import { SettingsApi } from './admin/settings-api.js';
+import { WatcherService } from './watchers/service.js';
+import { WatchersApi } from './admin/watchers-api.js';
+import { WatcherApi } from './gateway/watcher-api.js';
 import { DefaultBackupService } from './backup/index.js';
 import { BackupApi } from './admin/backup-api.js';
 import { DefaultCredentialProviderService } from './credentials/index.js';
@@ -125,6 +128,17 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
   uiAuth.ensureBootstrapUser();
   const authenticate = (req: import('node:http').IncomingMessage) => authenticateRequest(req, keys, uiAuth);
   const settingsApi = new SettingsApi({ config, keys, db, auth: uiAuth, authenticate, logger });
+  const watcherService = new WatcherService(db, createLogger('watchers', config.logLevel));
+  const watchersApi = new WatchersApi({
+    service: watcherService,
+    authenticate,
+    logger: createLogger('admin.watchers', config.logLevel),
+  });
+  const watcherApi = new WatcherApi({
+    service: watcherService,
+    authenticate,
+    logger: createLogger('gateway.watcher', config.logLevel),
+  });
   const catalog = new DefaultCatalogService(repository, policy);
   const escalations = new SqliteEscalationService(db, { logger });
   const vault = new SqliteVaultService(db, config.vaultSecret, { logger });
@@ -344,9 +358,21 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     credentialsApi,
     keyActivity,
     computerUseApi,
+    watchersApi,
     logger,
   });
-  const server = new GatewayHttpServer({ config, router, admin, keys, uiAuth, authApi, supervisor, audit, logger });
+  const server = new GatewayHttpServer({
+    config,
+    router,
+    admin,
+    watcherApi,
+    keys,
+    uiAuth,
+    authApi,
+    supervisor,
+    audit,
+    logger,
+  });
 
   // Reset stale "running" rows from a previous process, then bootstrap the master key.
   for (const record of repository.listServers()) {

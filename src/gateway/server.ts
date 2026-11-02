@@ -11,15 +11,17 @@ import type { AuthApi } from '../auth/http.js';
 import { authenticateRequest } from '../auth/request-auth.js';
 import type { AuthenticatedKey, JsonRpcRequest, JsonRpcResponse, RequestContext } from '../core/types.js';
 import type { AdminApi } from '../admin/router.js';
+import type { WatcherApi } from './watcher-api.js';
 import { createRequestContext, JsonRpcRouter } from './router.js';
 
-const GATEWAY_VERSION = '0.14.1';
+const GATEWAY_VERSION = '0.14.2';
 const MAX_BATCH_SIZE = 20;
 
 export interface GatewayServerDeps {
   config: GatewayConfig;
   router: JsonRpcRouter;
   admin: AdminApi;
+  watcherApi?: WatcherApi;
   keys: KeyService;
   uiAuth: UiAuthService;
   authApi: AuthApi;
@@ -123,6 +125,13 @@ export class GatewayHttpServer {
       if (url.pathname.startsWith('/mcp/v1/admin/')) {
         const handled = await this.deps.admin.handle(req, res, url);
         if (!handled) this.sendError(res, 404, new GatewayError(ErrorCodes.METHOD_NOT_FOUND, 'Unknown admin endpoint'));
+        return;
+      }
+      if (url.pathname.startsWith('/mcp/v1/watcher/')) {
+        const handled = await this.deps.watcherApi?.handle(req, res, url);
+        if (!handled) {
+          this.sendError(res, 404, new GatewayError(ErrorCodes.METHOD_NOT_FOUND, 'Unknown watcher endpoint'));
+        }
         return;
       }
       if (url.pathname.startsWith('/mcp/v1/')) {

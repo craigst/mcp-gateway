@@ -1391,3 +1391,46 @@ export interface ComputerUseVmComputerCreateInput {
   memoryMb?: number;
   diskGb?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Social watchers (WhatsApp / Instagram push-to-bot settings)
+// ---------------------------------------------------------------------------
+
+export type WatcherSource = 'whatsapp' | 'instagram';
+export type WatcherMode = 'all' | 'selected';
+
+/** One selectable contact in a watcher's synced catalog. */
+export interface WatcherContact {
+  /** Stable selection key: phone digits, `lid:<lid>`, `group:<jid>` or `ig:<username>`. */
+  key: string;
+  name: string;
+  phone: string | null;
+  kind: 'person' | 'group';
+}
+
+export interface WatcherSettings {
+  enabled: boolean;
+  mode: WatcherMode;
+  /** Contact keys to push when mode is `selected`. */
+  selected: string[];
+  /** Always false: watchers push drafts only. */
+  autoReply: boolean;
+  /** Always true: replies require explicit operator confirmation. */
+  draftOnly: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export interface WatcherSettingsInput {
+  enabled: boolean;
+  mode: WatcherMode;
+  selected: string[];
+  /** Must be false; true is refused while draft mode is on. */
+  autoReply?: boolean;
+}
+
+export interface WatcherOverview {
+  settings: WatcherSettings;
+  contacts: WatcherContact[];
+  contactsUpdatedAt: string | null;
+}

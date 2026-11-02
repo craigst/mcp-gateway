@@ -72,6 +72,9 @@ import type {
   TransportKind,
   UpdateCheckResult,
   VaultSecretMetadata,
+  WatcherOverview,
+  WatcherSettingsInput,
+  WatcherSource,
 } from '../../core/types.js';
 import type { DelegationTrace, MetricsSnapshot, SubServerLogLine } from '../../core/ports.js';
 
@@ -1213,6 +1216,19 @@ export class ApiClient {
   }
 
   // -- v0.4 configuration profiles -----------------------------------------
+
+  // -- v0.14.2 WhatsApp watcher ------------------------------------------
+
+  async getWatcher(source: WatcherSource): Promise<WatcherOverview> {
+    return this.request<WatcherOverview>(`/mcp/v1/admin/watchers/${source}`);
+  }
+
+  async updateWatcher(source: WatcherSource, input: WatcherSettingsInput): Promise<WatcherOverview> {
+    return this.request<WatcherOverview>(`/mcp/v1/admin/watchers/${source}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
 
   async listConfigProfiles(): Promise<ConfigProfileSummary[]> {
     const response = await this.request<{ profiles?: ConfigProfileSummary[] }>(

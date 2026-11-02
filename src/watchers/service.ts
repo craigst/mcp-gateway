@@ -1,0 +1,213 @@
+/**
+ * Social watcher settings (WhatsApp + Instagram push-to-Remy).
+ *
+ * The watcher processes run on cleo, outside the gateway. These settings live in
+ * the gateway's `settings` table so the operator manages them in the console,
+ * and each watcher polls its own source with a scoped `watcher-*` key.
+ *
+ * Auto-reply is deliberately impossible here: watchers only push events to
+ * Remy, and Remy's replies are drafts that require explicit confirmation.
+ */
+import type { DatabaseSync } from 'node:sqlite';
+
+import { invalidParams } from '../core/errors.js';
+import { nowIso } from '../core/ids.js';
+import { createLogger, type Logger } from '../core/logger.js';
+import type {
+  WatcherContact,
+  WatcherMode,
+  WatcherOverview,
+  WatcherSettings,
+  WatcherSettingsInput,
+  WatcherSource,
+} from '../core/types.js';
+
+const SOURCES: readonly WatcherSource[] = ['whatsapp', 'instagram'];
+const MAX_SELECTED = 500;
+const MAX_CONTACTS = 2000;
+const MAX_KEY_LENGTH = 128;
+const MAX_NAME_LENGTH = 200;
+
+const DEFAULT_SETTINGS: WatcherSettings = {
+  enabled: true,
+  mode: 'all',
+  selected: [],
+  autoReply: false,
+  draftOnly: true,
+  updatedAt: null,
+  updatedBy: null,
+};
+
+interface ContactsRecord {
+  contacts: WatcherContact[];
+  updatedAt: string | null;
+}
+
+const DEFAULT_CONTACTS: ContactsRecord = { contacts: [], updatedAt: null };
+
+export function parseWatcherSource(raw: unknown): WatcherSource {
+  if (raw === 'whatsapp' || raw === 'instagram') return raw;
+  throw invalidParams(`Unknown watcher source “${String(raw)}”. Expected whatsapp or instagram.`);
+}
+
+function settingsKey(source: WatcherSource): string {
+  return `watcher:${source}:settings`;
+}
+
+function contactsKey(source: WatcherSource): string {
+  return `watcher:${source}:contacts`;
+}
+
+function cleanKey(raw: unknown): string {
+  if (typeof raw !== 'string') throw invalidParams('Each selected contact must be a string key.');
+  const key = raw.trim();
+  if (key === '' || key.length > MAX_KEY_LENGTH) {
+    throw invalidParams(`A contact key must be 1–${MAX_KEY_LENGTH} characters.`);
+  }
+  if (!/^[A-Za-z0-9+_.:@-]+$/u.test(key)) {
+    throw invalidParams(`Contact key “${key}” contains unsupported characters.`);
+  }
+  return key;
+}
+
+function cleanName(raw: unknown): string {
+  if (typeof raw !== 'string') throw invalidParams('Each contact needs a name.');
+  const name = raw.trim().replace(/\s+/gu, ' ');
+  if (name === '' || name.length > MAX_NAME_LENGTH) {
+    throw invalidParams(`A contact name must be 1–${MAX_NAME_LENGTH} characters.`);
+  }
+  return name;
+}
+
+export class WatcherService {
+  private readonly logger: Logger;
+
+  constructor(
+    private readonly db: DatabaseSync,
+    logger?: Logger,
+  ) {
+    this.logger = logger ?? createLogger('watchers');
+  }
+
+  private read<T>(key: string, fallback: T): T {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+      | { value?: unknown }
+      | undefined;
+    if (typeof row?.value !== 'string' || row.value === '') return fallback;
+    try {
+      return JSON.parse(row.value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private write(key: string, value: unknown): void {
+    this.db
+      .prepare(
+        'INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      )
+      .run(key, JSON.stringify(value));
+  }
+
+  getSettings(source: WatcherSource): WatcherSettings {
+    const saved = this.read<Partial<WatcherSettings>>(settingsKey(source), {});
+    return {
+      ...DEFAULT_SETTINGS,
+      ...saved,
+      // These invariants hold even if an older row said otherwise.
+      autoReply: false,
+      draftOnly: true,
+      selected: Array.isArray(saved.selected) ? saved.selected.map(String) : [],
+    };
+  }
+
+  getContacts(source: WatcherSource): ContactsRecord {
+    const saved = this.read<Partial<ContactsRecord>>(contactsKey(source), DEFAULT_CONTACTS);
+    return {
+      contacts: Array.isArray(saved.contacts) ? saved.contacts : [],
+      updatedAt: typeof saved.updatedAt === 'string' ? saved.updatedAt : null,
+    };
+  }
+
+  getOverview(source: WatcherSource): WatcherOverview {
+    const contacts = this.getContacts(source);
+    return {
+      settings: this.getSettings(source),
+      contacts: contacts.contacts,
+      contactsUpdatedAt: contacts.updatedAt,
+    };
+  }
+
+  update(source: WatcherSource, input: WatcherSettingsInput, actor: string): WatcherOverview {
+    if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+      throw invalidParams('Settings must be a JSON object.');
+    }
+    if (typeof input.enabled !== 'boolean') {
+      throw invalidParams('enabled must be true or false.');
+    }
+    const mode: WatcherMode =
+      input.mode === 'all' || input.mode === 'selected'
+        ? input.mode
+        : (() => {
+            throw invalidParams('mode must be “all” or “selected”.');
+          })();
+    if (!Array.isArray(input.selected)) {
+      throw invalidParams('selected must be an array of contact keys.');
+    }
+    if (input.selected.length > MAX_SELECTED) {
+      throw invalidParams(`Select at most ${MAX_SELECTED} contacts.`);
+    }
+    if (input.autoReply === true) {
+      throw invalidParams(
+        'Auto-reply is disabled while draft mode is on. Remy drafts replies for your confirmation.',
+      );
+    }
+    const selected = [...new Set(input.selected.map(cleanKey))];
+    const settings: WatcherSettings = {
+      enabled: input.enabled,
+      mode,
+      selected,
+      autoReply: false,
+      draftOnly: true,
+      updatedAt: nowIso(),
+      updatedBy: actor,
+    };
+    this.write(settingsKey(source), settings);
+    this.logger.info('watcher settings updated', {
+      source,
+      enabled: settings.enabled,
+      mode: settings.mode,
+      selected: settings.selected.length,
+      actor,
+    });
+    return this.getOverview(source);
+  }
+
+  syncContacts(source: WatcherSource, raw: unknown): { count: number; updatedAt: string } {
+    if (!Array.isArray(raw)) throw invalidParams('contacts must be an array.');
+    if (raw.length > MAX_CONTACTS) throw invalidParams(`At most ${MAX_CONTACTS} contacts may be synced.`);
+    const byKey = new Map<string, WatcherContact>();
+    for (const entry of raw) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+        throw invalidParams('Each contact must be an object.');
+      }
+      const record = entry as Record<string, unknown>;
+      const key = cleanKey(record.key);
+      if (byKey.has(key)) continue;
+      const name = cleanName(record.name);
+      const kind = record.kind === 'group' ? 'group' : 'person';
+      const phone = typeof record.phone === 'string' && record.phone.trim() !== ''
+        ? record.phone.trim()
+        : null;
+      byKey.set(key, { key, name, phone, kind });
+    }
+    const updatedAt = nowIso();
+    this.write(contactsKey(source), { contacts: [...byKey.values()], updatedAt });
+    this.logger.info('watcher contacts synced', { source, count: byKey.size });
+    return { count: byKey.size, updatedAt };
+  }
+}
+
+export function isWatcherSource(value: string): value is WatcherSource {
+  return (SOURCES as readonly string[]).includes(value);
+}

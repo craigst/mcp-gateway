@@ -4,6 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     listConfigProfiles: vi.fn(),
+    getWatcher: vi.fn().mockResolvedValue({
+      settings: {
+        enabled: true,
+        mode: 'all',
+        selected: [],
+        autoReply: false,
+        draftOnly: true,
+        updatedAt: null,
+        updatedBy: null,
+      },
+      contacts: [],
+      contactsUpdatedAt: null,
+    }),
+    updateWatcher: vi.fn(),
     listServers: vi.fn(),
     listVaultSecrets: vi.fn(),
     createConfigProfile: vi.fn(),
