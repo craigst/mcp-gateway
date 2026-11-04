@@ -1,6 +1,6 @@
 # MCP Server Migration Plan — Odysseus laptop → MCP Gateway
 
-Status: **inventory and feasibility checks complete; migration in progress — AdGuard, Cloudflare and n8n are now source-backed gateway-local installs.**
+Status: **migration in progress — AdGuard, Cloudflare, n8n and Nextcloud are source-backed gateway-local installs; brain is blocked on the messenger-hub dependency.**
 Last updated: 2026-11-04 (migration log appended)
 
 ## Why
@@ -205,3 +205,19 @@ For each server:
 - Old remote n8n registration removed; old process left temporarily as a rollback.
 - Vault cleanup: `n8n-api-key-workstation` left active/valid; the two dead aliases (`n8n-api-key-credcheck-config`, `n8n-c5-api-key`) soft-deleted to the Bitwarden trash.
 - Backup: `backups/n8n-remote-before-cutover-*.json`, `backups/n8n-key-grants-before-cutover-*.json`.
+
+
+### Nextcloud — migrated 2026-11-04
+
+- Installed from `DSH-Plugins` catalog source; app password copied from the live cleo config to `/data/secrets/nextcloud-app-password` (0600).
+- Tested read-only with writes disabled: `nc_status`, `nc_files_list`, `nc_calendars_list`.
+- Production server: `srv_0719a7f256504a77`, runtime `node`, workDir `/data/repos/nextcloud`, writes preserved (`NEXTCLOUD_ALLOW_WRITES=1`).
+- OMB/harness key grants updated.
+- Test server and test workdir removed.
+
+### brain — STOPPED 2026-11-04
+
+- Catalog install and tool discovery succeeded (12 tools).
+- Read-only calls failed because brain needs the messenger hub at `127.0.0.1:7317` on cleo for caller identity, and the hub is loopback-only. The gateway can reach cleo's LAN IP but not that loopback port.
+- Test server removed; production brain left untouched.
+- Blocker: brain's ACL identity depends on the messenger hub. Either migrate/relay the hub, or expose it on a LAN-bound address with a scoped credential, before brain can move.
