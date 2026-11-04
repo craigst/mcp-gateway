@@ -1,7 +1,7 @@
 # MCP Server Migration Plan — Odysseus laptop → MCP Gateway
 
-Status: **inventory and feasibility checks complete; first pilot passed; no production server moved yet.**
-Last updated: 2026-11-04
+Status: **inventory and feasibility checks complete; migration started — AdGuard and Cloudflare moved to source-backed gateway-local installs. Migration stopped at n8n on a credential failure.**
+Last updated: 2026-11-04 (migration log appended)
 
 ## Why
 
@@ -174,3 +174,32 @@ For each server:
 ## Recommended first production pilot
 
 **adguard** — Node, read-only-friendly, LAN reachable, no persistent state, and the credential requirements are isolated. If that passes, proceed to cloudflare, searxng, unifi, n8n, nextcloud and messenger.
+
+
+## Progress log
+
+### AdGuard — migrated 2026-11-04
+
+- Installed from `DSH-Plugins` catalog source with `ADGUARD_URL=https://adguard.lan`.
+- Tested read-only first: status, stats, filters, rewrites.
+- Production server replaced: `srv_3ef09ab5558345a0`, runtime `node`, workDir `/data/repos/adguard`, source markers set.
+- OMB/harness key grants updated from the old remote server ID.
+- Old remote process on cleo left running temporarily as a rollback; gateway registration removed.
+- Backup: `backups/adguard-remote-before-cutover-*.json`, `backups/adguard-key-grants-before-cutover-*.json`.
+
+### Cloudflare — migrated 2026-11-04
+
+- Installed from `DSH-Plugins` catalog source with the live `CF_*` environment.
+- Tested read-only: `cf_verify`, `cf_zones`, `cf_tunnels`.
+- Production server replaced: `srv_4bd27f681dc34b3a`, runtime `node`, workDir `/data/repos/cloudflare`, source markers set.
+- OMB/harness key grants updated.
+- Old remote process on cleo left running temporarily as a rollback.
+- Backup: `backups/cloudflare-remote-before-cutover-*.json`, `backups/cloudflare-key-grants-before-cutover-*.json`.
+
+### n8n — STOPPED 2026-11-04
+
+- Catalog install and test-server startup succeeded (36 tools).
+- Read-only `n8n_status` / `n8n_list_workflows` returned **401 Unauthorized** from n8n.
+- The **existing remote n8n server returns the same 401**, so this is a pre-existing invalid API key, not a gateway runtime failure.
+- Test server removed; production remote n8n untouched.
+- Blocker: replace the n8n API key (Settings → n8n API), then resume.
