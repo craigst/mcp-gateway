@@ -1,6 +1,6 @@
 # MCP Server Migration Plan — Odysseus laptop → MCP Gateway
 
-Status: **inventory and feasibility checks complete; migration started — AdGuard and Cloudflare moved to source-backed gateway-local installs. Migration stopped at n8n on a credential failure.**
+Status: **inventory and feasibility checks complete; migration in progress — AdGuard, Cloudflare and n8n are now source-backed gateway-local installs.**
 Last updated: 2026-11-04 (migration log appended)
 
 ## Why
@@ -196,10 +196,12 @@ For each server:
 - Old remote process on cleo left running temporarily as a rollback.
 - Backup: `backups/cloudflare-remote-before-cutover-*.json`, `backups/cloudflare-key-grants-before-cutover-*.json`.
 
-### n8n — STOPPED 2026-11-04
+### n8n — migrated 2026-11-04 (after credential fix)
 
-- Catalog install and test-server startup succeeded (36 tools).
-- Read-only `n8n_status` / `n8n_list_workflows` returned **401 Unauthorized** from n8n.
-- The **existing remote n8n server returns the same 401**, so this is a pre-existing invalid API key, not a gateway runtime failure.
-- Test server removed; production remote n8n untouched.
-- Blocker: replace the n8n API key (Settings → n8n API), then resume.
+- First test install exposed a **401** from n8n; the existing remote server returned the same 401. This was an invalid old API key.
+- A new 289-character n8n API key was added to Vaultwarden alias `n8n-api-key-workstation`, validated (`HTTP 200`), and used for a fresh test install. Read-only `n8n_status`, `n8n_list_workflows` and `n8n_list_executions` passed with zero workflows (new n8n instance).
+- Production replaced: `srv_9f2073b95998459b`, runtime `node`, workDir `/data/repos/n8n`, source markers set, 36 tools.
+- OMB/harness key grants updated.
+- Old remote n8n registration removed; old process left temporarily as a rollback.
+- Vault cleanup: `n8n-api-key-workstation` left active/valid; the two dead aliases (`n8n-api-key-credcheck-config`, `n8n-c5-api-key`) soft-deleted to the Bitwarden trash.
+- Backup: `backups/n8n-remote-before-cutover-*.json`, `backups/n8n-key-grants-before-cutover-*.json`.
