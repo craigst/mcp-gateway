@@ -276,3 +276,26 @@ For each server:
   email x4 (source/packaging gap), homepage (SSH/source), instagram (session),
   messenger (hub cutover), omb (SSH/Docker-inside-VPS coupling), vaultwarden
   (`bw` CLI), whatsapp (bridge/phone).
+
+
+## 2026-11-05 safe-wave completion
+
+- **homeassistant** — local connector, HA itself remains at 10.10.254.84.
+- **searxng** — local connector; SearXNG remains at 10.10.254.13:8010.
+- **ssh** — local connector; key/config copied; read-only checks pass.
+- **unifi** — local connector; UniFi remains at 10.10.254.1.
+- **homepage** — local connector via SSH to pi5; `homepage_status` and
+  `homepage_list_services` pass.
+- **omb** — local connector; it still SSHes to root@10.10.1.4 and uses docker
+  exec for OMB, but the MCP process itself is now in the gateway.
+- **btt-bca** — local connector running from a dedicated Python venv with
+  `mcp==2.2.0`; `bca_health` and `bca_week` pass.
+- Result: 17 local, 9 remote.
+
+Remaining remote:
+- computer-use (host/browser-bound, currently failing)
+- email x4 (source tied to the Odysseus app tree)
+- instagram (session/source state)
+- messenger (full hub cutover)
+- vaultwarden (Bitwarden CLI dependency)
+- whatsapp (Go bridge + phone + SQLite)
