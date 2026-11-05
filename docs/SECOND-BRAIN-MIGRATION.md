@@ -47,7 +47,7 @@ now and is a remaining cross-host dependency.
 - **Qdrant** — `brain_docs` 149,820 points; `brain_memories` 475 points;
   `mem0migrations` restored. Per-collection snapshots were used.
 - **`/srv/brain/data`** and **`/srv/brain/secondbrain`** copied.
-- **`/srv/brain/archive`** — copy in progress (6.9 GB of ~11 GB at last check).
+- **`/srv/brain/archive`** — copy complete: 106,455 files, 10,574,632,124 bytes (exact source match).
 - **Brainboard** — `api/overview` reports 50,444 documents, 150,918 chunks,
   142 assets and 204 asset changes; health checks for Postgres, Qdrant and
   Ollama are green.
@@ -59,13 +59,12 @@ now and is a remaining cross-host dependency.
 
 ## Not yet cut over
 
-The old cleo stack remains running:
+The old cleo stack remains running and authoritative; the new stack is read-only staging:
 
 - `/srv/brain` on cleo still has the live `brain-api`, Postgres, Qdrant, Tika.
 - The old `brain-mcp-http.service` still points at `http://10.10.254.91:8642`.
 - The gateway `brain` server is still `remote-agent` on cleo.
-- The archive copy is incomplete.
-- Nothing writes to the new VPS brain yet except the new Brainboard reads.
+- - Nothing writes to the new VPS brain yet except the new Brainboard reads.
 
 **Do not stop the old stack until the cutover below is complete.**
 
