@@ -59,9 +59,12 @@ function startSource(source) {
     state.pid = null;
     state.lastExit = { code, signal, at: new Date().toISOString() };
     log(`${source} exited code=${code} signal=${signal}`);
-    if (!shuttingDown) {
+    if (!shuttingDown && code !== 2) {
       const timer = setTimeout(() => startSource(source), 15000);
       timer.unref();
+    } else if (code === 2) {
+      state.lastError = 'exit 2: Instagram challenge/login required; restart with watchers_restart after re-authentication';
+      log(`${source} paused: exit 2 (challenge/login required)`);
     }
   });
 }

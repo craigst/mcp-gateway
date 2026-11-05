@@ -1411,6 +1411,8 @@ export interface WatcherContact {
 export interface WatcherAutoLike {
   /** Like a new post from any configured Cleo account. */
   cleoPosts: boolean;
+  /** Like every active story from a configured Cleo account. */
+  cleoStories: boolean;
   /** Like a new comment that mentions the logged-in account. */
   mentions: boolean;
   /** Like new comments on Cleo's posts (excluding Cleo's own / self). */

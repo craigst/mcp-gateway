@@ -49,6 +49,7 @@ describe('WatcherService', () => {
     const watcher = service();
     expect(watcher.getSettings('instagram').autoLike).toEqual({
       cleoPosts: true,
+      cleoStories: true,
       mentions: true,
       cleoPostComments: false,
       selectedAccounts: false,
@@ -62,6 +63,7 @@ describe('WatcherService', () => {
         selected: [],
         autoLike: {
           cleoPosts: false,
+          cleoStories: false,
           mentions: true,
           cleoPostComments: true,
           selectedAccounts: false,
@@ -82,6 +84,7 @@ describe('WatcherService', () => {
           selected: [],
           autoLike: {
             cleoPosts: true,
+            cleoStories: false,
             mentions: true,
             cleoPostComments: false,
             selectedAccounts: false,

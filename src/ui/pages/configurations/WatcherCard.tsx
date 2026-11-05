@@ -90,6 +90,7 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
     selected: [],
     autoLike: {
       cleoPosts: true,
+      cleoStories: true,
       mentions: true,
       cleoPostComments: false,
       selectedAccounts: false,
@@ -422,6 +423,11 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
                     hint: 'Likes a new post from any Cleo account below.',
                   },
                   {
+                    key: 'cleoStories',
+                    label: 'New stories from Cleo',
+                    hint: 'Likes each active story from the Cleo accounts below.',
+                  },
+                  {
                     key: 'mentions',
                     label: 'Comments that mention me',
                     hint: 'Likes a new comment that mentions your account.',
@@ -460,7 +466,7 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
                 ))}
               </div>
 
-              {(form.autoLike.cleoPosts || form.autoLike.cleoPostComments) && (
+              {(form.autoLike.cleoPosts || form.autoLike.cleoStories || form.autoLike.cleoPostComments) && (
                 <div className="mt-3">
                   <p className="mb-1 text-[11px] font-medium text-slate-300">Cleo accounts</p>
                   <TextInput

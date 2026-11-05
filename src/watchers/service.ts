@@ -31,6 +31,7 @@ const MAX_NAME_LENGTH = 200;
 
 const DEFAULT_AUTO_LIKE: WatcherAutoLike = {
   cleoPosts: true,
+  cleoStories: true,
   mentions: true,
   cleoPostComments: false,
   selectedAccounts: false,
@@ -109,6 +110,7 @@ function normalizeAutoLike(raw: unknown, fallback: WatcherAutoLike): WatcherAuto
   }
   return {
     cleoPosts: bool('cleoPosts', fallback.cleoPosts),
+    cleoStories: bool('cleoStories', fallback.cleoStories),
     mentions: bool('mentions', fallback.mentions),
     cleoPostComments: bool('cleoPostComments', fallback.cleoPostComments),
     selectedAccounts: bool('selectedAccounts', fallback.selectedAccounts),

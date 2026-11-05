@@ -67,3 +67,35 @@ The old `remy-whatsapp-watcher.service` and `remy-instagram-watcher.service`
 were stopped on the laptop. Auto-reply remains draft-only by design in the
 gateway; auto-like/auto-apply is enabled through `autoLike` in the watcher
 settings.
+
+## Story auto-like
+
+Story auto-like is now a first-class watcher option:
+
+- `WatcherAutoLike.cleoStories` (default **on** for this deployment).
+- Visible in the Configuration → Instagram watcher card as **“New stories from Cleo”**.
+- The Python watcher polls `user_stories()` for each configured Cleo account and
+  calls `story_like()` for every active story, tracking liked PKs in the watcher
+  state DB so a restart does not re-like the same story.
+- Gateway image deployed: `localhost/mcp-gateway:0.15.4`.
+- Current setting saved as:
+
+```json
+{
+  "cleoPosts": true,
+  "cleoStories": true,
+  "mentions": true,
+  "cleoPostComments": true,
+  "selectedAccounts": false,
+  "cleoAccounts": ["livecleo", "livecleotv"]
+}
+```
+
+### Current blocker
+
+The saved Instagram session became invalid during the audit (`login_required`).
+The Instagram watcher therefore exits code 2 and waits for re-authentication; it
+does **not** restart-loop. After a new session is placed at
+`/data/secrets/instagram/session.json`, call `watchers_restart` on the
+`social-watchers` MCP server. Until then, story auto-like and Instagram
+monitoring cannot make API calls.
