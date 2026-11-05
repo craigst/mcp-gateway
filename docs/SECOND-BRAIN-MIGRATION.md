@@ -47,7 +47,7 @@ now and is a remaining cross-host dependency.
 - **Qdrant** — `brain_docs` 149,820 points; `brain_memories` 475 points;
   `mem0migrations` restored. Per-collection snapshots were used.
 - **`/srv/brain/data`** and **`/srv/brain/secondbrain`** copied.
-- **`/srv/brain/archive`** — copy in progress (5.5 GB of ~11 GB at last check).
+- **`/srv/brain/archive`** — copy in progress (6.9 GB of ~11 GB at last check).
 - **Brainboard** — `api/overview` reports 50,444 documents, 150,918 chunks,
   142 assets and 204 asset changes; health checks for Postgres, Qdrant and
   Ollama are green.
@@ -55,7 +55,7 @@ now and is a remaining cross-host dependency.
   returned 8 live hits from the restored data.
 - **Web UI** — `https://memory.evoonline.co.uk` published through the `vps`
   Cloudflare tunnel; Basic auth works (200 authenticated, 401 unauthenticated).
-  Homepage tile added as **Brain Board**.
+  Homepage tile added as **Brain Board**; Vault item URI updated.
 
 ## Not yet cut over
 
