@@ -44,3 +44,26 @@ are separate Python workers, not MCP servers, and are still on the laptop. The
 gateway watcher settings currently force `autoReply: false` and `draftOnly:
 true`; true auto-reply still needs those workers moved/ported and the draft-only
 guard changed.
+
+## Watchers / auto-apply / monitoring
+
+The two Remy watcher workers were moved off the laptop into the gateway as one
+local MCP server:
+
+- Server: `social-watchers` → `srv_1aad56ae946a4ce2` (2 tools: `watchers_status`, `watchers_restart`)
+- Manager: `/data/repos/remy-watchers/manager.mjs`
+- Worker: `/data/repos/remy-watchers/remy_watchers.py`
+- State snapshot: `/data/secrets/remy-watchers/state.sqlite3`
+- Settings/credentials env: `/data/secrets/remy-watchers.env`
+- Logs: `/data/repos/remy-watchers/watchers.log`
+
+The workers read their allowlist and `autoLike` settings from the gateway
+watcher API (`http://127.0.0.1:8080/mcp/v1/watcher`) using a copied scoped
+watcher key. That keeps auto-apply/auto-like driven by the gateway settings
+instead of laptop state. The state database (cursor + outbox) was snapshotted
+after stopping the old services, so monitoring resumes without duplicates.
+
+The old `remy-whatsapp-watcher.service` and `remy-instagram-watcher.service`
+were stopped on the laptop. Auto-reply remains draft-only by design in the
+gateway; auto-like/auto-apply is enabled through `autoLike` in the watcher
+settings.
