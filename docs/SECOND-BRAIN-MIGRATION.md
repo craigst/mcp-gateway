@@ -95,3 +95,45 @@ Options, in preference order:
 6. Stop old brain-api/Postgres/Qdrant/Tika only after a verified rollback window.
 7. Keep `/opt/brain/backups` and the old `/srv` tree until the new host has run
    cleanly for at least a week.
+
+
+## Cutover completed — 2026-11-05
+
+- The archive copy completed exactly: 106,455 files, 10,574,632,124 bytes.
+- AI Messenger hub replica was started on the VPS at `10.10.1.4:7317`
+  (`/opt/ai-messenger`, systemd `ai-messenger-hub.service`). The hub DB was
+  taken with `VACUUM INTO` for a consistent copy; attachments, journal, config
+  and credentials were copied. UFW allows 7317 only from the Docker/LAN ranges.
+- The gateway was restarted to clear stale remote tool routing.
+- Production `brain` is now the gateway-local catalog install:
+  - `srv_9b2889a22c9f4014`
+  - runtime `node`, workDir `/data/repos/brain`
+  - source `https://github.com/craigst/brain-mcp.git`
+  - 12 tools
+  - env points at `http://10.10.1.4:8642` and
+    `MESSENGER_CRED_FILE=/data/secrets/messenger-cred-omb-maus.env`
+- Verified through the gateway:
+  - `brain_whoami` → `omb-maus`, hub `http://10.10.1.4:7317`, API
+    `http://10.10.1.4:8642`, granted search/remember/update/knowledge
+  - `brain_stats` and `brain_search` return the restored data
+- The 27 gateway keys that held the old brain server ID were updated to the
+  new local server ID.
+- The old brain MCP registration was removed; the old cleo brain-mcp service
+  remains as rollback.
+
+### Tool-name caveat
+
+The messenger MCP server also exposes its own embedded brain tools under the
+`brain__brain_*` prefix, and those still point at the old brain/hub. The new
+gateway-local brain server exposes the unqualified `brain_*` names. Use the
+unqualified names for the migrated brain. Do not treat `brain__brain_*` as the
+new server.
+
+### Still pending
+
+- Full AI Messenger cutover: the VPS hub is currently a copy used for brain
+  identity; `messenger.evoonline.co.uk` and existing messenger clients still use
+  the old hub. Switching them is a separate cutover and will freeze/sync the
+  hub data again.
+- Decommissioning the old brain API/MCP and the old hub only after a verified
+  rollback window.
