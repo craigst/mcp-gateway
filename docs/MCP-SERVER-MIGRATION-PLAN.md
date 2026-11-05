@@ -221,3 +221,22 @@ For each server:
 - Read-only calls failed because brain needs the messenger hub at `127.0.0.1:7317` on cleo for caller identity, and the hub is loopback-only. The gateway can reach cleo's LAN IP but not that loopback port.
 - Test server removed; production brain left untouched.
 - Blocker: brain's ACL identity depends on the messenger hub. Either migrate/relay the hub, or expose it on a LAN-bound address with a scoped credential, before brain can move.
+
+
+## 2026-11-05 migration continuation
+
+- **GitHub** migrated from the remote-agent facade to a gateway-local catalog
+  install (`srv_0b6c710434494152`, 115 tools, workDir `/data/repos/github`).
+  Read-only `gh_verify`, `gh_repo_get` and `gh_file_get` passed. 11 keys updated.
+- **DeviceBridge** migrated to a gateway-local catalog install
+  (`srv_6e78160515b8482c`, 56 tools). It uses the existing `devicebridge.env`
+  and CA copied to `/data/secrets`; `device_list` and `device_alerts` passed.
+  14 keys updated.
+- **Messenger MCP** was installed and passed read-only tests against the VPS
+  hub (`messenger_status`, `messenger_whoami`, `messenger_contacts`,
+  `messenger_conversations`), but it was **not cut over**: the hub is still a
+  replica and full messenger cutover is pending. Test server removed.
+- Second Brain MCP is now gateway-local and uses the VPS hub/API:
+  `srv_9b2889a22c9f4014`, 12 tools, 27 keys updated.
+- Gateway was restarted once to clear stale remote tool routing; health is ok
+  and OMB returns 200.
