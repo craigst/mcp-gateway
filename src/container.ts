@@ -65,6 +65,7 @@ import { DefaultComputerUseService } from './computer_use/index.js';
 import { ComputerUseApi } from './admin/computer-use-api.js';
 import { EmailService } from './email/service.js';
 import { EmailApi } from './email/api.js';
+import { InstagramApi } from './social/instagram-api.js';
 
 export interface GatewayServices {
   keys: KeyService;
@@ -344,6 +345,17 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     logger: createLogger('admin.email', config.logLevel),
   });
 
+  const socialApi = new InstagramApi({
+    config,
+    authenticate,
+    listServers: () => repository.listServers(),
+    restartServer: async (name) => {
+      const server = repository.listServers().find((candidate) => candidate.name === name);
+      if (server) await supervisor.restart(server.id);
+    },
+    logger: createLogger('admin.instagram', config.logLevel),
+  });
+
   const admin = new AdminApi({
     config,
     keys,
@@ -371,6 +383,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     computerUseApi,
     watchersApi,
     emailApi,
+    socialApi,
     logger,
   });
   const server = new GatewayHttpServer({

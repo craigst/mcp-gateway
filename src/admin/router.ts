@@ -70,6 +70,8 @@ export interface AdminDeps {
   watchersApi?: AdminSubRouter;
   /** Account-aware email client API. */
   emailApi?: AdminSubRouter;
+  /** Instagram session/proxy settings API. */
+  socialApi?: AdminSubRouter;
   /** Per-key access view and activity (v0.8). */
   keyActivity?: KeyActivityService;
   logger?: Logger;
@@ -138,6 +140,8 @@ export class AdminApi {
           return (await this.deps.watchersApi?.handle(req, res, url)) ?? false;
         case 'email':
           return (await this.deps.emailApi?.handle(req, res, url)) ?? false;
+        case 'social':
+          return (await this.deps.socialApi?.handle(req, res, url)) ?? false;
         default:
           return false;
       }

@@ -31,3 +31,27 @@ Curl in the gateway image lacks SOCKS support, so use Python for the check.
 Re-authentication still requires a **fresh, unchallenged** Instagram sessionid.
 The previous token had already been invalidated by Instagram and cannot be
 reused.
+
+## Web UI
+
+Configuration → Instagram now has an **Instagram session** card:
+
+- paste a fresh `sessionid`
+- `ds_user_id` defaults to `268219632`
+- save session → runs `instagram_mcp.cli login` through the proxy, then restarts the Instagram MCP and watcher
+- set/replace the `IG_PROXY` URL
+- shows session present / proxy configured state
+
+The token is sent to the Python process over stdin and is never returned by the
+gateway API.
+
+## WhatsApp
+
+The Go bridge was rebuilt with `client.SetProxyAddress()` support. It now reads
+`WHATSAPP_PROXY` from `/data/secrets/whatsapp.env`, so WhatsApp also exits
+through the pi5 UK proxy. It connected successfully through the proxy and
+`list_messages` still works.
+
+SearXNG itself runs on zues, so its searches already exit through the UK home
+WAN. The gateway SearXNG connector only calls the internal zues instance; it
+does not need the proxy.

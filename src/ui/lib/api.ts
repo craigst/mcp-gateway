@@ -483,6 +483,15 @@ export interface EscalationResolveResult {
   result?: unknown;
 }
 
+export interface InstagramSessionInfo {
+  sessionFile: string;
+  configured: boolean;
+  bytes: number;
+  modifiedAt: string | null;
+  proxyConfigured: boolean;
+  proxyHost: string | null;
+}
+
 export interface RequestOptions {
   /** Caller-owned abort signal (combined with the client timeout). */
   signal?: AbortSignal;
@@ -1810,6 +1819,28 @@ export class ApiClient {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  }
+  // -- Instagram session/proxy ---------------------------------------------
+
+  async getInstagramSession(): Promise<InstagramSessionInfo> {
+    const response = await this.request<{ session: InstagramSessionInfo }>('/mcp/v1/admin/social/instagram');
+    return response.session;
+  }
+
+  async setInstagramSession(sessionid: string, userId: string): Promise<InstagramSessionInfo> {
+    const response = await this.request<{ session: InstagramSessionInfo }>('/mcp/v1/admin/social/instagram/session', {
+      method: 'POST',
+      body: JSON.stringify({ sessionid, userId }),
+    });
+    return response.session;
+  }
+
+  async setInstagramProxy(proxy: string): Promise<InstagramSessionInfo> {
+    const response = await this.request<{ session: InstagramSessionInfo }>('/mcp/v1/admin/social/instagram/proxy', {
+      method: 'POST',
+      body: JSON.stringify({ proxy }),
+    });
+    return response.session;
   }
 }
 

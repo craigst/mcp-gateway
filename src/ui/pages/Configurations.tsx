@@ -13,6 +13,7 @@ import { useToast } from '../components/Toasts.js';
 import { ConfigProfileDialog } from '../pages/configurations/ConfigProfileDialog.js';
 import { ApplyProfileDialog } from '../pages/configurations/ApplyProfileDialog.js';
 import { WatcherCard } from '../pages/configurations/WatcherCard.js';
+import { InstagramSessionCard } from '../pages/configurations/InstagramSessionCard.js';
 import { countCredentialRefs, countEncrypted, countVaultRefs } from '../pages/configurations/shared.js';
 import type { PageKey } from '../components/Layout.js';
 import type { ConfigProfileSummary, ServerRecord } from '../../core/types.js';
@@ -101,8 +102,9 @@ export function ConfigurationsPage({ onNavigate }: ConfigurationsPageProps) {
       <div id="watcher-whatsapp" className="scroll-mt-4">
         <WatcherCard source="whatsapp" />
       </div>
-      <div id="watcher-instagram" className="scroll-mt-4">
+      <div id="watcher-instagram" className="scroll-mt-4 space-y-4">
         <WatcherCard source="instagram" />
+        <InstagramSessionCard />
       </div>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
