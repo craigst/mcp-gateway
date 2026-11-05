@@ -258,3 +258,21 @@ For each server:
   Python server at `src/server.py`, but the catalog import reports no entry point
   even with a `src` subpath source. It needs a checked-in manifest or a small
   importer/source adjustment before it can be migrated.
+
+
+## 2026-11-05 continuation 3 — host applications stay put
+
+- **homeassistant** connector migrated into the gateway. HA itself remains at
+  `10.10.254.84:8123`; the VPS reaches it over WireGuard. The connector runs as
+  a local Python venv (`mcp==1.30.0`), `srv_1f0f1d37162a453f`, 3 tools;
+  `ha_states` and `ha_get` passed. 6 keys updated. No HA data or add-ons moved.
+- **searxng** migrated (`srv_be96df122c164cb4`, 6 tools); `health` and `search`
+  passed. SearXNG itself stays at `10.10.254.13:8010`.
+- **ssh** migrated (`srv_5f108901aa744482`, 10 tools); its key/config copied;
+  `ssh_list_systems` and a read-only `ssh_run` passed. 3 keys updated.
+- **unifi** migrated (`srv_20c82cd7d24a440a`, 28 tools); `unifi_health` and
+  `unifi_status` passed. 6 keys updated.
+- Remaining remote: btt-bca (import entry-point gap), computer-use (host-bound),
+  email x4 (source/packaging gap), homepage (SSH/source), instagram (session),
+  messenger (hub cutover), omb (SSH/Docker-inside-VPS coupling), vaultwarden
+  (`bw` CLI), whatsapp (bridge/phone).
