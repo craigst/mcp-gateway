@@ -1,0 +1,21 @@
+[Unit]
+Description=Authenticated SOCKS5 egress proxy for mcp-gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=craigst
+Group=craigst
+EnvironmentFile=/opt/pi-egress/proxy.env
+ExecStart=/usr/bin/python3 /opt/pi-egress/socks5.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/pi-egress
+
+[Install]
+WantedBy=multi-user.target
