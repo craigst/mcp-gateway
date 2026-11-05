@@ -240,3 +240,21 @@ For each server:
   `srv_9b2889a22c9f4014`, 12 tools, 27 keys updated.
 - Gateway was restarted once to clear stale remote tool routing; health is ok
   and OMB returns 200.
+
+
+## 2026-11-05 continuation 2
+
+- **GitHub**: `srv_0b6c710434494152`, 115 tools, local source install; 11 keys.
+- **DeviceBridge**: `srv_6e78160515b8482c`, 56 tools, local source install; 14 keys.
+- **media**: `srv_bfb0f72e1fbe489c`, 45 tools, local source install; read-only
+  `media_probe` passes (Kodi was off, so TV state calls were unavailable).
+- **media-devices**: `srv_59bafd08e5714049`, 39 tools, local source install;
+  `devices_list` returns the three registered devices.
+- SSH key/config and media helper configs were copied to `/data/secrets` with mode
+  0600; the gateway can reach the Pi as `craigst@10.10.254.85`.
+- **Messenger MCP** passed read-only tests against the VPS hub but remains on the
+  old remote registration pending full messenger cutover.
+- **btt-bca** is blocked by the import autodetector: the repository keeps the
+  Python server at `src/server.py`, but the catalog import reports no entry point
+  even with a `src` subpath source. It needs a checked-in manifest or a small
+  importer/source adjustment before it can be migrated.
