@@ -77,6 +77,15 @@ import type {
   WatcherSource,
 } from '../../core/types.js';
 import type { DelegationTrace, MetricsSnapshot, SubServerLogLine } from '../../core/ports.js';
+import type {
+  EmailAccount,
+  EmailAccountInput,
+  EmailConnectionStatus,
+  EmailFolder,
+  EmailMessage,
+  EmailMessageSummary,
+  SendEmailInput,
+} from '../../email/types.js';
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -1710,6 +1719,97 @@ export class ApiClient {
       { method: 'POST', body: JSON.stringify(note ? { status, note } : { status }) },
     );
     return response;
+  }
+  // -- email ----------------------------------------------------------------
+
+  async listEmailAccounts(): Promise<EmailAccount[]> {
+    const response = await this.request<{ accounts?: EmailAccount[] }>('/mcp/v1/admin/email');
+    return response.accounts ?? [];
+  }
+
+  async createEmailAccount(input: EmailAccountInput): Promise<EmailAccount> {
+    const response = await this.request<{ account: EmailAccount }>('/mcp/v1/admin/email', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return response.account;
+  }
+
+  async updateEmailAccount(id: string, input: Partial<EmailAccountInput>): Promise<EmailAccount> {
+    const response = await this.request<{ account: EmailAccount }>(`/mcp/v1/admin/email/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+    return response.account;
+  }
+
+  async deleteEmailAccount(id: string): Promise<boolean> {
+    const response = await this.request<{ deleted?: boolean }>(`/mcp/v1/admin/email/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    return response.deleted === true;
+  }
+
+  testEmailAccount(id: string): Promise<EmailConnectionStatus> {
+    return this.request<EmailConnectionStatus>(`/mcp/v1/admin/email/${encodeURIComponent(id)}/test`, { method: 'POST' });
+  }
+
+  async listEmailFolders(id: string): Promise<EmailFolder[]> {
+    const response = await this.request<{ folders?: EmailFolder[] }>(
+      `/mcp/v1/admin/email/${encodeURIComponent(id)}/folders`,
+    );
+    return response.folders ?? [];
+  }
+
+  async listEmailMessages(
+    id: string,
+    options: { folder?: string; limit?: number; unreadOnly?: boolean; search?: string } = {},
+  ): Promise<EmailMessageSummary[]> {
+    const query = buildQuery({
+      folder: options.folder ?? 'INBOX',
+      limit: options.limit ?? 30,
+      unread: options.unreadOnly === true ? 1 : undefined,
+      search: options.search,
+    });
+    const response = await this.request<{ messages?: EmailMessageSummary[] }>(
+      `/mcp/v1/admin/email/${encodeURIComponent(id)}/messages${query}`,
+    );
+    return response.messages ?? [];
+  }
+
+  async readEmailMessage(id: string, uid: number, folder = 'INBOX'): Promise<EmailMessage> {
+    const response = await this.request<{ message: EmailMessage }>(
+      `/mcp/v1/admin/email/${encodeURIComponent(id)}/messages/${uid}${buildQuery({ folder })}`,
+    );
+    return response.message;
+  }
+
+  async markEmailRead(id: string, uid: number, read: boolean, folder = 'INBOX'): Promise<void> {
+    await this.request(`/mcp/v1/admin/email/${encodeURIComponent(id)}/messages/${uid}/read`, {
+      method: 'POST',
+      body: JSON.stringify({ read, folder }),
+    });
+  }
+
+  async moveEmailMessage(id: string, uid: number, target: string, folder = 'INBOX'): Promise<void> {
+    await this.request(`/mcp/v1/admin/email/${encodeURIComponent(id)}/messages/${uid}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ target, folder }),
+    });
+  }
+
+  async deleteEmailMessage(id: string, uid: number, folder = 'INBOX'): Promise<void> {
+    await this.request(`/mcp/v1/admin/email/${encodeURIComponent(id)}/messages/${uid}/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ folder }),
+    });
+  }
+
+  async sendEmail(id: string, input: SendEmailInput): Promise<{ messageId: string; accepted: string[]; rejected: string[] }> {
+    return this.request(`/mcp/v1/admin/email/${encodeURIComponent(id)}/send`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 }
 

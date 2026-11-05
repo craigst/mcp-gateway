@@ -299,3 +299,15 @@ Remaining remote:
 - messenger (full hub cutover)
 - vaultwarden (Bitwarden CLI dependency)
 - whatsapp (Go bridge + phone + SQLite)
+
+
+## 2026-11-05 — email redesign
+
+- Replaced four per-mailbox MCP servers with one account-aware `email` MCP
+  server (`srv_8017d6e92885431b`, 11 tools) and an Email tab in the Web UI.
+- Accounts imported directly from Odysseus `app.db`; passwords decrypted with
+  Odysseus' `_decrypt` (not copied as config files).
+- All four accounts (3 Proton Bridge/custom-domain accounts + Gmail) pass
+  IMAP login, folder listing and read-only message tests.
+- Old email server records removed; 10 API keys repointed to the shared email
+  server. No email was sent during validation.

@@ -68,6 +68,8 @@ export interface AdminDeps {
   computerUseApi?: AdminSubRouter;
   /** v0.14.2: WhatsApp/Instagram watcher push-to-bot settings. */
   watchersApi?: AdminSubRouter;
+  /** Account-aware email client API. */
+  emailApi?: AdminSubRouter;
   /** Per-key access view and activity (v0.8). */
   keyActivity?: KeyActivityService;
   logger?: Logger;
@@ -134,6 +136,8 @@ export class AdminApi {
           return (await this.deps.computerUseApi?.handle(req, res, url)) ?? false;
         case 'watchers':
           return (await this.deps.watchersApi?.handle(req, res, url)) ?? false;
+        case 'email':
+          return (await this.deps.emailApi?.handle(req, res, url)) ?? false;
         default:
           return false;
       }

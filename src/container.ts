@@ -63,6 +63,8 @@ import { invalidParams } from './core/errors.js';
 import { InspectorApi } from './admin/inspector-api.js';
 import { DefaultComputerUseService } from './computer_use/index.js';
 import { ComputerUseApi } from './admin/computer-use-api.js';
+import { EmailService } from './email/service.js';
+import { EmailApi } from './email/api.js';
 
 export interface GatewayServices {
   keys: KeyService;
@@ -333,6 +335,15 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     computerUse,
     logger,
   });
+  const email = new EmailService({ db });
+  const emailApi = new EmailApi({
+    config,
+    keys,
+    email,
+    authenticate,
+    logger: createLogger('admin.email', config.logLevel),
+  });
+
   const admin = new AdminApi({
     config,
     keys,
@@ -359,6 +370,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     keyActivity,
     computerUseApi,
     watchersApi,
+    emailApi,
     logger,
   });
   const server = new GatewayHttpServer({

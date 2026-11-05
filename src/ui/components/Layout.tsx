@@ -5,6 +5,7 @@ import { cx } from '../lib/cx.js';
 
 export type PageKey =
   | 'dashboard'
+  | 'email'
   | 'catalog'
   | 'computer-use'
   | 'connectors'
@@ -28,6 +29,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { key: 'dashboard', label: 'Dashboard', icon: '◔', description: 'Live telemetry, request rate and error budget.' },
+  { key: 'email', label: 'Email', icon: '✉', description: 'Read, search, compose and manage every connected mailbox from one account-aware client.' },
   {
     key: 'catalog',
     label: 'Catalog',

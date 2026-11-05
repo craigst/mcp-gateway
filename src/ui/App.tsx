@@ -6,6 +6,7 @@ import type { PageKey } from './components/Layout.js';
 import { ToastProvider } from './components/Toasts.js';
 import { LoginPage } from './pages/Login.js';
 import { DashboardPage } from './pages/Dashboard.js';
+import { EmailPage } from './pages/Email.js';
 import { CatalogPage } from './pages/Catalog.js';
 import { ComputerUsePage } from './pages/computer-use/ComputerUsePage.js';
 import { ConnectorsPage } from './pages/connectors/ConnectorsPage.js';
@@ -23,6 +24,7 @@ import { SettingsPage } from './pages/Settings.js';
 
 const PAGE_KEYS: readonly string[] = [
   'dashboard',
+  'email',
   'catalog',
   'computer-use',
   'connectors',
@@ -103,6 +105,8 @@ interface RenderContext {
 
 function renderPage(page: PageKey, context: RenderContext) {
   switch (page) {
+    case 'email':
+      return <EmailPage />;
     case 'catalog':
       return (
         <CatalogPage
