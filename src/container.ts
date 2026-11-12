@@ -65,6 +65,7 @@ import { DefaultComputerUseService } from './computer_use/index.js';
 import { ComputerUseApi } from './admin/computer-use-api.js';
 import { EmailService } from './email/service.js';
 import { EmailTriageStore } from './email/triage-store.js';
+import { JevClient } from './email/jev.js';
 import { EmailApi } from './email/api.js';
 import { EmailAccessService, type EmailAccessBot } from './email/access.js';
 import { InstagramApi } from './social/instagram-api.js';
@@ -139,14 +140,45 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     authenticate,
     logger: createLogger('admin.watchers', config.logLevel),
   });
+  // Audit needs live counters; close over the services that own them.
+  const audit = new SqliteAuditService(db, {
+    serverCounts: () => {
+      const servers = repository.listServers();
+      return { running: servers.filter((server) => server.status === 'running').length, total: servers.length };
+    },
+    delegationCounts: () => {
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) AS total,
+                  COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved,
+                  COALESCE(SUM(CASE WHEN status = 'denied' THEN 1 ELSE 0 END), 0) AS denied
+             FROM delegation_traces`,
+        )
+        .get() as { total: number; approved: number; denied: number } | undefined;
+      return {
+        total: Number(row?.total ?? 0),
+        approved: Number(row?.approved ?? 0),
+        denied: Number(row?.denied ?? 0),
+      };
+    },
+  });
+
   // Email: one service for every mailbox, plus per-mailbox triage state.
   // Created before the watcher API because the watcher reads mail through it.
   const email = new EmailService({ db });
   const emailTriage = new EmailTriageStore(db);
+  // The decision model: without JEV_API_KEY `configured` is false, the watcher
+  // gets a 503, and unread mail is left exactly where it is.
+  const jev = new JevClient({ apiKey: process.env.JEV_API_KEY ?? null });
+  if (!jev.configured) {
+    logger.info('email triage: JEV_API_KEY is not set, so no mail will be judged');
+  }
   const watcherApi = new WatcherApi({
     service: watcherService,
     email,
     triage: emailTriage,
+    jev,
+    audit,
     authenticate,
     logger: createLogger('gateway.watcher', config.logLevel),
   });
@@ -186,28 +218,6 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     logger,
   });
 
-  // Audit needs live counters; close over the services that own them.
-  const audit = new SqliteAuditService(db, {
-    serverCounts: () => {
-      const servers = repository.listServers();
-      return { running: servers.filter((server) => server.status === 'running').length, total: servers.length };
-    },
-    delegationCounts: () => {
-      const row = db
-        .prepare(
-          `SELECT COUNT(*) AS total,
-                  COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved,
-                  COALESCE(SUM(CASE WHEN status = 'denied' THEN 1 ELSE 0 END), 0) AS denied
-             FROM delegation_traces`,
-        )
-        .get() as { total: number; approved: number; denied: number } | undefined;
-      return {
-        total: Number(row?.total ?? 0),
-        approved: Number(row?.approved ?? 0),
-        denied: Number(row?.denied ?? 0),
-      };
-    },
-  });
 
   const keyActivity = new SqliteKeyActivityService({
     db,

@@ -14,7 +14,7 @@ import type { AdminApi } from '../admin/router.js';
 import type { WatcherApi } from './watcher-api.js';
 import { createRequestContext, JsonRpcRouter } from './router.js';
 
-const GATEWAY_VERSION = '0.15.2';
+const GATEWAY_VERSION = '0.15.3';
 const MAX_BATCH_SIZE = 20;
 
 export interface GatewayServerDeps {

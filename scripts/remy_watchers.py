@@ -20,7 +20,7 @@ import io
 import json
 import logging
 import os
-import random
+import re
 import sqlite3
 import sys
 import time
@@ -332,7 +332,6 @@ class WebhookDelivery:
 
 DEFAULT_AUTO_LIKE: dict[str, Any] = {
     "cleoPosts": True,
-    "cleoStories": True,
     "mentions": True,
     "cleoPostComments": False,
     "selectedAccounts": False,
@@ -363,7 +362,6 @@ def normalize_auto_like(raw: Any) -> dict[str, Any]:
             cleaned.append(handle)
     return {
         "cleoPosts": raw.get("cleoPosts") is True,
-        "cleoStories": raw.get("cleoStories") is True,
         "mentions": raw.get("mentions") is True,
         "cleoPostComments": raw.get("cleoPostComments") is True,
         "selectedAccounts": raw.get("selectedAccounts") is True,
@@ -405,24 +403,16 @@ def event_allowed(event, settings: Optional[dict[str, Any]]) -> bool:
         if chat_id:
             keys.update({chat_id, f"thread:{chat_id}", f"ig-thread:{chat_id}"})
     else:
-        chat_id = str(getattr(event, "chat_jid", None) or "")
-        if chat_id.endswith("@g.us"):
-            # A group is a contact in its own right: "selected contacts only"
-            # means selected DMs plus selected groups. A message inside an
-            # *unselected* group must not pass just because the person who
-            # posted it is a selected DM contact — otherwise every selected
-            # driver drags their unselected groups ("Daily walk around checks",
-            # "Working time", …) in with them and Remy drafts replies there.
-            keys.update({chat_id, f"group:{chat_id}"})
-        else:
-            if getattr(event, "sender_number", None):
-                keys.add(str(event.sender_number))
-            sender = getattr(event, "sender", None)
-            if sender:
-                keys.add(f"lid:{sender}")
-                keys.add(str(sender))
-            if chat_id:
-                keys.update({chat_id, f"group:{chat_id}"})
+        if getattr(event, "sender_number", None):
+            keys.add(str(event.sender_number))
+        sender = getattr(event, "sender", None)
+        if sender:
+            keys.add(f"lid:{sender}")
+            keys.add(str(sender))
+        chat_id = getattr(event, "chat_jid", None)
+        if chat_id:
+            keys.add(str(chat_id))
+            keys.add(f"group:{chat_id}")
     return bool(keys & selected)
 
 
@@ -435,7 +425,7 @@ class WatcherSettingsClient:
     """
 
     def __init__(self, source: str, key_file: Optional[str] = None, timeout: float = 5.0):
-        if source not in ("whatsapp", "instagram"):
+        if source not in ("whatsapp", "instagram", "youtube", "x"):
             raise ValueError(f"unknown watcher source {source!r}")
         self.source = source
         self.settings_url = f"{WATCHER_BASE_URL}/{source}/settings"
@@ -488,6 +478,46 @@ class WatcherSettingsClient:
             return None
         if not isinstance(settings.get("selected"), list):
             return None
+        if self.source == "x":
+            raw_auto = settings.get("autoLike")
+            auto: dict[str, Any] = dict(DEFAULT_X_SETTINGS["autoLike"])
+            if isinstance(raw_auto, dict):
+                for key in ("posts", "replies", "quotes", "mentions"):
+                    if isinstance(raw_auto.get(key), bool):
+                        auto[key] = raw_auto[key]
+                accounts = raw_auto.get("cleoAccounts")
+                if isinstance(accounts, list) and accounts:
+                    auto["cleoAccounts"] = [
+                        str(h).strip().lstrip("@") for h in accounts if str(h).strip()
+                    ]
+            return {
+                "enabled": settings.get("enabled") is True,
+                "mode": settings.get("mode"),
+                "selected": [str(key) for key in settings.get("selected")],
+                "autoReply": False,
+                "draftOnly": True,
+                "autoLike": auto,
+            }
+        if self.source == "youtube":
+            raw_auto = settings.get("autoLike")
+            auto: dict[str, Any] = dict(DEFAULT_YOUTUBE_SETTINGS["autoLike"])
+            if isinstance(raw_auto, dict):
+                for key in ("videos", "shorts", "comments", "replies", "mentions"):
+                    if isinstance(raw_auto.get(key), bool):
+                        auto[key] = raw_auto[key]
+                accounts = raw_auto.get("cleoAccounts")
+                if isinstance(accounts, list) and accounts:
+                    auto["cleoAccounts"] = [
+                        str(h).strip().lstrip("@") for h in accounts if str(h).strip()
+                    ]
+            return {
+                "enabled": settings.get("enabled") is True,
+                "mode": settings.get("mode"),
+                "selected": [str(key) for key in settings.get("selected")],
+                "autoReply": False,
+                "draftOnly": True,
+                "autoLike": auto,
+            }
         return {
             "enabled": settings.get("enabled") is True,
             "mode": settings.get("mode"),
@@ -788,6 +818,39 @@ def read_instagram_events(
     return events
 
 
+
+# ── YouTube ─────────────────────────────────────────────────────────────────
+# YouTube has no mention feed and no notification API, so a "comment at me" is
+# found by sweeping: recent uploads of the watched channels -> their comment
+# threads -> keep the ones containing @<handle>. Same work yt_mentions does in
+# youtube-mcp, reusing its client so there is one implementation, not two.
+#
+# Cost is ~1 quota unit per video scanned. REMY_YOUTUBE_SCAN_VIDEOS (default 10)
+# is the knob: keep it small, this runs every 30 minutes.
+
+YOUTUBE_MCP_ROOT = os.environ.get("YOUTUBE_MCP_ROOT", "~/.local/share/youtube-mcp")
+
+
+def _youtube_modules():
+    root = str(Path(YOUTUBE_MCP_ROOT).expanduser())
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from youtube_mcp import client as yt_client  # noqa: PLC0415
+    from youtube_mcp import config as yt_config  # noqa: PLC0415
+    from youtube_mcp import formats as yt_formats  # noqa: PLC0415
+
+    return yt_client, yt_config, yt_formats
+
+
+def read_youtube_events(
+    after: Optional[tuple[str, str]] = None,
+    scan_videos: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    """Mention-only view of read_youtube_activity - one event schema, no duplicate."""
+    activity = read_youtube_activity(after=after, scan_videos=scan_videos)
+    return [event for event in activity["events"] if event.get("mentions_me")]
+
+
 def _auto_action_state(store: StateStore, action: str, enabled: bool) -> str:
     """off | baseline (first enabled poll) | active."""
     key = f"ig:auto:{action}:enabled"
@@ -806,227 +869,42 @@ def _mark_seen(store: StateStore, kind: str, target: str) -> None:
     store.meta_set(f"ig:seen:{kind}:{target}", "1")
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
-def _parse_iso(value: Optional[str]) -> Optional[float]:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
-    except (TypeError, ValueError):
-        return None
-
-
-def _post_taken_at(post: Any) -> Optional[float]:
-    if not isinstance(post, dict):
-        return None
-    return _parse_iso(post.get("taken_at"))
-
-
-def _post_already_liked(post: Any) -> bool:
-    """True only when the feed actually reports our like.
-
-    ``ig_user_posts`` carries ``liked`` when the connector is new enough; an
-    older connector leaves it out, so a missing/None value means "unknown" and
-    the caller should still try (a repeat like is harmless).
-    """
-    if not isinstance(post, dict):
-        return False
-    return post.get("liked") is True
-
-
-def _recent_account_posts(
-    server: Any,
-    account: str,
-    *,
-    amount: Optional[int] = None,
-    max_age_days: Optional[int] = None,
-) -> list[dict[str, Any]]:
-    """One account's recent posts, newest first.
-
-    There are two traps here, and both made auto-like silently do nothing:
-
-    * **A small ``amount`` is not a cheap page.** Instagram's ranked
-      ``feed/user`` endpoint answers HTTP 200 with an EMPTY ``items`` list when
-      the count is small for some accounts (verified 2026-11-10: ``livecleo``
-      returned 0 posts at ``count=3`` and 4 posts at ``count=4``). A three-post
-      poll therefore saw nothing on every pass, with no error to log.
-    * **Profile order is not chronological.** Pinned posts sit at the top, so a
-      three-item window on ``livecleo`` was three posts from 2023/2024 and never
-      the reel posted that morning.
-
-    So: ask for a page big enough to be served, then sort by ``taken_at`` and
-    drop anything older than ``REMY_INSTAGRAM_POST_MAX_AGE_DAYS`` (default 7).
-    An old post is never a "new post", and liking a pinned 2023 reel is exactly
-    the bot signal this watcher exists to avoid.
-    """
-    if amount is None:
-        amount = _env_int("REMY_INSTAGRAM_POSTS_AMOUNT", 12)
-    amount = max(4, amount)
-    if max_age_days is None:
-        max_age_days = _env_int("REMY_INSTAGRAM_POST_MAX_AGE_DAYS", 7)
-    result = _quiet_instagram_call(server.ig_user_posts, account, amount=amount)
-    posts = [
-        post
-        for post in (result.get("posts") or [])
-        if isinstance(post, dict) and str(post.get("code") or "")
-    ]
-    if not posts:
-        # Silence here is what hid the bug for days: an empty poll is a
-        # monitoring failure, not "no new posts".
-        LOG.warning(
-            "instagram posts poll returned 0 posts account=%s amount=%d "
-            "(ranked feed throttled or count too small for Instagram to serve)",
-            account,
-            amount,
-        )
-        return []
-    if len(posts) < 4:
-        # A page that short can be nothing but pinned posts, and every pinned
-        # post is older than the age window — so a new post would be invisible
-        # even though the page was not empty. Say so instead of going quiet.
-        LOG.warning(
-            "instagram posts page short account=%s returned=%d requested=%d "
-            "(pinned posts can fill a short page and hide a new post)",
-            account,
-            len(posts),
-            amount,
-        )
-    cutoff = time.time() - max_age_days * 86400 if max_age_days > 0 else None
-    recent = [
-        post
-        for post in posts
-        if cutoff is None or (_post_taken_at(post) or 0.0) >= cutoff
-    ]
-    recent.sort(key=lambda post: _post_taken_at(post) or 0.0, reverse=True)
-    return recent
-
-
-class LikeGate:
-    """One like per automation pass, with a persisted gap and a hard stop.
-
-    Instagram treats a burst of likes as bot behaviour, and the first write it
-    dislikes comes back as ``LoginRequired`` — which then breaks reads too. So:
-      * at most ``REMY_INSTAGRAM_MAX_LIKES_PER_PASS`` likes per pass (default 1),
-      * at least ``REMY_INSTAGRAM_LIKE_MIN_GAP_SECONDS`` between likes across
-        passes (default 300),
-      * no writes at all while the connector's state says the session is expired,
-      * the first LoginRequired/ChallengeRequired halts every remaining like.
-    """
-
-    AUTH_ERRORS = {"LoginRequired", "ChallengeRequired", "PleaseWaitFewMinutes", "SessionError"}
-
-    def __init__(self, store: StateStore, server: Any) -> None:
-        self.store = store
-        self.server = server
-        self.max_per_pass = max(0, _env_int("REMY_INSTAGRAM_MAX_LIKES_PER_PASS", 1))
-        self.min_gap_s = max(0, _env_int("REMY_INSTAGRAM_LIKE_MIN_GAP_SECONDS", 300))
-        self.used = 0
-        self.halted: Optional[str] = None
-        self.skip_reason: Optional[str] = None
-        self._last_at = _parse_iso(store.meta_get("ig:auto:like:last_at"))
-
-    def remaining(self) -> int:
-        return max(0, self.max_per_pass - self.used)
-
-    def halt(self, reason: str) -> None:
-        if self.halted is None:
-            self.halted = reason
-            LOG.warning("instagram auto-like halted: %s", reason)
-
-    def _session_expired(self) -> bool:
-        try:
-            state = self.server.session.read_state()
-        except Exception:  # noqa: BLE001
-            return False
-        ok_at = _parse_iso(state.get("last_ok_at"))
-        error_at = _parse_iso(state.get("last_error_at"))
-        return error_at is not None and (ok_at is None or error_at >= ok_at)
-
-    def allow(self, kind: str) -> bool:
-        if self.halted is not None:
-            return False
-        if self.used >= self.max_per_pass:
-            self.skip_reason = self.skip_reason or "pass_limit"
-            return False
-        if self._session_expired():
-            self.halt("session_expired")
-            return False
-        if self._last_at is not None and (time.time() - self._last_at) < self.min_gap_s:
-            self.skip_reason = self.skip_reason or "gap"
-            return False
-        return True
-
-    def record(self, kind: str, target: str) -> None:
-        self.used += 1
-        self._last_at = time.time()
-        self.store.meta_set("ig:auto:like:last_at", now_iso())
-        LOG.info(
-            "instagram auto-like %s target=%s (pass %d/%d)",
-            kind, log_event_id(target), self.used, self.max_per_pass,
-        )
-
-    def note_error(self, exc: BaseException) -> None:
-        if type(exc).__name__ in self.AUTH_ERRORS:
-            self.halt(type(exc).__name__)
-
-
-def _auto_like_comment(
-    store: StateStore, server: Any, comment_id: str, *, writes: bool, gate: LikeGate
-) -> bool:
+def _auto_like_comment(store: StateStore, server: Any, comment_id: str, *, writes: bool) -> bool:
     if not comment_id or _seen(store, "comment", comment_id):
         return False
     if not writes:
-        return False
-    if not gate.allow("comment"):
-        # Leave it unseen: a later pass can like it within the budget/gap.
+        _mark_seen(store, "comment", comment_id)
         return False
     try:
         result = _quiet_instagram_call(server.ig_like_comment, comment_id)
         liked = bool(result.get("liked"))
         _mark_seen(store, "comment", comment_id)
         if liked:
-            gate.record("comment", comment_id)
+            LOG.info("instagram auto-like comment_hash=%s", log_event_id(comment_id))
         return liked
     except Exception as exc:  # noqa: BLE001
         LOG.warning("instagram auto-like comment failed: %s", type(exc).__name__)
-        gate.note_error(exc)
-        if gate.halted is None:
-            _mark_seen(store, "comment", comment_id)
+        _mark_seen(store, "comment", comment_id)
         return False
 
 
-def _auto_like_post(
-    store: StateStore, server: Any, code: str, *, writes: bool, gate: LikeGate
-) -> bool:
+def _auto_like_post(store: StateStore, server: Any, code: str, *, writes: bool) -> bool:
     if not code or _seen(store, "post", code):
         return False
     if not writes:
-        return False
-    if not gate.allow("post"):
+        _mark_seen(store, "post", code)
         return False
     try:
         result = _quiet_instagram_call(server.ig_like_post, code)
         liked = bool(result.get("liked"))
         _mark_seen(store, "post", code)
         if liked:
-            gate.record("post", code)
+            LOG.info("instagram auto-like post_hash=%s", log_event_id(code))
         return liked
     except Exception as exc:  # noqa: BLE001
         LOG.warning("instagram auto-like post failed: %s", type(exc).__name__)
-        gate.note_error(exc)
-        if gate.halted is None:
-            _mark_seen(store, "post", code)
+        _mark_seen(store, "post", code)
         return False
-
 
 
 def _poll_account_posts(
@@ -1036,32 +914,24 @@ def _poll_account_posts(
     *,
     state: str,
     writes: bool,
-    gate: LikeGate,
-    amount: Optional[int] = None,
+    amount: int = 3,
 ) -> None:
     if state == "off":
         return
     try:
-        posts = _recent_account_posts(server, account, amount=amount)
+        result = _quiet_instagram_call(server.ig_user_posts, account, amount=amount)
     except Exception as exc:  # noqa: BLE001
         LOG.warning("instagram posts poll failed: %s", type(exc).__name__)
         return
-    if state == "baseline":
-        for post in posts:
-            _mark_seen(store, "post", str(post["code"]))
-        return
-    # Oldest first, so a burst of uploads drains in the order they were posted
-    # and nothing starves behind the one-like-per-pass gate.
-    for post in sorted(posts, key=lambda item: _post_taken_at(item) or 0.0):
+    posts = result.get("posts") or []
+    for post in posts[:amount]:
         code = str(post.get("code") or "")
-        if not code or _seen(store, "post", code):
+        if not code:
             continue
-        if _post_already_liked(post):
-            # Liked by hand (or an earlier pass) — record it without spending a
-            # LikeGate slot on a write that would change nothing.
+        if state == "baseline":
             _mark_seen(store, "post", code)
-            continue
-        _auto_like_post(store, server, code, writes=writes, gate=gate)
+        else:
+            _auto_like_post(store, server, code, writes=writes)
 
 
 def _activity_comment_events(
@@ -1070,7 +940,6 @@ def _activity_comment_events(
     *,
     enabled: bool,
     writes: bool,
-    gate: LikeGate,
 ) -> list[dict[str, Any]]:
     state = _auto_action_state(store, "mentions", enabled)
     try:
@@ -1098,7 +967,7 @@ def _activity_comment_events(
             if comment_id:
                 _mark_seen(store, "comment", comment_id)
         elif state == "active" and comment_id:
-            _auto_like_comment(store, server, comment_id, writes=writes, gate=gate)
+            _auto_like_comment(store, server, comment_id, writes=writes)
         token = comment_id or f"{at}:{media_pk}:{sender}"
         events.append(
             {
@@ -1135,7 +1004,6 @@ def _cleo_comment_events(
     enabled: bool,
     writes: bool,
     my_username: str,
-    gate: LikeGate,
 ) -> list[dict[str, Any]]:
     state = _auto_action_state(store, "cleoPostComments", enabled)
     if state == "off":
@@ -1146,11 +1014,11 @@ def _cleo_comment_events(
     events: list[dict[str, Any]] = []
     for account in cleo_accounts[:5]:
         try:
-            posts = _recent_account_posts(server, account)[:2]
+            posts_result = _quiet_instagram_call(server.ig_user_posts, account, amount=2)
         except Exception as exc:  # noqa: BLE001
             LOG.warning("instagram cleo posts poll failed: %s", type(exc).__name__)
             continue
-        for post in posts:
+        for post in (posts_result.get("posts") or [])[:2]:
             code = str(post.get("code") or "")
             post_pk = str(post.get("pk") or "")
             if not code:
@@ -1173,7 +1041,7 @@ def _cleo_comment_events(
                 if state == "baseline":
                     _mark_seen(store, "comment", comment_pk)
                     continue
-                _auto_like_comment(store, server, comment_pk, writes=writes, gate=gate)
+                _auto_like_comment(store, server, comment_pk, writes=writes)
                 events.append(
                     {
                         "source": "instagram",
@@ -1209,7 +1077,6 @@ def _selected_account_post_likes(
     *,
     enabled: bool,
     writes: bool,
-    gate: LikeGate,
 ) -> None:
     state = _auto_action_state(store, "selectedAccounts", enabled)
     if state == "off":
@@ -1220,80 +1087,7 @@ def _selected_account_post_likes(
         if key.startswith("ig:"):
             usernames.append(key[3:])
     for username in usernames[:10]:
-        _poll_account_posts(store, server, username, state=state, writes=writes, gate=gate)
-
-
-
-
-def _auto_like_cleo_stories(
-    store: StateStore,
-    server: Any,
-    accounts: list[str],
-    *,
-    enabled: bool,
-    writes: bool,
-    gate: LikeGate,
-) -> int:
-    """Like at most one unseen story, paced by the LikeGate.
-
-    Stories expire, so they go first, but a burst of story likes is exactly the
-    pattern Instagram answers with LoginRequired — so the gate allows one write
-    per pass and this stops at the first auth error.
-    """
-    if not enabled:
-        return 0
-    if os.environ.get("REMY_INSTAGRAM_LIKE_STORIES", "1").strip().lower() not in {"1", "true", "yes", "on"}:
-        return 0
-    if not writes or gate.halted is not None or gate.remaining() <= 0:
-        if gate.halted is None and writes:
-            gate.skip_reason = gate.skip_reason or "pass_limit"
-        return 0
-    try:
-        client = _quiet_instagram_call(server._client)
-    except Exception as exc:  # noqa: BLE001
-        LOG.warning("instagram story client failed: %s", type(exc).__name__)
-        gate.note_error(exc)
-        return 0
-    try:
-        raw = store.meta_get("ig:auto:stories:liked")
-        liked = set(json.loads(raw)) if raw else set()
-    except (ValueError, TypeError):
-        liked = set()
-    count = 0
-    stop = False
-    for account in accounts[:5]:
-        if stop or gate.halted is not None or gate.remaining() <= 0:
-            break
-        try:
-            user_id = _quiet_instagram_call(client.user_id_from_username, account)
-            stories = _quiet_instagram_call(client.user_stories, user_id)
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("instagram stories poll failed account=%s error=%s", account, type(exc).__name__)
-            gate.note_error(exc)
-            if gate.halted is not None:
-                break
-            continue
-        for story in stories or []:
-            pk = str(getattr(story, "pk", "") or "")
-            if not pk or pk in liked:
-                continue
-            if not gate.allow("story"):
-                stop = True
-                break
-            try:
-                # Humanise the single write: reads are cheap, likes are not.
-                time.sleep(random.uniform(2.0, 6.0))
-                _quiet_instagram_call(client.story_like, pk)
-                liked.add(pk)
-                count += 1
-                gate.record("story", pk)
-                store.meta_set("ig:auto:stories:liked", json.dumps(sorted(liked)))
-            except Exception as exc:  # noqa: BLE001
-                LOG.warning("instagram story_like failed account=%s error=%s", account, type(exc).__name__)
-                gate.note_error(exc)
-                stop = True
-            break  # one story per account; the gate caps the pass anyway
-    return count
+        _poll_account_posts(store, server, username, state=state, writes=writes, amount=3)
 
 
 def run_instagram_automation_once(
@@ -1306,10 +1100,6 @@ def run_instagram_automation_once(
 
     Replies, comments and mentions are never posted here: matching items become
     draft webhook events for Remy, exactly like DMs.
-
-    Auto-likes are deliberately slow: one like per pass, a persisted minimum gap
-    between passes, and an immediate stop on the first auth error. Batch liking
-    is what invalidates the saved session.
     """
     if settings.get("enabled") is not True:
         return 0
@@ -1321,26 +1111,10 @@ def run_instagram_automation_once(
         return 0
     writes = bool(status.get("writes_enabled")) if isinstance(status, dict) else False
     my_username = str(status.get("username") or "") if isinstance(status, dict) else ""
-    if not writes:
-        reason = "no status"
-        if isinstance(status, dict):
-            reason = str(status.get("error") or status.get("message") or "writes_enabled missing")
-        LOG.warning("instagram writes disabled this pass: %s", reason)
-
-    gate = LikeGate(store, server)
-    # Stories first (they expire); the gate still allows only one write per pass.
-    _auto_like_cleo_stories(
-        store,
-        server,
-        auto.get("cleoAccounts", []),
-        enabled=auto.get("cleoStories", True),
-        writes=writes,
-        gate=gate,
-    )
 
     cleo_state = _auto_action_state(store, "cleoPosts", auto["cleoPosts"])
     for account in auto.get("cleoAccounts", [])[:5]:
-        _poll_account_posts(store, server, account, state=cleo_state, writes=writes, gate=gate)
+        _poll_account_posts(store, server, account, state=cleo_state, writes=writes, amount=3)
 
     _selected_account_post_likes(
         store,
@@ -1348,11 +1122,10 @@ def run_instagram_automation_once(
         settings,
         enabled=auto["selectedAccounts"],
         writes=writes,
-        gate=gate,
     )
 
     events: list[dict[str, Any]] = []
-    events.extend(_activity_comment_events(store, server, enabled=auto["mentions"], writes=writes, gate=gate))
+    events.extend(_activity_comment_events(store, server, enabled=auto["mentions"], writes=writes))
     events.extend(
         _cleo_comment_events(
             store,
@@ -1361,13 +1134,7 @@ def run_instagram_automation_once(
             enabled=auto["cleoPostComments"],
             writes=writes,
             my_username=my_username,
-            gate=gate,
         )
-    )
-
-    LOG.info(
-        "instagram auto-like pass used=%d/%d halted=%s skipped=%s",
-        gate.used, gate.max_per_pass, gate.halted, gate.skip_reason,
     )
 
     raw = store.cursor("instagram-activity")
@@ -1468,9 +1235,964 @@ def run_instagram_once(
     return count
 
 
+
+
+# ── YouTube: what to watch, and what may be liked without asking ────────────
+# Scoped to the accounts named here, so "auto-like" can never wander onto
+# someone else's channel.
+DEFAULT_YOUTUBE_SETTINGS: dict[str, Any] = {
+    "enabled": True,
+    "autoReply": False,      # draft only - the whole point
+    "draftOnly": True,
+    "autoLike": {
+        "cleoAccounts": ["livecleo"],
+        "videos": True,      # like a newly published video
+        "shorts": True,      # like a newly published Short
+        "comments": True,    # like comments on her videos
+        "replies": True,     # like replies under those comments
+        "mentions": True,    # like the comment that tags the operator
+    },
+}
+
+
+def _yt_flag(name: str, default: bool = True) -> bool:
+    return os.environ.get(name, "1" if default else "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def youtube_settings(gateway: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Defaults, overridable per-flag from the environment.
+
+    Auto-reply is not a flag: it is False, always. A YouTube reply is a public
+    comment in the operator's name, so it takes a deliberate `confirm=true`.
+    """
+    settings = {**DEFAULT_YOUTUBE_SETTINGS,
+                "autoLike": dict(DEFAULT_YOUTUBE_SETTINGS["autoLike"])}
+    settings["autoLike"]["cleoAccounts"] = [
+        h.strip().lstrip("@")
+        for h in os.environ.get("REMY_YOUTUBE_CHANNELS", "livecleo").split(",")
+        if h.strip()
+    ]
+    for key in ("videos", "shorts", "comments", "replies", "mentions"):
+        env = f"REMY_YOUTUBE_AUTOLIKE_{key.upper()}"
+        if env in os.environ:
+            settings["autoLike"][key] = _yt_flag(env)
+    if "REMY_YOUTUBE_AUTOLIKE" in os.environ:
+        master = _yt_flag("REMY_YOUTUBE_AUTOLIKE")
+        for key in ("videos", "shorts", "comments", "replies", "mentions"):
+            settings["autoLike"][key] = settings["autoLike"][key] and master
+    # Settings from the gateway web UI are authoritative - that is the surface the
+    # operator actually tunes, so they must beat env defaults.
+    if isinstance(gateway, dict):
+        if gateway.get("enabled") is False:
+            settings["enabled"] = False
+        auto = gateway.get("autoLike")
+        if isinstance(auto, dict):
+            for key in ("videos", "shorts", "comments", "replies", "mentions"):
+                if isinstance(auto.get(key), bool):
+                    settings["autoLike"][key] = auto[key]
+            accounts = auto.get("cleoAccounts")
+            if isinstance(accounts, list) and accounts:
+                settings["autoLike"]["cleoAccounts"] = [
+                    str(h).strip().lstrip("@") for h in accounts if str(h).strip()
+                ]
+    return settings
+
+
+def read_youtube_activity(
+    after: Optional[tuple[str, str]] = None,
+    after_videos: Optional[tuple[str, str]] = None,
+    scan_videos: Optional[int] = None,
+    channels: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Everything worth telling Remy about, on the watched channels only.
+
+    Three kinds, because they need three different drafts:
+
+      video   a new upload or Short      -> Remy drafts a comment for it
+      comment a new top-level comment    -> Remy drafts a reply
+      reply   a new reply to a comment   -> Remy drafts a reply
+
+    YouTube has no activity feed, so this is a sweep of recent uploads (about one
+    quota unit per video). Replies come from the thread payload, which carries
+    the first few inline; deeper threads need comments.list(parentId=...).
+    """
+    yt_client, yt_config, yt_formats = _youtube_modules()
+    limit = int(scan_videos or os.environ.get("REMY_YOUTUBE_SCAN_VIDEOS", "10"))
+    handles = list(yt_config.MENTION_HANDLES)
+    targets = channels or list(yt_config.CHANNELS or [])
+    events: list[dict[str, Any]] = []
+    videos: list[dict[str, Any]] = []
+
+    for ref in targets:
+        try:
+            found = yt_client.videos_for_channel(ref, limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("source=youtube channel=%s read_failed=%s", ref, type(exc).__name__)
+            continue
+        for video in found:
+            video_id = video.get("id")
+            if not video_id:
+                continue
+            meta = yt_formats.video_row(video)
+            if meta.get("published_at") and (
+                not after_videos or (str(meta["published_at"]), video_id) > after_videos
+            ):
+                videos.append({**meta, "channel_ref": ref})
+            try:
+                threads = yt_client.comment_threads(video_id, limit=100, order="time")
+            except Exception as exc:  # noqa: BLE001 - disabled comments are normal
+                LOG.info("source=youtube video=%s comments_unreadable=%s",
+                         video_id, type(exc).__name__)
+                continue
+            for thread in threads:
+                row = yt_formats.comment_row(thread, handles)
+                if not row.get("comment_id"):
+                    continue
+                base = _youtube_event(row, meta, video_id, "comment")
+                if not after or (base["timestamp"], base["event_id"]) > after:
+                    events.append(base)
+                for reply in row.get("replies") or []:
+                    if not reply.get("comment_id"):
+                        continue
+                    child = _youtube_event(reply, meta, video_id, "reply",
+                                           parent_id=row["comment_id"])
+                    if not after or (child["timestamp"], child["event_id"]) > after:
+                        events.append(child)
+    events.sort(key=lambda event: (event["timestamp"], event["event_id"]))
+    return {"events": events, "videos": videos}
+
+
+def _youtube_event(row: dict[str, Any], meta: dict[str, Any], video_id: str,
+                   kind: str, parent_id: Optional[str] = None) -> dict[str, Any]:
+    """One Remy-facing event. `kind` decides what Remy is being asked to draft."""
+    comment_id = str(row.get("comment_id") or "")
+    author = str(row.get("author") or "")
+    return {
+        "source": "youtube",
+        "event_id": f"youtube:{kind}:{comment_id}",
+        "kind": kind,
+        "received_at": now_iso(),
+        "conversation": {"id": video_id, "name": meta.get("title"), "group": False},
+        "thread_id": video_id,
+        "sender": author.lstrip("@"),
+        "sender_username": author.lstrip("@"),
+        "sender_name": author,
+        "sender_id": row.get("author_channel_id") or "",
+        "sender_raw": author,
+        "message_id": comment_id,
+        "timestamp": str(row.get("published_at") or ""),
+        "text": row.get("text") or "",
+        "media": None,
+        "shared": {"video": {"video_id": video_id, "title": meta.get("title"),
+                             "url": f"https://youtu.be/{video_id}",
+                             "kind": meta.get("kind"), "channel": meta.get("channel")}},
+        "platform": "youtube",
+        "video_id": video_id,
+        "video_url": f"https://youtu.be/{video_id}",
+        "comment_id": comment_id,
+        "comment_url": row.get("url"),
+        "parent_comment_id": parent_id,
+        "reply_to": {"comment_id": comment_id, "video_id": video_id},
+        "mentions_me": bool(row.get("mentions_me")),
+        "mentions": row.get("mentioned_handles") or [],
+        "draft_only": True,
+        "auto_send": False,
+    }
+
+
+def _youtube_video_event(meta: dict[str, Any]) -> dict[str, Any]:
+    """A newly published video/Short - Remy's cue to draft a comment."""
+    video_id = str(meta.get("video_id") or "")
+    return {
+        "source": "youtube",
+        "event_id": f"youtube:video:{video_id}",
+        "kind": "video",
+        "received_at": now_iso(),
+        "conversation": {"id": video_id, "name": meta.get("title"), "group": False},
+        "thread_id": video_id,
+        "sender": meta.get("channel") or "",
+        "sender_username": str(meta.get("channel") or "").lstrip("@"),
+        "sender_name": meta.get("channel"),
+        "sender_id": meta.get("channel_id") or "",
+        "message_id": video_id,
+        "timestamp": str(meta.get("published_at") or ""),
+        "text": f"New {meta.get('kind')} published: {meta.get('title')}",
+        "media": None,
+        "shared": {"video": {"video_id": video_id, "title": meta.get("title"),
+                             "url": f"https://youtu.be/{video_id}",
+                             "kind": meta.get("kind"), "channel": meta.get("channel")}},
+        "platform": "youtube",
+        "video_id": video_id,
+        "video_url": f"https://youtu.be/{video_id}",
+        "comment_id": None,
+        "duration_s": meta.get("duration_s"),
+        "mentions_me": False,
+        "mentions": [],
+        "draft_only": True,
+        "auto_send": False,
+    }
+
+
+def _youtube_autolike_modules():
+    root = str(Path(YOUTUBE_MCP_ROOT).expanduser())
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from youtube_mcp import innertube as yt_innertube  # noqa: PLC0415
+    from youtube_mcp import queue as yt_queue  # noqa: PLC0415
+
+    return yt_innertube, yt_queue
+
+
+def autolike_youtube(
+    events: list[dict[str, Any]],
+    videos: list[dict[str, Any]],
+    initialise_only: bool = False,
+    settings: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Like what the settings allow, and say exactly what could not be liked.
+
+    Two different credentials, deliberately:
+      videos + Shorts  -> OAuth (videos.rate). Needs youtube.force-ssl.
+      comments+replies -> browser cookies (no official method exists).
+
+    Nothing here can post. Liking is the only write.
+    """
+    settings = settings or youtube_settings()
+    flags = settings.get("autoLike") or {}
+    out: dict[str, Any] = {"video_likes": 0, "comment_likes": 0, "reply_likes": 0,
+                           "failed": 0, "skipped": [], "reasons": []}
+    if initialise_only:
+        out["reasons"].append("baseline_run: nothing liked on the first sweep")
+        return out
+    if not settings.get("enabled", True):
+        out["reasons"].append("disabled_in_settings")
+        return out
+
+    def note(reason: str) -> None:
+        if reason not in out["reasons"]:
+            out["reasons"].append(reason)
+
+    try:
+        yt_client, _cfg, _fmt = _youtube_modules()
+        yt_innertube, yt_queue = _youtube_autolike_modules()
+    except Exception as exc:  # noqa: BLE001
+        note(f"import_failed:{type(exc).__name__}")
+        return out
+
+    # --- videos and Shorts (OAuth) ----------------------------------------
+    for video in videos:
+        video_id = video.get("video_id")
+        if not video_id:
+            continue
+        is_short = video.get("kind") == "short"
+        if not flags.get("shorts" if is_short else "videos", False):
+            out["skipped"].append({"video_id": video_id, "kind": video.get("kind"),
+                                   "reason": "disabled_in_settings"})
+            continue
+        try:
+            yt_queue.pace("remy_yt_like_video")
+            yt_client.rate_video(video_id, "like")
+            out["video_likes"] += 1
+        except Exception as exc:  # noqa: BLE001
+            err = getattr(exc, "error", type(exc).__name__)
+            out["failed"] += 1
+            note(f"video_like:{err}")
+            if err in {"quota_exceeded", "auth_required", "insufficient_scope"}:
+                break  # the same wall would stop every remaining one
+
+    # --- comments and replies (cookies) -----------------------------------
+    comment_events = [e for e in events if e.get("kind") in {"comment", "reply"}]
+    if comment_events and (flags.get("comments") or flags.get("replies")):
+        available, why = yt_innertube.available()
+        if not available:
+            note(f"comment_like_unavailable: {why}")
+        else:
+            for event in comment_events:
+                kind = event.get("kind")
+                if kind == "comment" and not flags.get("comments"):
+                    continue
+                if kind == "reply" and not flags.get("replies"):
+                    continue
+                if event.get("mentions_me") and not flags.get("mentions", True):
+                    continue
+                target = event.get("comment_id")
+                if not target:
+                    continue
+                try:
+                    yt_queue.pace("remy_yt_like_comment")
+                    yt_innertube.act(target, event.get("video_id") or "", "like")
+                    if kind == "reply":
+                        out["reply_likes"] += 1
+                    else:
+                        out["comment_likes"] += 1
+                except Exception as exc:  # noqa: BLE001
+                    err = getattr(exc, "error", type(exc).__name__)
+                    out["failed"] += 1
+                    note(f"comment_like:{err}")
+                    if err == "cookies_rejected":
+                        break
+    return out
+
+
+def run_youtube_once(
+    store: StateStore,
+    delivery: WebhookDelivery,
+    settings: Optional[dict[str, Any]] = None,
+) -> int:
+    """Queue what Remy should draft, and like what the settings allow."""
+    raw = store.cursor("youtube")
+    raw_videos = store.cursor("youtube:videos")
+    replay = os.environ.get("REMY_REPLAY_EXISTING") == "1"
+    activity = read_youtube_activity(_cursor_pair(raw), _cursor_pair(raw_videos))
+    events = activity["events"]
+    videos = activity["videos"]
+
+    effective = settings or DEFAULT_WATCHER_SETTINGS
+    baseline_comments = raw is None and not replay
+    baseline_videos = raw_videos is None and not replay
+
+    # A first sweep is a BASELINE: record where we are, push nothing. Otherwise
+    # enabling the watcher would dump a year of comments into Remy at once.
+    allowed = ([] if baseline_comments
+               else [event for event in events if event_allowed(event, effective)])
+    if not baseline_videos:
+        allowed += [_youtube_video_event(video) for video in videos]
+
+    newest = max(((str(e["timestamp"]), str(e["event_id"])) for e in events), default=None)
+    newest_video = max(
+        ((str(v["published_at"]), str(v["video_id"])) for v in videos if v.get("published_at")),
+        default=None,
+    )
+
+    count = process_events(store, "youtube", allowed, delivery, False)
+
+    likes = autolike_youtube(events, videos, baseline_comments or baseline_videos,
+                             youtube_settings(effective))
+    LOG.info("source=youtube autolike videos=%s comments=%s replies=%s failed=%s reasons=%s",
+             likes.get("video_likes"), likes.get("comment_likes"),
+             likes.get("reply_likes"), likes.get("failed"),
+             "; ".join(likes.get("reasons") or []) or "none")
+
+    # Advance past filtered events too, so the next sweep is quiet.
+    if newest is not None:
+        store.set_cursor("youtube", _cursor_value(*newest))
+    if newest_video is not None:
+        store.set_cursor("youtube:videos", _cursor_value(*newest_video))
+    return count
+
+
+
+# ── X (Twitter): what to watch, and what may be liked without asking ────────
+# X has no separate "comment" object: a reply IS a post. So the likeable classes
+# are posts, replies, quotes and mentions, and each is independently switchable.
+# Liking on X goes through OAuth (`like.write`) - there is no cookie involved.
+X_MCP_ROOT = os.environ.get("X_MCP_ROOT", "~/.local/share/x-mcp")
+
+DEFAULT_X_SETTINGS: dict[str, Any] = {
+    "enabled": True,
+    "autoReply": False,      # draft only - the whole point
+    "draftOnly": True,
+    "autoLike": {
+        # Her YouTube/Instagram handle is "livecleo"; on X it is "LiveCleoPatra".
+        "cleoAccounts": ["LiveCleoPatra"],
+        # Mentions only by default: the operator does not want every post of hers
+        # liked, just the posts that tag him. Each class stays switchable.
+        "posts": False,      # like a new post from the watched account
+        "replies": False,    # like replies others leave on her posts
+        "quotes": False,     # like a quote post of one of hers
+        "mentions": True,    # like a post that @-mentions the operator
+    },
+}
+
+
+def x_settings(gateway: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Defaults, overridable per-flag from the environment, gateway wins.
+
+    Auto-reply is not a flag: it is False, always. An X reply is public and in
+    the operator's name, so it takes a deliberate `confirm=true`.
+    """
+    settings = {**DEFAULT_X_SETTINGS, "autoLike": dict(DEFAULT_X_SETTINGS["autoLike"])}
+    settings["autoLike"]["cleoAccounts"] = [
+        h.strip().lstrip("@")
+        for h in os.environ.get("REMY_X_CHANNELS", "LiveCleoPatra").split(",")
+        if h.strip()
+    ]
+    for key in ("posts", "replies", "quotes", "mentions"):
+        env = f"REMY_X_AUTOLIKE_{key.upper()}"
+        if env in os.environ:
+            settings["autoLike"][key] = _yt_flag(env, True)
+    if "REMY_X_AUTOLIKE" in os.environ:
+        master = _yt_flag("REMY_X_AUTOLIKE", True)
+        for key in ("posts", "replies", "quotes", "mentions"):
+            settings["autoLike"][key] = settings["autoLike"][key] and master
+    if isinstance(gateway, dict):
+        if gateway.get("enabled") is False:
+            settings["enabled"] = False
+        auto = gateway.get("autoLike")
+        if isinstance(auto, dict):
+            for key in ("posts", "replies", "quotes", "mentions"):
+                if isinstance(auto.get(key), bool):
+                    settings["autoLike"][key] = auto[key]
+            accounts = auto.get("cleoAccounts")
+            if isinstance(accounts, list) and accounts:
+                settings["autoLike"]["cleoAccounts"] = [
+                    str(h).strip().lstrip("@") for h in accounts if str(h).strip()
+                ]
+    return settings
+
+
+def _x_modules():
+    root = str(Path(X_MCP_ROOT).expanduser())
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from x_mcp import backend as x_client  # noqa: PLC0415
+    from x_mcp import config as x_config  # noqa: PLC0415
+    from x_mcp import formats as x_formats  # noqa: PLC0415
+    from x_mcp import queue as x_queue  # noqa: PLC0415
+
+    return x_client, x_config, x_formats, x_queue
+
+
+def read_x_activity(
+    after: Optional[tuple[str, str]] = None,
+    scan_posts: Optional[int] = None,
+    reply_posts: Optional[int] = None,
+    channels: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Everything worth telling Remy about, on the watched accounts and my mentions.
+
+    Three kinds, because they need three different drafts:
+
+      post    a new post from a watched account -> Remy drafts a reply
+      reply   a reply to one of her posts      -> Remy drafts a reply
+      mention a post that @-mentions me        -> Remy drafts a reply
+
+    Reading replies uses recent search, which is a third-party read ($0.005 each),
+    so only the newest few posts are scanned for them. REMY_X_REPLY_POSTS bounds
+    that and REMY_X_SCAN_POSTS bounds the posts fetched per account.
+    """
+    x_client, x_config, x_formats, _queue = _x_modules()
+    limit = int(scan_posts or os.environ.get("REMY_X_SCAN_POSTS", "5"))
+    reply_limit = int(reply_posts or os.environ.get("REMY_X_REPLY_POSTS", "3"))
+    targets = channels or list(x_config.CHANNELS or [])
+    events: list[dict[str, Any]] = []
+    posts: list[dict[str, Any]] = []
+
+    def fresh(event: dict[str, Any]) -> bool:
+        return after is None or (event["timestamp"], event["event_id"]) > after
+
+    for handle in targets:
+        try:
+            payload = x_client.user_posts(handle, limit, include_replies=True,
+                                         include_reposts=False)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("source=x account=%s read_failed=%s", handle, type(exc).__name__)
+            continue
+        rows = x_formats.rows(payload)
+        for row in rows:
+            row["mentions_me"] = x_formats.mentions_handle(
+                row.get("text") or "", x_config.MENTION_HANDLES)
+        for index, row in enumerate(rows):
+            if not row.get("id"):
+                continue
+            event = _x_event(row, "quote" if row.get("kind") == "quote" else "post")
+            posts.append(row)
+            if fresh(event):
+                events.append(event)
+            if index >= reply_limit:
+                continue
+            try:
+                replies = x_client.replies_of(row["id"], 25)
+            except Exception as exc:  # noqa: BLE001
+                LOG.info("source=x post=%s replies_unreadable=%s", row["id"],
+                         type(exc).__name__)
+                continue
+            for reply in x_formats.rows(replies):
+                if not reply.get("id") or reply.get("id") == row.get("id"):
+                    continue
+                reply["mentions_me"] = x_formats.mentions_handle(
+                    reply.get("text") or "", x_config.MENTION_HANDLES)
+                child = _x_event(reply, "reply", parent_id=row["id"])
+                if fresh(child):
+                    events.append(child)
+
+    try:
+        for row in x_formats.rows(x_client.mentions(25)):
+            if not row.get("id"):
+                continue
+            row["mentions_me"] = x_formats.mentions_handle(
+                row.get("text") or "", x_config.MENTION_HANDLES)
+            event = _x_event(row, "mention")
+            if fresh(event):
+                events.append(event)
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("source=x mentions_read_failed=%s", type(exc).__name__)
+
+    events.sort(key=lambda event: (event["timestamp"], event["event_id"]))
+    return {"events": events, "posts": posts}
+
+
+def _x_event(row: dict[str, Any], kind: str,
+             parent_id: Optional[str] = None) -> dict[str, Any]:
+    """One Remy-facing event. `kind` decides what Remy is being asked to draft."""
+    post_id = str(row.get("id") or "")
+    author = str(row.get("author") or "")
+    conversation = str(row.get("conversation_id") or post_id)
+    return {
+        "source": "x",
+        "event_id": f"x:{kind}:{post_id}",
+        "kind": kind,
+        "received_at": now_iso(),
+        "conversation": {"id": conversation, "name": f"@{author}", "group": False},
+        "thread_id": conversation,
+        "sender": author,
+        "sender_username": author,
+        "sender_name": row.get("author_name") or author,
+        "sender_id": row.get("author_id") or "",
+        "sender_raw": author,
+        "message_id": post_id,
+        "timestamp": str(row.get("created_at") or ""),
+        "text": row.get("text") or "",
+        "media": None,
+        "shared": {"post": {"post_id": post_id, "url": row.get("url"),
+                            "kind": row.get("kind"), "author": author}},
+        "platform": "x",
+        "post_id": post_id,
+        "post_url": row.get("url"),
+        "parent_post_id": parent_id or row.get("replied_to"),
+        "mentions_me": bool(row.get("mentions_me")),
+        "mentions": row.get("mentioned_handles") or [],
+        "metrics": row.get("metrics") or {},
+        "draft_only": True,
+        "auto_send": False,
+    }
+
+
+def autolike_x(
+    events: list[dict[str, Any]],
+    initialise_only: bool = False,
+    settings: Optional[dict[str, Any]] = None,
+    posts: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Like what the settings allow, and say exactly what could not be liked.
+
+    Liking on X is a single OAuth call (`like.write`); there is no cookie path and
+    no second credential. Nothing here can post: liking is the only write.
+    """
+    settings = settings or x_settings()
+    flags = settings.get("autoLike") or {}
+    out: dict[str, Any] = {"likes": 0, "failed": 0, "skipped": [],
+                           "reasons": []}
+    if initialise_only:
+        out["reasons"].append("baseline_run: nothing liked on the first sweep")
+        return out
+    if not settings.get("enabled", True):
+        out["reasons"].append("disabled_in_settings")
+        return out
+
+    def note(reason: str) -> None:
+        if reason not in out["reasons"]:
+            out["reasons"].append(reason)
+
+    try:
+        x_client, x_config, _fmt, x_queue = _x_modules()
+    except Exception as exc:  # noqa: BLE001
+        note(f"import_failed:{type(exc).__name__}")
+        return out
+
+    # A channel post is also reported as an event, so de-duplicate by id while
+    # keeping the kind that decides which flag applies.
+    wanted: dict[str, str] = {}
+    for event in events:
+        post_id = str(event.get("post_id") or "")
+        if not post_id:
+            continue
+        kind = event.get("kind") or "post"
+        wanted.setdefault(post_id, "post" if kind == "post" else kind)
+
+    if not wanted:
+        return out
+
+    already: set[str] = set()
+    try:
+        already = {str(p.get("id")) for p in (x_client.liked_posts(100).get("data") or [])}
+    except Exception as exc:  # noqa: BLE001 - the check is a convenience, not a gate
+        note(f"liked_lookup_failed:{type(exc).__name__}")
+
+    for post_id, kind in wanted.items():
+        flag = {"post": "posts", "reply": "replies", "quote": "quotes",
+                "mention": "mentions"}.get(kind, "posts")
+        if not flags.get(flag, False):
+            out["skipped"].append({"post_id": post_id, "kind": kind,
+                                   "reason": "disabled_in_settings"})
+            continue
+        if post_id in already:
+            out["skipped"].append({"post_id": post_id, "kind": kind,
+                                   "reason": "already_liked"})
+            continue
+        try:
+            x_queue.pace("remy_x_like")
+            x_client.like(post_id)
+            out["likes"] += 1
+        except Exception as exc:  # noqa: BLE001
+            err = getattr(exc, "status", None) or type(exc).__name__
+            out["failed"] += 1
+            note(f"like:{err}")
+            if str(err) in {"401", "403"}:
+                break  # the credential is the wall; every remaining like would fail
+    return out
+
+
+def run_x_once(
+    store: StateStore,
+    delivery: WebhookDelivery,
+    settings: Optional[dict[str, Any]] = None,
+) -> int:
+    """Queue what Remy should draft, and like what the settings allow."""
+    raw = store.cursor("x")
+    replay = os.environ.get("REMY_REPLAY_EXISTING") == "1"
+    activity = read_x_activity(_cursor_pair(raw))
+    events = activity["events"]
+
+    effective = settings or DEFAULT_WATCHER_SETTINGS
+    baseline = raw is None and not replay
+
+    # A first sweep is a BASELINE: record where we are, push nothing. Otherwise
+    # enabling the watcher would dump months of posts into Remy at once.
+    allowed = [] if baseline else [e for e in events if event_allowed(e, effective)]
+
+    newest = max(((str(e["timestamp"]), str(e["event_id"])) for e in events), default=None)
+
+    count = process_events(store, "x", allowed, delivery, False)
+
+    likes = autolike_x(events, baseline, x_settings(effective), activity.get("posts"))
+    LOG.info("source=x autolike likes=%s failed=%s reasons=%s",
+             likes.get("likes"), likes.get("failed"),
+             "; ".join(likes.get("reasons") or []) or "none")
+
+    if newest is not None:
+        store.set_cursor("x", _cursor_value(*newest))
+    return count
+
+
+# ---------------------------------------------------------------------------
+# Email triage -> Remy
+#
+# The gateway owns the mailboxes, the switches and the decision model. This
+# process is deliberately dumb and credential-free: it asks the gateway which
+# mailboxes are due, applies the cheap deterministic rules, asks the gateway to
+# judge only what is left, then acks the batch with every decision it made.
+#
+# It can read and it can queue a draft. It cannot send: the gateway's watcher
+# key has no send tool, and the event carries draft_only/auto_send=false.
+# ---------------------------------------------------------------------------
+EMAIL_SEEN_KEY = "email:seen"
+EMAIL_DISMISSED_KEY = "email:dismissed"
+EMAIL_SEEN_DAYS = 14
+EMAIL_SEEN_MAX = 2000
+EMAIL_DISMISSED_MAX = 20
+EMAIL_JUDGE_BATCH = 20
+EMAIL_WAIT_FLOOR = 15
+EMAIL_WAIT_CEILING = 3600
+
+
+def bare_email(value: str) -> str:
+    """The lower-case address out of `Name <addr>`, else the whole cleaned value."""
+    text = (value or "").strip()
+    match = re.search(r"<([^>]+)>", text)
+    return (match.group(1) if match else text).strip().lower()
+
+
+def sender_matches(sender: str, entries: Any) -> bool:
+    """An entry is an address, or `@domain` for a whole domain."""
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        clean = str(entry).strip().lower()
+        if not clean:
+            continue
+        if clean.startswith("@"):
+            if sender.endswith(clean):
+                return True
+        elif sender == clean:
+            return True
+    return False
+
+
+def normalize_subject(value: str) -> str:
+    """Strip reply/forward prefixes so a thread counts as one repeat."""
+    text = re.sub(r"\s+", " ", (value or "").strip().lower())
+    while True:
+        stripped = re.sub(r"^(?:re|fw|fwd|aw|sv)\s*(?:\[\d+\])?\s*:\s*", "", text)
+        if stripped == text:
+            return text
+        text = stripped
+
+
+def _email_json_get(store: StateStore, key: str, fallback: Any) -> Any:
+    raw = store.meta_get(key)
+    if not raw:
+        return fallback
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return fallback
+    return value if isinstance(value, type(fallback)) else fallback
+
+
+def email_seen(store: StateStore) -> dict[str, str]:
+    """Recent `sender|subject` keys, pruned to the window and the cap."""
+    raw = _email_json_get(store, EMAIL_SEEN_KEY, {})
+    cutoff = time.time() - EMAIL_SEEN_DAYS * 86400
+    kept: dict[str, str] = {}
+    for key, stamp in raw.items():
+        try:
+            when = datetime.fromisoformat(str(stamp)).timestamp()
+        except (TypeError, ValueError):
+            continue
+        if when >= cutoff:
+            kept[str(key)] = str(stamp)
+    if len(kept) > EMAIL_SEEN_MAX:
+        newest = sorted(kept.items(), key=lambda pair: pair[1], reverse=True)[:EMAIL_SEEN_MAX]
+        kept = dict(newest)
+    return kept
+
+
+def email_dismissed_from(store: StateStore) -> list[str]:
+    raw = _email_json_get(store, EMAIL_DISMISSED_KEY, [])
+    return [str(entry.get("from")) for entry in raw if isinstance(entry, dict) and entry.get("from")][:EMAIL_DISMISSED_MAX]
+
+
+def email_rule(message: dict[str, Any], settings: dict[str, Any], seen: dict[str, str]) -> Optional[tuple[str, str]]:
+    """The deterministic decisions, cheapest first. None means "ask the model"."""
+    sender = bare_email(str(message.get("from") or ""))
+    if sender_matches(sender, settings.get("alwaysImportant")):
+        return ("important", "allowlist")
+    if message.get("listUnsubscribe") or message.get("automated"):
+        return ("skip", "bulk")
+    key = f"{sender}|{normalize_subject(str(message.get('subject') or ''))}"
+    if key in seen:
+        return ("skip", "repeat")
+    return None
+
+
+class EmailGatewayClient:
+    """The gateway's scoped email triage surface (watcher key, no MCP grants)."""
+
+    def __init__(self, key_file: Optional[str] = None, timeout: float = 40.0):
+        self.base = WATCHER_BASE_URL
+        self.key_file = Path(key_file or WATCHER_KEY_FILE).expanduser()
+        self.timeout = timeout
+        self._warned = False
+
+    def _key(self) -> Optional[str]:
+        try:
+            key = self.key_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            if not self._warned:
+                LOG.warning("watcher key is missing at %s; email triage cannot run", self.key_file)
+                self._warned = True
+            return None
+        return key or None
+
+    def _call(self, method: str, path: str, body: Optional[dict[str, Any]] = None) -> tuple[int, Any]:
+        key = self._key()
+        if not key:
+            return 0, None
+        data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base}/email/{path}",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "User-Agent": "remy-watchers/1.0",
+            },
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                payload = json.loads(exc.read().decode("utf-8"))
+            except (ValueError, OSError):
+                payload = None
+            return exc.code, payload
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            LOG.warning("source=email gateway_request_failed path=%s error=%s", path, type(exc).__name__)
+            return 0, None
+
+    def fetch(self) -> Optional[dict[str, Any]]:
+        status, payload = self._call("GET", "new")
+        return payload if status == 200 and isinstance(payload, dict) else None
+
+    def judge(self, account_id: str, messages: list[dict[str, Any]], dismissed: list[str]) -> Optional[dict[str, dict[str, Any]]]:
+        """Verdicts by message id, or None when the model could not answer for all of them."""
+        verdicts: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(messages), EMAIL_JUDGE_BATCH):
+            chunk = messages[start:start + EMAIL_JUDGE_BATCH]
+            status, payload = self._call(
+                "POST",
+                "judge",
+                {
+                    "accountId": account_id,
+                    "dismissedFrom": dismissed,
+                    "messages": [
+                        {
+                            "id": m["id"],
+                            "from": m.get("from") or "",
+                            "subject": m.get("subject") or "",
+                            "preview": m.get("preview") or "",
+                        }
+                        for m in chunk
+                    ],
+                },
+            )
+            if status != 200 or not isinstance(payload, dict):
+                LOG.warning("source=email judge_unavailable status=%s", status)
+                return None
+            for verdict in payload.get("verdicts") or []:
+                if isinstance(verdict, dict) and verdict.get("id"):
+                    verdicts[str(verdict["id"])] = verdict
+        return verdicts
+
+    def ack(self, account_id: str, uid_validity: str, last_uid: int, decisions: list[dict[str, Any]]) -> bool:
+        status, payload = self._call(
+            "POST",
+            "ack",
+            {
+                "accountId": account_id,
+                "uidValidity": uid_validity,
+                "lastUid": last_uid,
+                "decisions": decisions[:EMAIL_JUDGE_BATCH],
+            },
+        )
+        return status == 200 and isinstance(payload, dict) and payload.get("ok") is True
+
+
+def run_email_once(
+    store: StateStore,
+    delivery: WebhookDelivery,
+    client: Optional[EmailGatewayClient] = None,
+) -> tuple[int, int]:
+    """One pass over the due mailboxes. Returns (events queued, seconds to wait)."""
+    client = client or EmailGatewayClient()
+    batch = client.fetch()
+    if batch is None:
+        return 0, 60
+
+    try:
+        wait = int(batch.get("waitSeconds") or 60)
+    except (TypeError, ValueError):
+        wait = 60
+    wait = max(EMAIL_WAIT_FLOOR, min(wait, EMAIL_WAIT_CEILING))
+
+    seen = email_seen(store)
+    dismissed = email_dismissed_from(store)
+    queued = 0
+
+    for account in batch.get("accounts") or []:
+        if not isinstance(account, dict):
+            continue
+        settings = account.get("settings") or {}
+        account_id = str(settings.get("accountId") or "")
+        uid_validity = str(account.get("uidValidity") or "")
+        messages = [m for m in (account.get("messages") or []) if isinstance(m, dict) and m.get("id")]
+        if not account_id or not uid_validity or not messages:
+            continue
+
+        decisions: list[dict[str, Any]] = []
+        to_judge: list[dict[str, Any]] = []
+        for message in messages:
+            ruled = email_rule(message, settings, seen)
+            if ruled is None:
+                to_judge.append(message)
+            else:
+                triage, rule = ruled
+                decisions.append({"messageId": message["id"], "from": message.get("from"),
+                                  "subject": message.get("subject"), "triage": triage, "rule": rule})
+
+        verdicts: dict[str, dict[str, Any]] = {}
+        if to_judge:
+            judged = client.judge(account_id, to_judge, dismissed)
+            if judged is None:
+                # Their mail waits: nothing is acked, so the batch comes back.
+                LOG.warning("source=email account=%s deferred=%d", account_id, len(messages))
+                continue
+            verdicts = judged
+            for message in to_judge:
+                verdict = verdicts.get(message["id"])
+                if not verdict:
+                    continue
+                decisions.append({"messageId": message["id"], "from": message.get("from"),
+                                  "subject": message.get("subject"), "triage": verdict.get("triage"),
+                                  "rule": verdict.get("rule") or "jev"})
+
+        picks: list[dict[str, Any]] = []
+        for decision in decisions:
+            triage = decision.get("triage")
+            if triage not in ("reply", "important"):
+                continue
+            source = next((m for m in messages if m["id"] == decision["messageId"]), None)
+            verdict = verdicts.get(decision["messageId"]) or {}
+            picks.append({
+                "message_id": decision["messageId"],
+                "account_id": account_id,
+                "account_email": settings.get("email"),
+                "from": decision.get("from"),
+                "subject": decision.get("subject"),
+                "preview": (source or {}).get("preview", ""),
+                "needs_reply": triage == "reply",
+                "triage": triage,
+                "p": verdict.get("pTop"),
+                "scam_p": verdict.get("scamP"),
+                "why": "",
+                "rule": decision.get("rule"),
+            })
+
+        # A card is read top to bottom: things waiting on a reply first, then the
+        # newest, so the most actionable email is the one seen first.
+        picks.sort(key=lambda pick: (not pick["needs_reply"], -int((pick.get("message_id") or "0:0:0").rsplit(":", 1)[-1] or 0)))
+
+        last_uid = max(int(m.get("uid") or 0) for m in messages)
+        event_id = f"email:{account_id}:{uid_validity}:{last_uid}"
+        event = {
+            "source": "email",
+            "event_id": event_id,
+            "received_at": now_iso(),
+            "account": {"id": account_id, "email": settings.get("email")},
+            "picks": picks,
+            "filtered": [d for d in decisions if d.get("triage") not in ("reply", "important")],
+            "draft_only": True,
+            "auto_send": False,
+        }
+        if store.enqueue(event_id, "email", event):
+            queued += 1
+            LOG.info("source=email account=%s picks=%d filtered=%d",
+                     settings.get("email"), len(picks), len(event["filtered"]))
+
+        # The spool is durable, so acking now cannot lose a pick: an undelivered
+        # event is retried from `pending` on the next pass once a URL is set.
+        if client.ack(account_id, uid_validity, last_uid, decisions):
+            for message in messages:
+                sender = bare_email(str(message.get("from") or ""))
+                seen[f"{sender}|{normalize_subject(str(message.get('subject') or ''))}"] = now_iso()
+
+    store.meta_set(EMAIL_SEEN_KEY, json.dumps(seen, ensure_ascii=False))
+    for event_id, _source, payload, attempts in store.pending(source="email"):
+        if delivery.send(event_id, payload):
+            store.mark_sent(event_id)
+        else:
+            store.mark_retry(event_id, attempts + 1)
+    return queued, wait
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("source", choices=("whatsapp", "instagram"))
+    parser.add_argument("source", choices=("whatsapp", "instagram", "youtube", "x", "email"))
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=os.environ.get("REMY_LOG_LEVEL", "INFO"), format="%(message)s")
@@ -1479,20 +2201,40 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     store = StateStore(state)
     try:
-        url_key = (
-            "REMY_WHATSAPP_WEBHOOK_URL"
-            if args.source == "whatsapp"
-            else "REMY_INSTAGRAM_WEBHOOK_URL"
-        )
+        url_key = {
+            "whatsapp": "REMY_WHATSAPP_WEBHOOK_URL",
+            "instagram": "REMY_INSTAGRAM_WEBHOOK_URL",
+            "youtube": "REMY_YOUTUBE_WEBHOOK_URL",
+            "x": "REMY_X_WEBHOOK_URL",
+            "email": "REMY_EMAIL_WEBHOOK_URL",
+        }[args.source]
         delivery = WebhookDelivery(os.environ.get(url_key))
         if not delivery.enabled:
             LOG.warning("source=%s delivery=disabled reason=missing_private_url", args.source)
-        interval = int(
-            os.environ.get(
-                "REMY_INSTAGRAM_INTERVAL_SECONDS" if args.source == "instagram" else "REMY_WHATSAPP_INTERVAL_SECONDS",
-                "1800" if args.source == "instagram" else "15",
-            )
-        )
+
+        if args.source == "email":
+            # Email is not a social source: the gateway decides which mailboxes are
+            # due, so this is one call, one sleep, and no contact catalog.
+            email_client = EmailGatewayClient()
+            while True:
+                wait = 60
+                try:
+                    count, wait = run_email_once(store, delivery, email_client)
+                    if count:
+                        LOG.info("source=email queued=%d", count)
+                except Exception as exc:  # noqa: BLE001 - never spin on one bad batch
+                    LOG.error("source=email read_failed=%s", type(exc).__name__)
+                if args.once:
+                    return 0
+                time.sleep(wait)
+        interval_key = {
+            "whatsapp": "REMY_WHATSAPP_INTERVAL_SECONDS",
+            "instagram": "REMY_INSTAGRAM_INTERVAL_SECONDS",
+            "youtube": "REMY_YOUTUBE_INTERVAL_SECONDS",
+            "x": "REMY_X_INTERVAL_SECONDS",
+        }[args.source]
+        interval_default = {"whatsapp": "15", "instagram": "1800", "youtube": "1800", "x": "1800"}[args.source]
+        interval = int(os.environ.get(interval_key, interval_default))
         settings_client = WatcherSettingsClient(args.source)
         settings_cache: dict[str, Any] = dict(DEFAULT_WATCHER_SETTINGS)
         messages_db = os.environ.get(
@@ -1511,7 +2253,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         tick = 15
         while True:
             try:
-                fetched = settings_client.fetch()
+                fetched = settings_client.fetch() if settings_client else None
                 if fetched is not None:
                     settings_cache = fetched
                 if time.time() - last_contact_sync > 300:
@@ -1519,9 +2261,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                         catalog = build_contact_catalog(
                             IdentityResolver(whatsapp_db), messages_db
                         )
-                    else:
+                    elif args.source == "instagram":
                         catalog = build_instagram_contact_catalog(_instagram_server())
-                    settings_client.sync_contacts(catalog)
+                    else:
+                        # No contact catalog for YouTube: the senders are
+                        # commenters, not a directory we can enumerate.
+                        catalog = []
+                    if catalog and settings_client:
+                        settings_client.sync_contacts(catalog)
                     last_contact_sync = time.time()
 
                 if args.source == "instagram" and time.time() - last_automation >= automation_interval:
@@ -1534,24 +2281,27 @@ def main(argv: Optional[list[str]] = None) -> int:
                     except Exception as exc:  # noqa: BLE001
                         LOG.error("source=instagram automation_failed=%s", type(exc).__name__)
 
-                if args.source == "instagram" and last_read and time.time() - last_read < interval:
+                if args.source in ("instagram", "youtube", "x") and last_read and time.time() - last_read < interval:
                     if args.once:
                         return 0
                     time.sleep(tick)
                     continue
 
                 last_read = time.time()
-                count = (
-                    run_whatsapp_once(
+                if args.source == "whatsapp":
+                    count = run_whatsapp_once(
                         store,
                         delivery,
                         messages_db,
                         whatsapp_db,
                         settings=settings_cache,
                     )
-                    if args.source == "whatsapp"
-                    else run_instagram_once(store, delivery, settings=settings_cache)
-                )
+                elif args.source == "instagram":
+                    count = run_instagram_once(store, delivery, settings=settings_cache)
+                elif args.source == "youtube":
+                    count = run_youtube_once(store, delivery, settings=settings_cache)
+                else:
+                    count = run_x_once(store, delivery, settings=settings_cache)
                 LOG.info("source=%s queued=%d", args.source, count)
             except Exception as exc:  # do not spin on auth/challenge/throttle failures
                 LOG.error("source=%s read_failed=%s", args.source, type(exc).__name__)

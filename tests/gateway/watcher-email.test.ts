@@ -16,6 +16,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { openDatabase } from '../../src/core/db.js';
 import { createLogger } from '../../src/core/logger.js';
 import type { AuthenticatedKey } from '../../src/core/types.js';
+import type { JevClient } from '../../src/email/jev.js';
+import type { AuditService } from '../../src/core/ports.js';
 import type { EmailService } from '../../src/email/service.js';
 import { EmailTriageStore } from '../../src/email/triage-store.js';
 import type { EmailAccount, EmailNewMessages } from '../../src/email/types.js';
@@ -120,12 +122,16 @@ describe('WatcherApi email triage', () => {
   let accounts: EmailAccount[];
   let role: string;
   let keyName: string;
+  let jev: { configured: boolean; judge: ReturnType<typeof vi.fn> };
+  let recorded: Array<{ method: string; payload?: unknown }>;
 
   const api = (): WatcherApi =>
     new WatcherApi({
       service: new WatcherService(db, silent),
       email: { listAccounts: () => accounts, listNewMessages } as unknown as EmailService,
       triage,
+      jev: jev as unknown as JevClient,
+      audit: { record: (entry: { method: string; payload?: unknown }) => { recorded.push(entry); return recorded.length; } } as unknown as AuditService,
       authenticate: () =>
         ({ id: 'key_watcher', name: keyName, keyType: 'agent', metadata: { role } }) as unknown as AuthenticatedKey,
       logger: silent,
@@ -145,6 +151,8 @@ describe('WatcherApi email triage', () => {
     triage = new EmailTriageStore(db);
     listNewMessages = vi.fn(async (selector: string) => batch(selector, [11, 12]));
     accounts = [account('gmail'), account('proton')];
+    jev = { configured: true, judge: vi.fn(async () => ({ ok: true, verdict: { triage: 'reply', pTop: 0.9, scamP: 0.05 }, latencyMs: 150 })) };
+    recorded = [];
   });
 
   it('refuses a key that is not watcher-scoped', async () => {
@@ -232,5 +240,100 @@ describe('WatcherApi email triage', () => {
     expect(rows.map((row) => row.settings.accountId)).toEqual(['proton']);
     expect(triage.get('gmail').lastUid).toBe(0);
     expect(triage.get('gmail').lastRunAt).toBeNull();
+  });
+});
+
+describe('WatcherApi email judging', () => {
+  const judging = async (body: unknown): Promise<ApiResponse> => {
+    const req = makeRequest('POST', { body });
+    const { res, done } = makeResponse();
+    await (new WatcherApi({
+      service: new WatcherService(db, silent),
+      email: { listAccounts: () => accounts, listNewMessages } as unknown as EmailService,
+      triage,
+      jev: jev as unknown as JevClient,
+      audit: { record: (entry: { method: string; payload?: unknown }) => { recorded.push(entry); return recorded.length; } } as unknown as AuditService,
+      authenticate: () =>
+        ({ id: 'key_watcher', name: 'watcher-email', keyType: 'agent', metadata: { role: 'watcher' } }) as unknown as AuthenticatedKey,
+      logger: silent,
+    })).handle(req, res, new URL('http://localhost/mcp/v1/watcher/email/judge'));
+    return done;
+  };
+
+  const messages = [
+    { id: 'gmail:1:11', from: 'Ada <ada@example.com>', subject: 'Q3', preview: 'Can you send them?' },
+    { id: 'gmail:1:12', from: 'news@shop.example', subject: 'Deals', preview: 'Save 20%' },
+  ];
+
+  let db: DatabaseSync;
+  let triage: EmailTriageStore;
+  let listNewMessages: ReturnType<typeof vi.fn>;
+  let accounts: EmailAccount[];
+  let jev: { configured: boolean; judge: ReturnType<typeof vi.fn> };
+  let recorded: Array<{ method: string; payload?: unknown }>;
+
+  beforeEach(() => {
+    db = openDatabase(':memory:');
+    triage = new EmailTriageStore(db);
+    listNewMessages = vi.fn();
+    accounts = [account('gmail')];
+    jev = { configured: true, judge: vi.fn(async () => ({ ok: true, verdict: { triage: 'reply', pTop: 0.9, scamP: 0.05 }, latencyMs: 150 })) };
+    recorded = [];
+  });
+
+  it('refuses to judge when the decision model is not configured', async () => {
+    jev.configured = false;
+    const response = await judging({ accountId: 'gmail', messages });
+    expect(response.status).toBe(503);
+    expect(jev.judge).not.toHaveBeenCalled();
+  });
+
+  it('returns a verdict per message and audits each decision', async () => {
+    const response = await judging({ accountId: 'gmail', messages });
+    expect(response.status).toBe(200);
+    expect(response.body.judged).toBe(2);
+    expect((response.body.verdicts as Array<{ triage: string }>).map((entry) => entry.triage)).toEqual(['reply', 'reply']);
+    expect(recorded.filter((entry) => entry.method === 'email.triage')).toHaveLength(2);
+    expect(recorded[0]?.payload).toMatchObject({ accountId: 'gmail', messageId: 'gmail:1:11', triage: 'reply' });
+  });
+
+  it('fails the whole batch when any decision fails, so nothing is half-judged', async () => {
+    jev.judge = vi.fn(async (input: { from: string }) =>
+      input.from.includes('shop')
+        ? { ok: false, reason: 'timeout', latencyMs: 4000 }
+        : { ok: true, verdict: { triage: 'reply', pTop: 0.9, scamP: 0.05 }, latencyMs: 150 },
+    );
+    const response = await judging({ accountId: 'gmail', messages });
+    expect(response.status).toBe(503);
+    expect((response.body.error as { data: { failed: unknown[] } }).data.failed).toHaveLength(1);
+  });
+
+  it('remembers too_large as a skip instead of asking again for ever', async () => {
+    jev.judge = vi.fn(async () => ({ ok: false, reason: 'too_large', status: 413, latencyMs: 120 }));
+    const response = await judging({ accountId: 'gmail', messages });
+    expect(response.status).toBe(200);
+    expect(response.body.verdicts).toEqual([
+      { id: 'gmail:1:11', triage: 'skip', pTop: 0, scamP: 0, rule: 'too_large' },
+      { id: 'gmail:1:12', triage: 'skip', pTop: 0, scamP: 0, rule: 'too_large' },
+    ]);
+  });
+
+  it('rejects a malformed batch before spending a model call', async () => {
+    for (const body of [
+      { messages: [] },
+      { messages: 'nope' },
+      { messages: [{ id: '', from: 'a', subject: 'b', preview: 'c' }] },
+      { messages: [{ id: 'x', from: 'a', subject: 'b' }] },
+      { messages: Array.from({ length: 21 }, (_v, i) => ({ id: `m${i}`, from: 'a', subject: 'b', preview: 'c' })) },
+    ]) {
+      const response = await judging(body);
+      expect(response.status).toBe(400);
+    }
+    expect(jev.judge).not.toHaveBeenCalled();
+  });
+
+  it('passes the dismissed senders through to the model', async () => {
+    await judging({ accountId: 'gmail', messages, dismissedFrom: ['news@shop.example'] });
+    expect(jev.judge).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Q3' }), expect.objectContaining({ dismissedFrom: ['news@shop.example'] }));
   });
 });
