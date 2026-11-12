@@ -90,6 +90,7 @@ import type {
   EmailTriageAccount,
   EmailTriageInput,
   EmailTriageOverview,
+  EmailTriageReport,
   SendEmailInput,
 } from '../../email/types.js';
 
@@ -1895,6 +1896,19 @@ export class ApiClient {
   /** Every mailbox with its triage state; mailboxes with no row are off. */
   getEmailTriage(): Promise<EmailTriageOverview> {
     return this.request<EmailTriageOverview>('/mcp/v1/admin/email/triage');
+  }
+
+  /** What triage decided and filed over the last `days`, from the audit trail. */
+  getEmailTriageReport(days = 7): Promise<EmailTriageReport> {
+    return this.request<EmailTriageReport>(`/mcp/v1/admin/email/triage/report?days=${days}`);
+  }
+
+  /** Put a filed message back in the inbox; optionally stop that sender being filed. */
+  unfileEmailFiling(auditId: number, addSender: boolean): Promise<{ moved: boolean; folder: string; addedToNeverJunk: string | null }> {
+    return this.request<{ moved: boolean; folder: string; addedToNeverJunk: string | null }>(
+      '/mcp/v1/admin/email/triage/unfile',
+      { method: 'POST', body: JSON.stringify({ auditId, addSender }) },
+    );
   }
 
   /** Change one mailbox's triage settings; omitted fields are left alone. */

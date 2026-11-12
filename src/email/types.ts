@@ -222,8 +222,10 @@ export interface EmailTriageSettings {
   mode: EmailTriageMode;
   /** How often the watcher looks at this mailbox. */
   pollSeconds: number;
-  /** Where no-action mail is filed under `full`; null uses the provider's Junk. */
+  /** Where scam mail is filed under `full`; null uses the provider's own Junk. */
   junkFolder: string | null;
+  /** Where no-action mail is filed under `full`; null leaves it in the inbox. */
+  sortedFolder: string | null;
   /** Senders that are always important; never filed, never skipped by a rule. */
   alwaysImportant: string[];
   /** Senders that are never filed, whatever the verdict. */
@@ -242,6 +244,7 @@ export interface EmailTriageInput {
   mode?: EmailTriageMode;
   pollSeconds?: number;
   junkFolder?: string | null;
+  sortedFolder?: string | null;
   alwaysImportant?: string[];
   neverJunk?: string[];
 }
@@ -285,4 +288,58 @@ export interface EmailNewMessages {
   uidValidity: string;
   uidNext: number;
   messages: EmailNewMessage[];
+}
+
+/** What the watcher reports after judging, so the gateway can file it. */
+export interface EmailFileDecision {
+  messageId: string;
+  uid: number;
+  from: string;
+  subject: string;
+  triage: string;
+  scamP: number;
+  rule: string;
+}
+
+export interface EmailFileResult {
+  messageId: string;
+  filed: boolean;
+  /** The folder it was moved into, or null when it was left alone. */
+  folder: string | null;
+  /** Why it was left alone (`mode`, `allowlist`, `no_folder`, `not_skipped`), else null. */
+  reason: string | null;
+}
+
+/** One filing, as the audit trail recorded it; the id is how it is undone. */
+export interface EmailFiling {
+  auditId: number;
+  at: string;
+  accountId: string;
+  accountEmail: string | null;
+  messageId: string;
+  from: string;
+  subject: string;
+  folder: string;
+  toUid: number | null;
+}
+
+export interface EmailTriageReportAccount {
+  accountId: string;
+  accountEmail: string;
+  decisions: number;
+  reply: number;
+  important: number;
+  skip: number;
+  filed: number;
+  /** Important decisions the model was less than 0.7 sure about. */
+  unsure: number;
+  byRule: Record<string, number>;
+}
+
+export interface EmailTriageReport {
+  days: number;
+  since: string;
+  accounts: EmailTriageReportAccount[];
+  totals: Omit<EmailTriageReportAccount, 'accountId' | 'accountEmail' | 'byRule'>;
+  recentFilings: EmailFiling[];
 }

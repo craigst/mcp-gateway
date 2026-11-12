@@ -17,6 +17,33 @@ import type {
   SendEmailInput,
 } from './types.js';
 
+
+/** The provider's own junk folder names, when it does not advertise the special-use flag. */
+const JUNK_FOLDER_NAMES = ['Junk', 'Spam', 'Junk E-mail', 'Junk Email', 'Bulk Mail', 'Spam Folder'];
+
+export interface FileMessageResult {
+  moved: boolean;
+  folder: string | null;
+  /** The message's uid in the destination, for an exact undo. */
+  toUid: number | null;
+  reason: string | null;
+}
+
+/**
+ * Move one message into a triage folder and report where it landed.
+ *
+ * The destination is the configured folder when one is set. Scam mail with no
+ * configured folder goes to the provider's own Junk (special-use `\\Junk`, else
+ * its usual name); no-action mail with no configured folder stays where it is,
+ * because guessing a folder would be a surprise. Nothing is ever deleted or
+ * expunged — a move is the strongest thing this can do, and it is reversible.
+ */
+export interface FileMessageOptions {
+  kind: 'junk' | 'sorted';
+  target?: string | null;
+  from?: string;
+}
+
 export interface EmailServiceDeps {
   db: DatabaseSync;
   /** Defaults to the gateway DB. */
@@ -144,6 +171,24 @@ export async function readPreview(source: Buffer | undefined, subject: string, f
   }
 }
 
+
+
+function resolveTriageFolder(
+  folders: ReadonlyArray<{ path: string; name: string; specialUse?: string | null }>,
+  options: FileMessageOptions,
+): string | null {
+  const wanted = options.target?.trim();
+  if (wanted !== undefined && wanted !== '') {
+    const exact = folders.find((folder) => folder.path === wanted || folder.name === wanted);
+    // A configured folder that no longer exists must not become a silent move elsewhere.
+    return exact?.path ?? null;
+  }
+  if (options.kind !== 'junk') return null;
+  const special = folders.find((folder) => folder.specialUse === '\\Junk');
+  if (special !== undefined) return special.path;
+  const byName = folders.find((folder) => JUNK_FOLDER_NAMES.includes(folder.name));
+  return byName?.path ?? null;
+}
 
 function mapSummary(message: ImapFetchMessage): EmailMessageSummary {
   const flags = message.flags === undefined ? [] : [...message.flags];
@@ -454,6 +499,46 @@ export class EmailService {
       const lock = await client.getMailboxLock(folder);
       try {
         await client.messageMove(uid, target, { uid: true });
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
+
+  /** File one message for triage. See FileMessageOptions for where it may go. */
+  async fileMessage(selector: string, uid: number, options: FileMessageOptions): Promise<FileMessageResult> {
+    const account = this.requireAccount(selector);
+    const from = options.from?.trim() || 'INBOX';
+    return this.withClient(account, async (client) => {
+      const lock = await client.getMailboxLock(from);
+      try {
+        const folders = await client.list();
+        const destination = resolveTriageFolder(folders, options);
+        if (destination === null) return { moved: false, folder: null, toUid: null, reason: 'no_folder' };
+        const moved = await client.messageMove(uid, destination, { uid: true });
+        if (moved === false) return { moved: false, folder: null, toUid: null, reason: 'not_found' };
+        return {
+          moved: true,
+          folder: moved.destination || destination,
+          toUid: moved.uidMap?.get(uid) ?? null,
+          reason: null,
+        };
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
+  /** Put a filed message back in the inbox, using the uid the destination gave it. */
+  async unfileMessage(selector: string, uid: number, folder: string): Promise<{ moved: boolean; toUid: number | null }> {
+    const account = this.requireAccount(selector);
+    return this.withClient(account, async (client) => {
+      const lock = await client.getMailboxLock(folder);
+      try {
+        const moved = await client.messageMove(uid, 'INBOX', { uid: true });
+        if (moved === false) return { moved: false, toUid: null };
+        return { moved: true, toUid: moved.uidMap?.get(uid) ?? null };
       } finally {
         lock.release();
       }

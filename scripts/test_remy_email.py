@@ -63,8 +63,10 @@ class FakeClient:
         self.verdicts = verdicts or {}
         self.judge_fails = judge_fails
         self.ack_ok = ack_ok
+        self.file_fails = False
         self.judged = []
         self.acked = []
+        self.filed = []
         self.wait = 300
 
     def fetch(self):
@@ -75,6 +77,12 @@ class FakeClient:
         if self.judge_fails:
             return None
         return {m["id"]: self.verdicts.get(m["id"], {"triage": "skip", "pTop": 0.9, "scamP": 0.1}) for m in messages}
+
+    def file(self, account_id, decisions):
+        self.filed.append({"accountId": account_id, "decisions": decisions})
+        if self.file_fails:
+            return None
+        return {"filed": len(decisions), "results": [{"messageId": d["messageId"], "filed": True, "reason": None} for d in decisions]}
 
     def ack(self, account_id, uid_validity, last_uid, decisions):
         self.acked.append(
@@ -289,6 +297,54 @@ class RunEmailOnceTests(unittest.TestCase):
         self.assertEqual((ack["accountId"], ack["uidValidity"], ack["lastUid"]), ("gmail", "7", 210))
         rules = {d["messageId"]: d["rule"] for d in ack["decisions"]}
         self.assertEqual(rules["gmail:1:210"], "bulk")
+
+    def test_cards_only_mode_files_nothing(self):
+        accounts = [
+            {"settings": settings(mode="important"), "uidValidity": "1", "uidNext": 105,
+             "messages": [message(101, listUnsubscribe=True)]},
+        ]
+        _queued, _wait, client, _delivery = self.run_once(accounts)
+        self.assertEqual(client.filed, [])
+
+    def test_full_mode_asks_the_gateway_to_file_a_skip(self):
+        accounts = [
+            {"settings": settings(mode="full"), "uidValidity": "1", "uidNext": 105,
+             "messages": [message(101, subject="Your account is limited",
+                                  **{"from": "PayPal <security@paypal-verify.example>"})]},
+        ]
+        _queued, _wait, client, _delivery = self.run_once(
+            accounts, verdicts={"gmail:1:101": {"triage": "skip", "pTop": 0.8, "scamP": 0.99}}
+        )
+        self.assertEqual(len(client.filed), 1)
+        sent = client.filed[0]["decisions"][0]
+        self.assertEqual((sent["messageId"], sent["uid"], sent["triage"]), ("gmail:1:101", 101, "skip"))
+        self.assertEqual(sent["scamP"], 0.99)
+
+    def test_a_reply_is_never_filed(self):
+        accounts = [
+            {"settings": settings(mode="full"), "uidValidity": "1", "uidNext": 105,
+             "messages": [message(101), message(102, listUnsubscribe=True)]},
+        ]
+        _queued, _wait, client, _delivery = self.run_once(
+            accounts, verdicts={"gmail:1:101": {"triage": "reply", "pTop": 0.95, "scamP": 0.01}}
+        )
+        filed_ids = [d["messageId"] for d in client.filed[0]["decisions"]]
+        self.assertEqual(filed_ids, ["gmail:1:102"])
+
+    def test_a_filing_failure_still_acks_so_nothing_is_rejudged(self):
+        accounts = [
+            {"settings": settings(mode="full"), "uidValidity": "1", "uidNext": 105,
+             "messages": [message(101, listUnsubscribe=True)]},
+        ]
+        _queued, _wait, client, _delivery = self.run_once(accounts)
+        client.filed.clear()
+        client.file_fails = True
+        _queued, _wait, client2, _delivery2 = self.run_once(
+            [{"settings": settings(mode="full"), "uidValidity": "1", "uidNext": 106,
+              "messages": [message(102, listUnsubscribe=True)]}]
+        )
+        self.assertEqual(len(client2.filed), 1)      # asked
+        self.assertEqual(len(client2.acked), 1)      # and still acked
 
     def test_the_ack_carries_rule_decisions_only_so_nothing_is_audited_twice(self):
         accounts = [

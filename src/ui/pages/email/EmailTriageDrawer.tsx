@@ -47,6 +47,7 @@ export function EmailTriageDrawer({ open, triage, onClose, onSaved }: EmailTriag
   const [mode, setMode] = useState<EmailTriageMode>('important');
   const [pollSeconds, setPollSeconds] = useState('300');
   const [junkFolder, setJunkFolder] = useState('');
+  const [sortedFolder, setSortedFolder] = useState('');
   const [alwaysImportant, setAlwaysImportant] = useState('');
   const [neverJunk, setNeverJunk] = useState('');
   const [saving, setSaving] = useState(false);
@@ -58,6 +59,7 @@ export function EmailTriageDrawer({ open, triage, onClose, onSaved }: EmailTriag
     setMode(triage.mode);
     setPollSeconds(String(triage.pollSeconds));
     setJunkFolder(triage.junkFolder ?? '');
+    setSortedFolder(triage.sortedFolder ?? '');
     setAlwaysImportant(listText(triage.alwaysImportant));
     setNeverJunk(listText(triage.neverJunk));
     setError(null);
@@ -70,10 +72,11 @@ export function EmailTriageDrawer({ open, triage, onClose, onSaved }: EmailTriag
       mode !== triage.mode ||
       pollSeconds !== String(triage.pollSeconds) ||
       junkFolder !== (triage.junkFolder ?? '') ||
+      sortedFolder !== (triage.sortedFolder ?? '') ||
       alwaysImportant !== listText(triage.alwaysImportant) ||
       neverJunk !== listText(triage.neverJunk)
     );
-  }, [triage, enabled, mode, pollSeconds, junkFolder, alwaysImportant, neverJunk]);
+  }, [triage, enabled, mode, pollSeconds, junkFolder, sortedFolder, alwaysImportant, neverJunk]);
 
   const save = async (): Promise<void> => {
     if (triage === null) return;
@@ -84,6 +87,7 @@ export function EmailTriageDrawer({ open, triage, onClose, onSaved }: EmailTriag
       mode,
       pollSeconds: Number(pollSeconds),
       junkFolder: junkFolder.trim() === '' ? null : junkFolder.trim(),
+      sortedFolder: sortedFolder.trim() === '' ? null : sortedFolder.trim(),
       alwaysImportant: parseSenders(alwaysImportant),
       neverJunk: parseSenders(neverJunk),
     };
@@ -166,13 +170,25 @@ export function EmailTriageDrawer({ open, triage, onClose, onSaved }: EmailTriag
           </Field>
 
           <Field
-            label="File no-action mail into"
+            label="File scam mail into"
             hint="Leave blank to use the mailbox's own Junk folder. Mail is moved, never deleted."
           >
             <TextInput
               value={junkFolder}
               onChange={(event) => setJunkFolder(event.target.value)}
               placeholder="Junk"
+              disabled={!enabled || mode !== 'full'}
+            />
+          </Field>
+
+          <Field
+            label="File no-action mail into"
+            hint="Newsletters and receipts. Leave blank to leave them in the inbox — only scam mail is filed by default."
+          >
+            <TextInput
+              value={sortedFolder}
+              onChange={(event) => setSortedFolder(event.target.value)}
+              placeholder="Auto-Sorted"
               disabled={!enabled || mode !== 'full'}
             />
           </Field>

@@ -20,6 +20,7 @@ import type { EmailService } from '../email/service.js';
 import type { EmailTriageStore } from '../email/triage-store.js';
 import type { EmailTriageSettings } from '../email/types.js';
 import type { JevClient, JevTriage } from '../email/jev.js';
+import { senderMatches } from '../email/triage-store.js';
 import type { AuditService } from '../core/ports.js';
 
 /** How long the watcher waits when every mailbox is off, or none is due. */
@@ -31,6 +32,8 @@ const JUDGE_BATCH_LIMIT = 20;
 /** Jev calls in flight at once: fast enough for a batch of 20, gentle on the model. */
 const JUDGE_CONCURRENCY = 4;
 const JUDGE_ID_MAX = 200;
+/** Above this, a skip is fraud and goes to Junk; below it, it is just no-action mail. */
+const SCAM_JUNK_THRESHOLD = 0.8;
 
 export interface WatcherApiDeps {
   service: WatcherService;
@@ -322,6 +325,98 @@ export class WatcherApi {
         })),
         judged: inputs.length,
       });
+      return;
+    }
+    if (action === 'file' && method === 'POST') {
+      const body = (await readJsonBody(req, 262_144)) as { accountId?: unknown; decisions?: unknown };
+      const accountId = typeof body.accountId === 'string' ? body.accountId : '';
+      if (accountId === '') throw invalidParams('accountId is required');
+      const raw = body.decisions;
+      if (!Array.isArray(raw) || raw.length === 0) throw invalidParams('decisions must be a non-empty array');
+      if (raw.length > EMAIL_BATCH_LIMIT) throw invalidParams(`decisions holds at most ${EMAIL_BATCH_LIMIT} entries`);
+      const settings = triage.get(accountId);
+      if (!settings.enabled) {
+        throw accessDenied('Access Denied: triage is not enabled for that mailbox.', { reason: 'SCOPE_RESTRICTION' });
+      }
+      const account = email.listAccounts().find((entry) => entry.id === accountId);
+      if (account === undefined) throw invalidParams('accountId is not a mailbox on this gateway');
+
+      const results: Array<{
+        messageId: string;
+        filed: boolean;
+        folder: string | null;
+        reason: string | null;
+      }> = [];
+      for (const entry of raw) {
+        if (entry === null || typeof entry !== 'object') throw invalidParams('each decision must be an object');
+        const record = entry as Record<string, unknown>;
+        const messageId = typeof record.messageId === 'string' ? record.messageId : '';
+        if (messageId === '' || messageId.length > JUDGE_ID_MAX) throw invalidParams('decision.messageId is required');
+        if (typeof record.uid !== 'number' || !Number.isSafeInteger(record.uid) || record.uid <= 0) {
+          throw invalidParams('decision.uid must be a positive integer');
+        }
+        const triageVerdict = typeof record.triage === 'string' ? record.triage : '';
+        if (triageVerdict !== 'skip' && triageVerdict !== 'reply' && triageVerdict !== 'important') {
+          throw invalidParams('decision.triage must be skip, reply or important');
+        }
+        const from = typeof record.from === 'string' ? record.from : '';
+        const subject = typeof record.subject === 'string' ? record.subject : '';
+        const rule = typeof record.rule === 'string' ? record.rule : '';
+        const scamP = typeof record.scamP === 'number' && Number.isFinite(record.scamP) ? record.scamP : 0;
+
+        // Filing is a move, so it is the narrowest thing in the pipeline: an
+        // account in `important` mode, a skip, and a sender the person did not
+        // exempt. Anything else is left exactly where it is.
+        if (settings.mode !== 'full') {
+          results.push({ messageId, filed: false, folder: null, reason: 'mode' });
+          continue;
+        }
+        if (triageVerdict !== 'skip') {
+          results.push({ messageId, filed: false, folder: null, reason: 'not_skipped' });
+          continue;
+        }
+        if (senderMatches(from, settings.alwaysImportant) || senderMatches(from, settings.neverJunk)) {
+          results.push({ messageId, filed: false, folder: null, reason: 'allowlist' });
+          continue;
+        }
+        const kind = scamP >= SCAM_JUNK_THRESHOLD ? 'junk' : 'sorted';
+        const target = kind === 'junk' ? settings.junkFolder : settings.sortedFolder;
+        try {
+          const moved = await email.fileMessage(accountId, record.uid, { kind, target, from: 'INBOX' });
+          if (!moved.moved) {
+            results.push({ messageId, filed: false, folder: null, reason: moved.reason ?? 'no_folder' });
+            continue;
+          }
+          results.push({ messageId, filed: true, folder: moved.folder, reason: null });
+          this.deps.audit?.record({
+            requestId: null,
+            keyId: principal.id,
+            method: 'email.file',
+            status: 'ok',
+            latencyMs: 0,
+            payload: {
+              accountId,
+              accountEmail: account.email,
+              messageId,
+              uid: record.uid,
+              from,
+              subject,
+              triage: triageVerdict,
+              scamP,
+              rule,
+              fromFolder: 'INBOX',
+              toFolder: moved.folder,
+              toUid: moved.toUid,
+              reversible: true,
+            },
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logger.warn('email file failed', { accountId, messageId, error: message });
+          results.push({ messageId, filed: false, folder: null, reason: 'error' });
+        }
+      }
+      this.sendJson(res, 200, { filed: results.filter((entry) => entry.filed).length, results });
       return;
     }
     this.sendJson(res, action === 'new' && method !== 'GET' ? 405 : 404, {

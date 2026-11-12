@@ -18,6 +18,7 @@ import { SkeletonBlock } from '../components/Skeleton.js';
 import { cx } from '../lib/cx.js';
 import { EmailAccessDialog } from './email/EmailAccessDialog.js';
 import { EmailTriageDrawer } from './email/EmailTriageDrawer.js';
+import { EmailTriageReportDrawer } from './email/EmailTriageReportDrawer.js';
 
 type ComposeState = {
   open: boolean;
@@ -95,6 +96,7 @@ export function EmailPage() {
   const [triageLoading, setTriageLoading] = useState(true);
   const [triageFocus, setTriageFocus] = useState<string | null>(null);
   const [showTriage, setShowTriage] = useState(false);
+  const [showTriageReport, setShowTriageReport] = useState(false);
 
   const active = useMemo(() => accounts.find((account) => account.id === activeAccount) ?? null, [accounts, activeAccount]);
 
@@ -504,6 +506,13 @@ export function EmailPage() {
               </button>
               <button
                 type="button"
+                onClick={() => setShowTriageReport(true)}
+                className="w-full rounded-md border border-slate-700 px-2 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+              >
+                Triage report
+              </button>
+              <button
+                type="button"
                 onClick={() => void removeAccount(active)}
                 className="w-full rounded-md border border-rose-500/30 px-2 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/10"
               >
@@ -775,6 +784,12 @@ export function EmailPage() {
         triage={triageFocus === null ? null : (triageByAccount.get(triageFocus) ?? null)}
         onClose={() => setShowTriage(false)}
         onSaved={applyTriage}
+      />
+
+      <EmailTriageReportDrawer
+        open={showTriageReport}
+        onClose={() => setShowTriageReport(false)}
+        onChanged={() => void loadTriage()}
       />
 
       {showAccountDialog && (

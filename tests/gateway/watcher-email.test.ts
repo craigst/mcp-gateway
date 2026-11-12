@@ -123,12 +123,13 @@ describe('WatcherApi email triage', () => {
   let role: string;
   let keyName: string;
   let jev: { configured: boolean; judge: ReturnType<typeof vi.fn> };
+  let fileMessage: ReturnType<typeof vi.fn> = vi.fn();
   let recorded: Array<{ method: string; payload?: unknown }>;
 
   const api = (): WatcherApi =>
     new WatcherApi({
       service: new WatcherService(db, silent),
-      email: { listAccounts: () => accounts, listNewMessages } as unknown as EmailService,
+      email: { listAccounts: () => accounts, listNewMessages, fileMessage } as unknown as EmailService,
       triage,
       jev: jev as unknown as JevClient,
       audit: { record: (entry: { method: string; payload?: unknown }) => { recorded.push(entry); return recorded.length; } } as unknown as AuditService,
@@ -249,7 +250,7 @@ describe('WatcherApi email judging', () => {
     const { res, done } = makeResponse();
     await (new WatcherApi({
       service: new WatcherService(db, silent),
-      email: { listAccounts: () => accounts, listNewMessages } as unknown as EmailService,
+      email: { listAccounts: () => accounts, listNewMessages, fileMessage } as unknown as EmailService,
       triage,
       jev: jev as unknown as JevClient,
       audit: { record: (entry: { method: string; payload?: unknown }) => { recorded.push(entry); return recorded.length; } } as unknown as AuditService,
@@ -270,12 +271,14 @@ describe('WatcherApi email judging', () => {
   let listNewMessages: ReturnType<typeof vi.fn>;
   let accounts: EmailAccount[];
   let jev: { configured: boolean; judge: ReturnType<typeof vi.fn> };
+  let fileMessage: ReturnType<typeof vi.fn> = vi.fn();
   let recorded: Array<{ method: string; payload?: unknown }>;
 
   beforeEach(() => {
     db = openDatabase(':memory:');
     triage = new EmailTriageStore(db);
     listNewMessages = vi.fn();
+    fileMessage = vi.fn(async () => ({ moved: true, folder: 'Junk', toUid: 900, reason: null }));
     accounts = [account('gmail')];
     jev = { configured: true, judge: vi.fn(async () => ({ ok: true, verdict: { triage: 'reply', pTop: 0.9, scamP: 0.05 }, latencyMs: 150 })) };
     recorded = [];
@@ -335,5 +338,115 @@ describe('WatcherApi email judging', () => {
   it('passes the dismissed senders through to the model', async () => {
     await judging({ accountId: 'gmail', messages, dismissedFrom: ['news@shop.example'] });
     expect(jev.judge).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Q3' }), expect.objectContaining({ dismissedFrom: ['news@shop.example'] }));
+  });
+});
+
+describe('WatcherApi email filing', () => {
+  let db: DatabaseSync;
+  let triage: EmailTriageStore;
+  let listNewMessages: ReturnType<typeof vi.fn>;
+  let fileMessage: ReturnType<typeof vi.fn> = vi.fn();
+  let accounts: EmailAccount[];
+  let recorded: Array<{ method: string; payload?: unknown }>;
+
+  const filing = async (body: unknown): Promise<ApiResponse> => {
+    const req = makeRequest('POST', { body });
+    const { res, done } = makeResponse();
+    await new WatcherApi({
+      service: new WatcherService(db, silent),
+      email: { listAccounts: () => accounts, listNewMessages, fileMessage } as unknown as EmailService,
+      triage,
+      audit: { record: (entry: { method: string; payload?: unknown }) => { recorded.push(entry); return recorded.length; } } as unknown as AuditService,
+      authenticate: () =>
+        ({ id: 'key_watcher', name: 'watcher-email', keyType: 'agent', metadata: { role: 'watcher' } }) as unknown as AuthenticatedKey,
+      logger: silent,
+    }).handle(req, res, new URL('http://localhost/mcp/v1/watcher/email/file'));
+    return done;
+  };
+
+  const decision = (over: Record<string, unknown> = {}) => ({
+    messageId: 'gmail:1:11',
+    uid: 11,
+    from: 'news@shop.example',
+    subject: 'Deals',
+    triage: 'skip',
+    scamP: 0.1,
+    rule: 'bulk',
+    ...over,
+  });
+
+  beforeEach(() => {
+    db = openDatabase(':memory:');
+    triage = new EmailTriageStore(db);
+    listNewMessages = vi.fn();
+    fileMessage = vi.fn(async () => ({ moved: true, folder: 'Junk', toUid: 900, reason: null }));
+    accounts = [account('gmail')];
+    recorded = [];
+  });
+
+  it('refuses to file for a mailbox that is not triaged', async () => {
+    const response = await filing({ accountId: 'gmail', decisions: [decision()] });
+    expect(response.status).toBe(403);
+    expect(fileMessage).not.toHaveBeenCalled();
+  });
+
+  it('files nothing in the cards-only mode', async () => {
+    triage.save('gmail', { enabled: true, mode: 'important' }, 'key_admin');
+    const response = await filing({ accountId: 'gmail', decisions: [decision()] });
+    expect(response.body.filed).toBe(0);
+    expect((response.body.results as Array<{ reason: string }>)[0]?.reason).toBe('mode');
+    expect(fileMessage).not.toHaveBeenCalled();
+  });
+
+  it('sends a low-scam skip to the no-action folder', async () => {
+    triage.save('gmail', { enabled: true, mode: 'full', sortedFolder: 'Auto-Sorted' }, 'key_admin');
+    const response = await filing({ accountId: 'gmail', decisions: [decision({ scamP: 0.1 })] });
+    expect(response.body.filed).toBe(1);
+    expect(fileMessage).toHaveBeenCalledWith('gmail', 11, { kind: 'sorted', target: 'Auto-Sorted', from: 'INBOX' });
+  });
+
+  it('sends a fraud skip to Junk', async () => {
+    triage.save('gmail', { enabled: true, mode: 'full' }, 'key_admin');
+    await filing({ accountId: 'gmail', decisions: [decision({ scamP: 0.99 })] });
+    expect(fileMessage).toHaveBeenCalledWith('gmail', 11, { kind: 'junk', target: null, from: 'INBOX' });
+  });
+
+  it('never files a sender the person exempted', async () => {
+    triage.save('gmail', { enabled: true, mode: 'full', neverJunk: ['news@shop.example'] }, 'key_admin');
+    const response = await filing({ accountId: 'gmail', decisions: [decision()] });
+    expect((response.body.results as Array<{ reason: string }>)[0]?.reason).toBe('allowlist');
+    expect(fileMessage).not.toHaveBeenCalled();
+  });
+
+  it('never files something that needs a reply', async () => {
+    triage.save('gmail', { enabled: true, mode: 'full' }, 'key_admin');
+    const response = await filing({ accountId: 'gmail', decisions: [decision({ triage: 'reply' })] });
+    expect((response.body.results as Array<{ reason: string }>)[0]?.reason).toBe('not_skipped');
+    expect(fileMessage).not.toHaveBeenCalled();
+  });
+
+  it('audits a filing reversibly, with the uid in the destination', async () => {
+    triage.save('gmail', { enabled: true, mode: 'full' }, 'key_admin');
+    await filing({ accountId: 'gmail', decisions: [decision({ scamP: 0.95 })] });
+    const rows = recorded.filter((entry) => entry.method === 'email.file');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload).toMatchObject({
+      accountId: 'gmail',
+      accountEmail: 'gmail@example.com',
+      messageId: 'gmail:1:11',
+      fromFolder: 'INBOX',
+      toFolder: 'Junk',
+      toUid: 900,
+      reversible: true,
+    });
+  });
+
+  it('reports a folder it cannot resolve instead of moving mail elsewhere', async () => {
+    triage.save('gmail', { enabled: true, mode: 'full', sortedFolder: 'Gone' }, 'key_admin');
+    fileMessage = vi.fn(async () => ({ moved: false, folder: null, toUid: null, reason: 'no_folder' }));
+    const response = await filing({ accountId: 'gmail', decisions: [decision()] });
+    expect(response.body.filed).toBe(0);
+    expect((response.body.results as Array<{ reason: string }>)[0]?.reason).toBe('no_folder');
+    expect(recorded.filter((entry) => entry.method === 'email.file')).toHaveLength(0);
   });
 });

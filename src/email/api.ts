@@ -15,18 +15,23 @@ import type { AuthenticatedKey } from '../core/types.js';
 import { readJsonBody } from '../gateway/server.js';
 import type { EmailAccessService } from './access.js';
 import type { EmailService } from './service.js';
-import type { EmailTriageStore } from './triage-store.js';
+import { normalizeSender, type EmailTriageStore } from './triage-store.js';
 import type {
   EmailAccountInput,
   EmailAccessUpdateInput,
   EmailTriageAccount,
   EmailTriageInput,
+  EmailFiling,
   EmailTriageOverview,
+  EmailTriageReport,
+  EmailTriageReportAccount,
   SendEmailInput,
 } from './types.js';
 import type { AdminSubRouter } from '../admin/types.js';
 
 const AREA = 'email';
+/** Below this an `important` verdict is where the noise comes from. */
+const UNSURE_BELOW = 0.7;
 
 export interface EmailApiDeps {
   config: GatewayConfig;
@@ -126,11 +131,12 @@ function triageInput(body: Record<string, unknown>): EmailTriageInput {
   }
   const pollSeconds = numberField(body, 'pollSeconds');
   if (pollSeconds !== undefined) input.pollSeconds = pollSeconds;
-  if ('junkFolder' in body) {
-    const raw = body.junkFolder;
-    if (raw === null) input.junkFolder = null;
-    else if (typeof raw === 'string') input.junkFolder = raw;
-    else throw invalidParams('"junkFolder" must be a string or null');
+  for (const field of ['junkFolder', 'sortedFolder'] as const) {
+    if (!(field in body)) continue;
+    const raw = body[field];
+    if (raw === null) input[field] = null;
+    else if (typeof raw === 'string') input[field] = raw;
+    else throw invalidParams(`"${field}" must be a string or null`);
   }
   const alwaysImportant = senderList(body, 'alwaysImportant');
   if (alwaysImportant !== undefined) input.alwaysImportant = alwaysImportant;
@@ -211,6 +217,21 @@ export class EmailApi implements AdminSubRouter {
       // Which mailboxes the watcher may read: one call for the whole Email tab.
       if (rest[0] === 'triage' && rest.length === 1 && method === 'GET') {
         this.sendJson(res, 200, this.triageOverview());
+        return true;
+      }
+      if (rest[0] === 'triage' && rest.length === 2 && rest[1] === 'report' && method === 'GET') {
+        const daysValue = Number(url.searchParams.get('days') ?? '7');
+        const days = Number.isFinite(daysValue) ? Math.min(Math.max(Math.round(daysValue), 1), 90) : 7;
+        this.sendJson(res, 200, this.triageReport(days));
+        return true;
+      }
+      if (rest[0] === 'triage' && rest.length === 2 && rest[1] === 'unfile' && method === 'POST') {
+        const body = asRecord(await readJsonBody(req, this.deps.config.requestBodyLimitBytes));
+        const auditId = numberField(body, 'auditId');
+        if (auditId === undefined || !Number.isSafeInteger(auditId) || auditId <= 0) throw invalidParams('"auditId" must be a positive integer');
+        const addSender = boolField(body, 'addSender') === true;
+        const result = await this.unfile(auditId, addSender, actor.id);
+        this.sendJson(res, 200, result);
         return true;
       }
       const accountId = rest.length === 0 ? null : decodeURIComponent(rest[0] as string);
@@ -381,6 +402,142 @@ export class EmailApi implements AdminSubRouter {
    * The Email tab renders one switch per mailbox from this, so the console and
    * the watcher cannot disagree about which mail is being read.
    */
+  /**
+   * What triage did over the last `days`, read back from the audit trail.
+   *
+   * This is the "audit that too" surface: counts by verdict and by rule, how
+   * many cards the model was unsure about (`important` under 0.7, where the
+   * noise lives), and the filings that can still be undone.
+   */
+  private triageReport(days: number): EmailTriageReport {
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    const entries = this.deps.audit?.query({ since, limit: 5000 }).entries ?? [];
+    const emails = new Map(this.deps.email.listAccounts().map((account) => [account.id, account.email]));
+    const byAccount = new Map<string, EmailTriageReportAccount>();
+    const ensure = (accountId: string): EmailTriageReportAccount => {
+      const existing = byAccount.get(accountId);
+      if (existing !== undefined) return existing;
+      const created: EmailTriageReportAccount = {
+        accountId,
+        accountEmail: emails.get(accountId) ?? '',
+        decisions: 0,
+        reply: 0,
+        important: 0,
+        skip: 0,
+        filed: 0,
+        unsure: 0,
+        byRule: {},
+      };
+      byAccount.set(accountId, created);
+      return created;
+    };
+    const recentFilings: EmailFiling[] = [];
+    for (const entry of entries) {
+      const payload = (entry.payload ?? {}) as Record<string, unknown>;
+      const accountId = typeof payload.accountId === 'string' ? payload.accountId : '';
+      if (accountId === '') continue;
+      if (entry.method === 'email.triage') {
+        const row = ensure(accountId);
+        row.decisions += 1;
+        const verdict = typeof payload.triage === 'string' ? payload.triage : '';
+        if (verdict === 'reply') row.reply += 1;
+        else if (verdict === 'important') row.important += 1;
+        else if (verdict === 'skip') row.skip += 1;
+        const rule = typeof payload.rule === 'string' && payload.rule !== '' ? payload.rule : payload.source === 'rule' ? 'rule' : 'jev';
+        row.byRule[rule] = (row.byRule[rule] ?? 0) + 1;
+        if (verdict === 'important' && typeof payload.pTop === 'number' && payload.pTop < UNSURE_BELOW) row.unsure += 1;
+        continue;
+      }
+      if (entry.method === 'email.file') {
+        ensure(accountId).filed += 1;
+        recentFilings.push({
+          auditId: entry.id,
+          at: entry.ts,
+          accountId,
+          accountEmail: typeof payload.accountEmail === 'string' ? payload.accountEmail : (emails.get(accountId) ?? null),
+          messageId: typeof payload.messageId === 'string' ? payload.messageId : '',
+          from: typeof payload.from === 'string' ? payload.from : '',
+          subject: typeof payload.subject === 'string' ? payload.subject : '',
+          folder: typeof payload.toFolder === 'string' ? payload.toFolder : '',
+          toUid: typeof payload.toUid === 'number' ? payload.toUid : null,
+        });
+      }
+    }
+    const accounts = [...byAccount.values()].sort((a, b) => b.decisions - a.decisions);
+    return {
+      days,
+      since,
+      accounts,
+      totals: accounts.reduce<EmailTriageReport['totals']>(
+        (sum, row) => ({
+          decisions: sum.decisions + row.decisions,
+          reply: sum.reply + row.reply,
+          important: sum.important + row.important,
+          skip: sum.skip + row.skip,
+          filed: sum.filed + row.filed,
+          unsure: sum.unsure + row.unsure,
+        }),
+        { decisions: 0, reply: 0, important: 0, skip: 0, filed: 0, unsure: 0 },
+      ),
+      recentFilings: recentFilings.slice(0, 20),
+    };
+  }
+
+  /**
+   * Put a filed message back in the inbox, using the uid the destination gave
+   * it, and optionally stop that sender being filed again.
+   */
+  private async unfile(
+    auditId: number,
+    addSender: boolean,
+    actor: string,
+  ): Promise<{ moved: boolean; folder: string; addedToNeverJunk: string | null }> {
+    const entry = this.deps.audit?.get(auditId) ?? null;
+    if (entry === null || entry.method !== 'email.file') {
+      throw new GatewayError(ErrorCodes.TOOL_NOT_FOUND, 'No filing with that id', { httpStatus: 404 });
+    }
+    const payload = (entry.payload ?? {}) as Record<string, unknown>;
+    const accountId = typeof payload.accountId === 'string' ? payload.accountId : '';
+    const folder = typeof payload.toFolder === 'string' ? payload.toFolder : '';
+    const toUid = typeof payload.toUid === 'number' ? payload.toUid : null;
+    if (accountId === '' || folder === '' || toUid === null) {
+      throw new GatewayError(ErrorCodes.INTERNAL_ERROR, 'That filing has no usable destination to move back from', {
+        httpStatus: 409,
+      });
+    }
+    const result = await this.deps.email.unfileMessage(accountId, toUid, folder);
+    if (!result.moved) {
+      throw new GatewayError(ErrorCodes.TOOL_NOT_FOUND, 'The message is no longer in that folder', { httpStatus: 404 });
+    }
+    const sender = typeof payload.from === 'string' ? normalizeSender(payload.from) : '';
+    let added: string | null = null;
+    if (addSender && sender !== '') {
+      const current = this.deps.triage.get(accountId);
+      if (!current.neverJunk.includes(sender)) {
+        this.deps.triage.save(accountId, { neverJunk: [...current.neverJunk, sender] }, actor);
+        added = sender;
+      }
+    }
+    this.deps.audit?.record({
+      requestId: null,
+      keyId: actor,
+      method: 'email.unfile',
+      status: 'ok',
+      latencyMs: 0,
+      payload: {
+        accountId,
+        messageId: payload.messageId,
+        from: payload.from,
+        subject: payload.subject,
+        fromFolder: folder,
+        toFolder: 'INBOX',
+        undoesAuditId: auditId,
+        addedToNeverJunk: added,
+      },
+    });
+    return { moved: true, folder, addedToNeverJunk: added };
+  }
+
   private triageOverview(): EmailTriageOverview {
     const accounts = this.deps.email.listAccounts();
     return {

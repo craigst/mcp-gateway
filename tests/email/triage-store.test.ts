@@ -112,6 +112,15 @@ describe('EmailTriageStore', () => {
     expect(store.get('a').enabled).toBe(false);
   });
 
+  it('keeps the scam folder and the no-action folder apart', () => {
+    store.save('a', { enabled: true, mode: 'full', junkFolder: 'Junk' }, null);
+    expect(store.get('a')).toMatchObject({ junkFolder: 'Junk', sortedFolder: null });
+    store.save('a', { sortedFolder: 'Auto-Sorted' }, null);
+    expect(store.get('a')).toMatchObject({ junkFolder: 'Junk', sortedFolder: 'Auto-Sorted' });
+    store.save('a', { sortedFolder: null }, null);
+    expect(store.get('a').sortedFolder).toBeNull();
+  });
+
   it('round-trips a full setting through the database', () => {
     store.save(
       'a',

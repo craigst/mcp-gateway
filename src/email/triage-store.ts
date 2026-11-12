@@ -34,6 +34,7 @@ interface TriageRow {
   mode: string;
   poll_seconds: number;
   junk_folder: string | null;
+  sorted_folder: string | null;
   always_important: string | null;
   never_junk: string | null;
   last_uid: number;
@@ -53,6 +54,7 @@ function defaults(accountId: string): EmailTriageSettings {
     mode: DEFAULT_TRIAGE_MODE,
     pollSeconds: DEFAULT_POLL_SECONDS,
     junkFolder: null,
+    sortedFolder: null,
     alwaysImportant: [],
     neverJunk: [],
     lastUid: 0,
@@ -82,6 +84,7 @@ function rowToSettings(row: TriageRow): EmailTriageSettings {
     mode,
     pollSeconds: row.poll_seconds,
     junkFolder: row.junk_folder,
+    sortedFolder: row.sorted_folder ?? null,
     alwaysImportant: parseList(row.always_important),
     neverJunk: parseList(row.never_junk),
     lastUid: row.last_uid,
@@ -114,6 +117,24 @@ function cleanSenders(value: unknown, field: string): string[] {
   return [...seen];
 }
 
+/**
+ * An allowlist entry is an address or `@domain`; the sender is compared on its
+ * bare address so `Mum <mum@example.com>` matches `mum@example.com`.
+ */
+export function senderMatches(sender: string, entries: readonly string[]): boolean {
+  const bare = normalizeSender(sender);
+  for (const entry of entries) {
+    const cleanEntry = entry.trim().toLowerCase();
+    if (cleanEntry === '') continue;
+    if (cleanEntry.startsWith('@')) {
+      if (bare.endsWith(cleanEntry)) return true;
+    } else if (bare === normalizeSender(cleanEntry)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export class EmailTriageStore {
   constructor(private readonly db: DatabaseSync) {
     this.ensureSchema();
@@ -127,6 +148,7 @@ export class EmailTriageStore {
         mode TEXT NOT NULL DEFAULT 'important',
         poll_seconds INTEGER NOT NULL DEFAULT 300,
         junk_folder TEXT,
+        sorted_folder TEXT,
         always_important TEXT,
         never_junk TEXT,
         last_uid INTEGER NOT NULL DEFAULT 0,
@@ -136,6 +158,12 @@ export class EmailTriageStore {
         updated_by TEXT
       );
     `);
+    // A database created before 0.15.4 has no sorted_folder: add it rather than
+    // requiring a rebuild, which would drop the operator's switches.
+    const columns = this.db.prepare('PRAGMA table_info(email_triage)').all() as unknown as Array<{ name: string }>;
+    if (!columns.some((entry) => entry.name === 'sorted_folder')) {
+      this.db.exec('ALTER TABLE email_triage ADD COLUMN sorted_folder TEXT');
+    }
   }
 
   /** The stored settings, or the all-off defaults when the mailbox has no row. */
@@ -176,13 +204,16 @@ export class EmailTriageStore {
       if (!Number.isFinite(input.pollSeconds)) throw new Error('pollSeconds must be a number');
       next.pollSeconds = Math.round(Math.min(Math.max(input.pollSeconds, MIN_POLL_SECONDS), MAX_POLL_SECONDS));
     }
-    if (input.junkFolder !== undefined) {
-      if (input.junkFolder === null) next.junkFolder = null;
-      else {
-        const folder = input.junkFolder.trim();
-        if (folder.length > MAX_FOLDER) throw new Error(`junkFolder holds at most ${MAX_FOLDER} characters`);
-        next.junkFolder = folder === '' ? null : folder;
+    for (const field of ['junkFolder', 'sortedFolder'] as const) {
+      const value = input[field];
+      if (value === undefined) continue;
+      if (value === null) {
+        next[field] = null;
+        continue;
       }
+      const folder = value.trim();
+      if (folder.length > MAX_FOLDER) throw new Error(`${field} holds at most ${MAX_FOLDER} characters`);
+      next[field] = folder === '' ? null : folder;
     }
     if (input.alwaysImportant !== undefined) next.alwaysImportant = cleanSenders(input.alwaysImportant, 'alwaysImportant');
     if (input.neverJunk !== undefined) next.neverJunk = cleanSenders(input.neverJunk, 'neverJunk');
@@ -191,14 +222,15 @@ export class EmailTriageStore {
     this.db
       .prepare(
         `INSERT INTO email_triage
-           (account_id, enabled, mode, poll_seconds, junk_folder, always_important, never_junk,
-            last_uid, uid_validity, last_run_at, updated_at, updated_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (account_id, enabled, mode, poll_seconds, junk_folder, sorted_folder, always_important,
+            never_junk, last_uid, uid_validity, last_run_at, updated_at, updated_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(account_id) DO UPDATE SET
            enabled = excluded.enabled,
            mode = excluded.mode,
            poll_seconds = excluded.poll_seconds,
            junk_folder = excluded.junk_folder,
+           sorted_folder = excluded.sorted_folder,
            always_important = excluded.always_important,
            never_junk = excluded.never_junk,
            updated_at = excluded.updated_at,
@@ -210,6 +242,7 @@ export class EmailTriageStore {
         next.mode,
         next.pollSeconds,
         next.junkFolder,
+        next.sortedFolder,
         JSON.stringify(next.alwaysImportant),
         JSON.stringify(next.neverJunk),
         current.lastUid,

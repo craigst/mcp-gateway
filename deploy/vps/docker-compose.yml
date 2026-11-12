@@ -9,12 +9,12 @@
 # extra_hosts; see docs/FULL-MIGRATION.md "WireGuard restored; fallback retired".
 services:
   gateway:
-    # Tag matches the version inside the image (0.15.3, per /mcp/v1/health and
-    # package.json). 0.15.3 adds the Jev judge endpoint the email watcher calls; 0.15.2 fixed List-Unsubscribe detection (mailparser returns it as the `list` header) and adds the triage tests; 0.15.1 adds per-mailbox email triage switches (/triage and
+    # Tag matches the version inside the image (0.15.4, per /mcp/v1/health and
+    # package.json). 0.15.4 adds reversible filing (email.file / email.unfile) and the triage report; 0.15.3 adds the Jev judge endpoint the email watcher calls; 0.15.2 fixed List-Unsubscribe detection (mailparser returns it as the `list` header) and adds the triage tests; 0.15.1 adds per-mailbox email triage switches (/triage and
     # the watcher's scoped email endpoints); 0.15.0 adds the Email tab access controller (bots/API keys
     # and per-mailbox toggles) and enforces it inside the email MCP server.
     # Bump package.json before re-tagging; do not reuse an old mislabelled tag.
-    image: localhost/mcp-gateway:${MCP_IMAGE_TAG:-0.15.3}
+    image: localhost/mcp-gateway:${MCP_IMAGE_TAG:-0.15.4}
     container_name: mcp-gateway
     restart: unless-stopped
     env_file:

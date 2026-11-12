@@ -2074,6 +2074,11 @@ class EmailGatewayClient:
                     verdicts[str(verdict["id"])] = verdict
         return verdicts
 
+    def file(self, account_id: str, decisions: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        """Ask the gateway to file skips. The gateway owns the folders, the allowlist and the audit."""
+        status, payload = self._call("POST", "file", {"accountId": account_id, "decisions": decisions})
+        return payload if status == 200 and isinstance(payload, dict) else None
+
     def ack(self, account_id: str, uid_validity: str, last_uid: int, decisions: list[dict[str, Any]]) -> bool:
         status, payload = self._call(
             "POST",
@@ -2119,6 +2124,7 @@ def run_email_once(
         if not account_id or not uid_validity or not messages:
             continue
 
+        by_id = {m["id"]: m for m in messages}
         decisions: list[dict[str, Any]] = []
         to_judge: list[dict[str, Any]] = []
         for message in messages:
@@ -2146,6 +2152,35 @@ def run_email_once(
                                   "subject": message.get("subject"), "triage": verdict.get("triage"),
                                   "rule": verdict.get("rule") or "jev", "source": "jev"})
 
+        # Filing happens before the ack: the mail is still in the inbox, so a
+        # failure here loses nothing. The gateway decides the folder, checks the
+        # allowlist again and records an undoable email.file row.
+        if settings.get("mode") == "full":
+            filable = []
+            for decision in decisions:
+                if decision.get("triage") != "skip":
+                    continue
+                verdict = verdicts.get(decision["messageId"]) or {}
+                source = by_id.get(decision["messageId"]) or {}
+                filable.append({
+                    "messageId": decision["messageId"],
+                    "uid": int(source.get("uid") or 0),
+                    "from": decision.get("from") or "",
+                    "subject": decision.get("subject") or "",
+                    "triage": "skip",
+                    "scamP": float(verdict.get("scamP") or 0),
+                    "rule": decision.get("rule") or "",
+                })
+            filable = [entry for entry in filable if entry["uid"] > 0]
+            if filable:
+                outcome = client.file(account_id, filable)
+                if outcome is None:
+                    LOG.warning("source=email account=%s file_failed=%d", settings.get("email"), len(filable))
+                else:
+                    reasons = sorted({str(r.get("reason")) for r in (outcome.get("results") or []) if not r.get("filed")})
+                    LOG.info("source=email account=%s filed=%s of %d reasons=%s",
+                             settings.get("email"), outcome.get("filed"), len(filable), ",".join(reasons) or "none")
+
         picks: list[dict[str, Any]] = []
         floor = email_min_confidence()
         for decision in decisions:
@@ -2158,7 +2193,7 @@ def run_email_once(
                 # Remy then skipped both. The floor is the lever for that noise.
                 LOG.info("source=email not_carded=low_confidence p=%s floor=%s", confidence, floor)
                 continue
-            source = next((m for m in messages if m["id"] == decision["messageId"]), None)
+            source = by_id.get(decision["messageId"])
             verdict = verdicts.get(decision["messageId"]) or {}
             picks.append({
                 "message_id": decision["messageId"],
