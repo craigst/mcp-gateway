@@ -170,6 +170,48 @@ class RunEmailOnceTests(unittest.TestCase):
         queued, wait = run_email_once(self.store, delivery, client)
         return queued, wait, client, delivery
 
+    def test_one_event_per_email_carries_what_the_card_prompt_reads(self):
+        accounts = [
+            {
+                "settings": settings(),
+                "uidValidity": "1",
+                "uidNext": 105,
+                "messages": [
+                    message(101, sender="Ada <ada@example.com>", subject="Q3 numbers"),
+                    message(102, sender="Mum <mum@example.com>", subject="Saturday"),
+                ],
+            }
+        ]
+        _queued, _wait, _client, delivery = self.run_once(
+            accounts,
+            verdicts={"gmail:1:101": {"triage": "reply", "pTop": 0.97, "scamP": 0.02}},
+        )
+        self.assertEqual(len(delivery.sent), 2)
+        by_id = {event_id: payload for event_id, payload in delivery.sent}
+        self.assertEqual(sorted(by_id), ["email:gmail:1:101", "email:gmail:1:102"])
+        payload = by_id["email:gmail:1:101"]
+        # The prompt reads the message itself, so it needs the account and folder.
+        self.assertEqual(payload["account"]["id"], "gmail")
+        self.assertEqual(payload["folder"], "INBOX")
+        self.assertEqual(payload["uid"], 101)
+        self.assertEqual(payload["message_id"], "gmail:1:101")
+        self.assertTrue(payload["needs_reply"])
+        self.assertTrue(payload["draft_only"])
+        self.assertFalse(payload["auto_send"])
+
+    def test_a_backlog_is_capped_per_pass(self):
+        accounts = [
+            {
+                "settings": settings(),
+                "uidValidity": "1",
+                "uidNext": 120,
+                "messages": [message(100 + i, subject=f"Question {i}") for i in range(1, 9)],
+            }
+        ]
+        verdicts = {f"gmail:1:{100 + i}": {"triage": "reply", "pTop": 0.9, "scamP": 0.01} for i in range(1, 9)}
+        _queued, _wait, _client, delivery = self.run_once(accounts, verdicts=verdicts)
+        self.assertEqual(len(delivery.sent), 5)
+
     def test_only_the_important_mail_becomes_a_pick(self):
         accounts = [
             {
@@ -187,17 +229,17 @@ class RunEmailOnceTests(unittest.TestCase):
             accounts,
             verdicts={"gmail:1:101": {"triage": "reply", "pTop": 0.97, "scamP": 0.02}},
         )
-        self.assertEqual(queued, 1)
+        self.assertEqual(queued, 2)   # one event per carded email
         self.assertEqual(wait, 300)
         # Only the message no rule caught is judged: 101. 102 is bulk, 103 is allowlisted.
         self.assertEqual([entry["ids"] for entry in client.judged], [["gmail:1:101"]])
-        _event_id, payload = delivery.sent[0]
-        picks = payload["picks"]
-        self.assertEqual([p["message_id"] for p in picks], ["gmail:1:101", "gmail:1:103"])
-        self.assertEqual([p["needs_reply"] for p in picks], [True, False])
-        self.assertTrue(payload["draft_only"])
-        self.assertFalse(payload["auto_send"])
-        self.assertEqual([f["messageId"] for f in payload["filtered"]], ["gmail:1:102"])
+        # Reply first, then the newer important one: one event each.
+        self.assertEqual([p["message_id"] for _e, p in delivery.sent], ["gmail:1:101", "gmail:1:103"])
+        self.assertEqual([p["needs_reply"] for _e, p in delivery.sent], [True, False])
+        self.assertTrue(delivery.sent[0][1]["draft_only"])
+        self.assertFalse(delivery.sent[0][1]["auto_send"])
+        # The bulk message was filtered and never carded.
+        self.assertNotIn("gmail:1:102", [p["message_id"] for _e, p in delivery.sent])
 
     def test_the_cursor_moves_to_the_newest_uid_and_the_rules_are_audited(self):
         accounts = [
@@ -214,6 +256,22 @@ class RunEmailOnceTests(unittest.TestCase):
         self.assertEqual((ack["accountId"], ack["uidValidity"], ack["lastUid"]), ("gmail", "7", 210))
         rules = {d["messageId"]: d["rule"] for d in ack["decisions"]}
         self.assertEqual(rules["gmail:1:210"], "bulk")
+
+    def test_the_ack_carries_rule_decisions_only_so_nothing_is_audited_twice(self):
+        accounts = [
+            {
+                "settings": settings(),
+                "uidValidity": "1",
+                "uidNext": 105,
+                "messages": [message(101), message(102, listUnsubscribe=True)],
+            }
+        ]
+        _queued, _wait, client, _delivery = self.run_once(
+            accounts, verdicts={"gmail:1:101": {"triage": "reply", "pTop": 0.9, "scamP": 0.01}}
+        )
+        acked_ids = [d["messageId"] for d in client.acked[0]["decisions"]]
+        # 101 was judged (and audited by /judge); only the rule decision is acked.
+        self.assertEqual(acked_ids, ["gmail:1:102"])
 
     def test_a_model_failure_acks_nothing_so_the_mail_comes_back(self):
         accounts = [{"settings": settings(), "uidValidity": "1", "uidNext": 105, "messages": [message(101)]}]

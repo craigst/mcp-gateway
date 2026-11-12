@@ -1894,6 +1894,8 @@ EMAIL_SEEN_DAYS = 14
 EMAIL_SEEN_MAX = 2000
 EMAIL_DISMISSED_MAX = 20
 EMAIL_JUDGE_BATCH = 20
+# Picks carded per mailbox per pass: a first run on a backlog must not open 20 turns.
+EMAIL_PICKS_PER_PASS = 5
 EMAIL_WAIT_FLOOR = 15
 EMAIL_WAIT_CEILING = 3600
 
@@ -2129,7 +2131,7 @@ def run_email_once(
                     continue
                 decisions.append({"messageId": message["id"], "from": message.get("from"),
                                   "subject": message.get("subject"), "triage": verdict.get("triage"),
-                                  "rule": verdict.get("rule") or "jev"})
+                                  "rule": verdict.get("rule") or "jev", "source": "jev"})
 
         picks: list[dict[str, Any]] = []
         for decision in decisions:
@@ -2158,25 +2160,49 @@ def run_email_once(
         picks.sort(key=lambda pick: (not pick["needs_reply"], -int((pick.get("message_id") or "0:0:0").rsplit(":", 1)[-1] or 0)))
 
         last_uid = max(int(m.get("uid") or 0) for m in messages)
-        event_id = f"email:{account_id}:{uid_validity}:{last_uid}"
-        event = {
-            "source": "email",
-            "event_id": event_id,
-            "received_at": now_iso(),
-            "account": {"id": account_id, "email": settings.get("email")},
-            "picks": picks,
-            "filtered": [d for d in decisions if d.get("triage") not in ("reply", "important")],
-            "draft_only": True,
-            "auto_send": False,
-        }
-        if store.enqueue(event_id, "email", event):
-            queued += 1
-            LOG.info("source=email account=%s picks=%d filtered=%d",
-                     settings.get("email"), len(picks), len(event["filtered"]))
+
+        # One event per email, because Remy's card prompt is written for one
+        # message ("A new email arrived"): it reads that message itself and
+        # writes the card and the draft chips. Sending a digest would make it
+        # summarise instead of reading.
+        capped = picks[:EMAIL_PICKS_PER_PASS]
+        if len(picks) > len(capped):
+            LOG.warning("source=email account=%s picks_dropped=%d cap=%d",
+                        settings.get("email"), len(picks) - len(capped), EMAIL_PICKS_PER_PASS)
+        for pick in capped:
+            source = next((m for m in messages if m["id"] == pick["message_id"]), {})
+            uid = int(source.get("uid") or 0)
+            event_id = f"email:{account_id}:{uid_validity}:{uid}"
+            event = {
+                "source": "email",
+                "event_id": event_id,
+                "received_at": now_iso(),
+                "account": {"id": account_id, "email": settings.get("email")},
+                "folder": "INBOX",
+                "uid": uid,
+                "message_id": pick["message_id"],
+                "from": pick.get("from"),
+                "subject": pick.get("subject"),
+                "date": source.get("date"),
+                "triage": pick.get("triage"),
+                "needs_reply": pick.get("needs_reply"),
+                "p": pick.get("p"),
+                "scam_p": pick.get("scam_p"),
+                "rule": pick.get("rule"),
+                "draft_only": True,
+                "auto_send": False,
+            }
+            if store.enqueue(event_id, "email", event):
+                queued += 1
+        LOG.info("source=email account=%s picks=%d filtered=%d",
+                 settings.get("email"), len(capped), len(decisions) - len(picks))
 
         # The spool is durable, so acking now cannot lose a pick: an undelivered
         # event is retried from `pending` on the next pass once a URL is set.
-        if client.ack(account_id, uid_validity, last_uid, decisions):
+        # The judge endpoint already audited every model decision, so the ack
+        # carries only the rule ones: one row per message in the trail.
+        ack_decisions = [d for d in decisions if d.get("source") != "jev"]
+        if client.ack(account_id, uid_validity, last_uid, ack_decisions):
             for message in messages:
                 sender = bare_email(str(message.get("from") or ""))
                 seen[f"{sender}|{normalize_subject(str(message.get('subject') or ''))}"] = now_iso()
