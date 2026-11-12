@@ -1898,6 +1898,10 @@ EMAIL_JUDGE_BATCH = 20
 EMAIL_PICKS_PER_PASS = 5
 EMAIL_WAIT_FLOOR = 15
 EMAIL_WAIT_CEILING = 3600
+# A card is only worth a turn when the decision model is reasonably sure. This
+# floor applies to `important` only: `reply` is the whole point and is never
+# suppressed. Default 0 keeps every pick, so nothing changes until it is set.
+EMAIL_MIN_CONFIDENCE_DEFAULT = 0.0
 
 
 def bare_email(value: str) -> str:
@@ -1965,6 +1969,15 @@ def email_seen(store: StateStore) -> dict[str, str]:
 def email_dismissed_from(store: StateStore) -> list[str]:
     raw = _email_json_get(store, EMAIL_DISMISSED_KEY, [])
     return [str(entry.get("from")) for entry in raw if isinstance(entry, dict) and entry.get("from")][:EMAIL_DISMISSED_MAX]
+
+
+def email_min_confidence() -> float:
+    """The `important` card floor, from REMY_EMAIL_MIN_CONFIDENCE (0 disables it)."""
+    try:
+        value = float(os.environ.get("REMY_EMAIL_MIN_CONFIDENCE", "") or EMAIL_MIN_CONFIDENCE_DEFAULT)
+    except ValueError:
+        return EMAIL_MIN_CONFIDENCE_DEFAULT
+    return min(max(value, 0.0), 1.0)
 
 
 def email_rule(message: dict[str, Any], settings: dict[str, Any], seen: dict[str, str]) -> Optional[tuple[str, str]]:
@@ -2134,9 +2147,16 @@ def run_email_once(
                                   "rule": verdict.get("rule") or "jev", "source": "jev"})
 
         picks: list[dict[str, Any]] = []
+        floor = email_min_confidence()
         for decision in decisions:
             triage = decision.get("triage")
             if triage not in ("reply", "important"):
+                continue
+            confidence = (verdicts.get(decision["messageId"]) or {}).get("pTop")
+            if triage == "important" and floor > 0 and (confidence or 0) < floor:
+                # Measured 2026-11-12: automated notices carded at 0.52 and 0.66 and
+                # Remy then skipped both. The floor is the lever for that noise.
+                LOG.info("source=email not_carded=low_confidence p=%s floor=%s", confidence, floor)
                 continue
             source = next((m for m in messages if m["id"] == decision["messageId"]), None)
             verdict = verdicts.get(decision["messageId"]) or {}

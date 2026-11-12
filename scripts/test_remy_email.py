@@ -5,6 +5,7 @@ costs a model call, a model failure acks nothing (so the mail comes back), and
 an acked batch is on the local spool before the cursor moves.
 """
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -198,6 +199,38 @@ class RunEmailOnceTests(unittest.TestCase):
         self.assertTrue(payload["needs_reply"])
         self.assertTrue(payload["draft_only"])
         self.assertFalse(payload["auto_send"])
+
+    def test_the_confidence_floor_suppresses_only_unsure_important_mail(self):
+        accounts = [
+            {
+                "settings": settings(),
+                "uidValidity": "1",
+                "uidNext": 104,
+                "messages": [message(101, subject="bank notice"), message(102, subject="real question")],
+            }
+        ]
+        verdicts = {
+            "gmail:1:101": {"triage": "important", "pTop": 0.52, "scamP": 0.46},
+            "gmail:1:102": {"triage": "reply", "pTop": 0.55, "scamP": 0.02},
+        }
+        os.environ["REMY_EMAIL_MIN_CONFIDENCE"] = "0.7"
+        try:
+            _queued, _wait, _client, delivery = self.run_once(accounts, verdicts=verdicts)
+        finally:
+            os.environ.pop("REMY_EMAIL_MIN_CONFIDENCE", None)
+        # The unsure `important` is dropped; the unsure `reply` is still carded.
+        self.assertEqual([p["message_id"] for _e, p in delivery.sent], ["gmail:1:102"])
+
+    def test_the_floor_is_off_by_default(self):
+        accounts = [
+            {"settings": settings(), "uidValidity": "1", "uidNext": 104,
+             "messages": [message(101, subject="bank notice")]},
+        ]
+        os.environ.pop("REMY_EMAIL_MIN_CONFIDENCE", None)
+        _queued, _wait, _client, delivery = self.run_once(
+            accounts, verdicts={"gmail:1:101": {"triage": "important", "pTop": 0.52, "scamP": 0.46}}
+        )
+        self.assertEqual(len(delivery.sent), 1)
 
     def test_a_backlog_is_capped_per_pass(self):
         accounts = [
