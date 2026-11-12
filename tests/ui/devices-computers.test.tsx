@@ -5,6 +5,7 @@ const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     getComputerUseOverview: vi.fn(),
     listComputerUseComputers: vi.fn(),
+    getComputerUseConnectors: vi.fn(),
     updateComputerUseSettings: vi.fn(),
     setComputerUseAvailability: vi.fn(),
     syncComputerUse: vi.fn(),
@@ -24,13 +25,14 @@ vi.mock('../../src/ui/lib/api.js', async (importOriginal) => {
 });
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { ComputerUsePage } from '../../src/ui/pages/computer-use/ComputerUsePage.js';
+import { DevicesPage } from '../../src/ui/pages/devices/DevicesPage.js';
 import type {
   AuditEntry,
   ComputerUseAvailability,
   ComputerUseBrokerInfo,
   ComputerUseComputerInfo,
   ComputerUseComputersResponse,
+  ComputerUseConnectorsResponse,
   ComputerUseOverview,
   ComputerUseSettingsInfo,
 } from '../../src/core/types.js';
@@ -187,6 +189,14 @@ const unconfiguredComputers: ComputerUseComputersResponse = {
   computers: [],
 };
 
+const connectorsResponse: ComputerUseConnectorsResponse = {
+  broker: brokerOnline,
+  devices: [],
+  enrollments: [],
+  publicBrokerUrl: 'https://broker.example.lan',
+  counts: { devices: 0, online: 0, pendingEnrollments: 0 },
+};
+
 function makeAuditEntry(overrides: Partial<AuditEntry> & { id: number }): AuditEntry {
   return {
     ts: '2026-10-29T23:05:00.000Z',
@@ -210,9 +220,15 @@ const activity: AuditEntry[] = [
   makeAuditEntry({ id: 2, status: 'denied', errorCode: -32001, latencyMs: 3 }),
 ];
 
+/** Click one of the merged page's tabs by its visible label. */
+function openTab(label: string): void {
+  fireEvent.click(screen.getByRole('tab', { name: new RegExp(label) }));
+}
+
 beforeEach(() => {
   apiMock.getComputerUseOverview.mockResolvedValue(overview);
   apiMock.listComputerUseComputers.mockResolvedValue(computersResponse);
+  apiMock.getComputerUseConnectors.mockResolvedValue(connectorsResponse);
   apiMock.getComputerUseActivity.mockResolvedValue(activity);
   apiMock.setComputerUseAvailability.mockResolvedValue(overview);
   apiMock.updateComputerUseSettings.mockResolvedValue(overview);
@@ -230,9 +246,18 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('Computer Use page', () => {
+describe('Devices & computers page — Computers tab', () => {
+  it('renders the merged page with one nav-style tab strip', async () => {
+    render(<DevicesPage />);
+
+    expect(await screen.findByText('Devices & computers')).toBeTruthy();
+    for (const label of ['Computers', 'Connectors', 'VM providers', 'Agent access']) {
+      expect(screen.getByRole('tab', { name: new RegExp(label) })).toBeTruthy();
+    }
+  });
+
   it('renders the overview, broker status and the live fleet', async () => {
-    render(<ComputerUsePage />);
+    render(<DevicesPage />);
 
     expect(await screen.findByText('Available to agents')).toBeTruthy();
     expect(screen.getByText(/2 computers · 1 ready · 2 connectors online/)).toBeTruthy();
@@ -248,11 +273,14 @@ describe('Computer Use page', () => {
       screen.getByRole('link', { name: /Open live desktop/ }).getAttribute('href'),
     ).toBe('/mcp/v1/admin/computer-use/computers/comp-alpha/live-desktop');
 
+    // Agent-facing surface lives on its own tab, so switch to it first.
+    openTab('Agent access');
     expect((await screen.findAllByText('computer_screenshot')).length).toBeGreaterThan(0);
     expect(screen.getByText('high privilege')).toBeTruthy();
     expect(screen.getByText('approval required')).toBeTruthy();
     expect(await screen.findByText('Recent activity')).toBeTruthy();
 
+    openTab('Computers');
     fireEvent.click(screen.getByRole('button', { name: 'Open larger live preview of Desktop Alpha' }));
     const preview = await screen.findByRole('dialog', { name: 'Live preview of Desktop Alpha' });
     expect(within(preview).getByAltText('Large live preview of Desktop Alpha')).toBeTruthy();
@@ -262,12 +290,13 @@ describe('Computer Use page', () => {
 
     expect(apiMock.getComputerUseOverview).toHaveBeenCalledTimes(1);
     expect(apiMock.listComputerUseComputers).toHaveBeenCalledTimes(1);
+    expect(apiMock.getComputerUseConnectors).toHaveBeenCalledTimes(1);
     expect(apiMock.getComputerUseActivity).toHaveBeenCalledWith(50);
     expect(apiMock.computerUseFrameUrl).toHaveBeenCalledWith('comp-alpha', 480);
   });
 
   it('pauses all computer use from the availability card', async () => {
-    render(<ComputerUsePage />);
+    render(<DevicesPage />);
     await screen.findByText('Available to agents');
 
     fireEvent.click(screen.getByRole('button', { name: 'Pause agent computer use' }));
@@ -288,7 +317,7 @@ describe('Computer Use page', () => {
   });
 
   it('toggles availability per computer from the fleet tiles', async () => {
-    render(<ComputerUsePage />);
+    render(<DevicesPage />);
     await screen.findByText('Desktop Alpha');
 
     const alphaCard = screen.getByRole('article', { name: 'Computer Desktop Alpha' });
@@ -321,7 +350,7 @@ describe('Computer Use page', () => {
     apiMock.getComputerUseOverview.mockResolvedValue(unconfiguredOverview);
     apiMock.listComputerUseComputers.mockResolvedValue(unconfiguredComputers);
 
-    render(<ComputerUsePage />);
+    render(<DevicesPage />);
 
     expect(await screen.findByText('Computer Broker not configured')).toBeTruthy();
     expect(screen.getByText('No computers to show')).toBeTruthy();
@@ -334,7 +363,7 @@ describe('Computer Use page', () => {
   });
 
   it('syncs the broker and refreshes the overview', async () => {
-    render(<ComputerUsePage />);
+    render(<DevicesPage />);
     await screen.findByText('Available to agents');
 
     fireEvent.click(screen.getByRole('button', { name: 'Sync broker' }));

@@ -99,7 +99,7 @@ export function AddHostComputerDialog({ open, onClose, onCreated }: AddHostCompu
           <>
             <Field
               label="Computer name"
-              hint="Shown in the Computer Use fleet and in the generated installer command."
+              hint="Shown on the Computers tab and in the generated installer command."
             >
               <TextInput
                 value={name}
@@ -170,7 +170,7 @@ export function AddHostComputerDialog({ open, onClose, onCreated }: AddHostCompu
                   <span className="font-mono">systemd --user</span> service that reconnects
                   automatically (and can later be updated from this page).
                 </li>
-                <li>The PC appears below and in the Computer Use fleet once the connector is online.</li>
+                <li>The PC appears on the Computers tab once the connector is online.</li>
               </ul>
             </Notice>
 

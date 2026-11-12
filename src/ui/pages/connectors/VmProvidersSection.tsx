@@ -26,7 +26,11 @@ import {
   vmHostIdOf,
   vmResourcesSummary,
 } from './vmShared.js';
-import type { ComputerUseComputerInfo, ComputerUseVmHostInfo } from '../../../core/types.js';
+import type {
+  ComputerUseComputerInfo,
+  ComputerUseComputersResponse,
+  ComputerUseVmHostInfo,
+} from '../../../core/types.js';
 
 /** Provider registry poll interval (registrations change rarely). */
 const PROVIDERS_POLL_MS = 15_000;
@@ -246,13 +250,32 @@ function VmProviderCard({ host, vms, test, testing, busy, onTest, onDeploy, onDe
 /**
  * v0.13.1 "VM providers" section: registered KVM/QEMU hosts (zues over libvirt,
  * gpc via local QEMU/KVM), their defaults/base readiness, and the VMs deployed
- * on each. VMs are Computer Use fleet computers with `provider: "vm"`; the
+ * on each. VMs are Computers-tab fleet entries with `provider: "vm"`; the
  * summary at the top makes it obvious which PC hosts which running VM.
+ *
+ * When mounted from the merged Devices & computers page the page owns the
+ * fleet poll, so `computers` + `onRefreshComputers` replace the local one.
  */
-export function VmProvidersSection() {
+export interface VmProvidersSectionProps {
+  /** Page-owned fleet snapshot; when absent the section polls for itself. */
+  computers?: ComputerUseComputerInfo[];
+  /** Refresh the page fleet (e.g. after a deploy). */
+  onRefreshComputers?: () => void;
+  /** Switch the page to the Computers tab (replaces the old cross-page link). */
+  onShowComputers?: () => void;
+}
+
+export function VmProvidersSection({
+  computers,
+  onRefreshComputers,
+  onShowComputers,
+}: VmProvidersSectionProps = {}) {
   const toast = useToast();
   const providers = useLiveData(() => api.listComputerUseVmHosts(), { intervalMs: PROVIDERS_POLL_MS });
-  const fleet = useLiveData(() => api.listComputerUseComputers(), { intervalMs: VMS_POLL_MS });
+  const ownFleet = useLiveData<ComputerUseComputersResponse | null>(
+    () => (computers === undefined ? api.listComputerUseComputers() : Promise.resolve(null)),
+    { intervalMs: computers === undefined ? VMS_POLL_MS : null },
+  );
 
   const [addOpen, setAddOpen] = useState(false);
   const [deployTarget, setDeployTarget] = useState<ComputerUseVmHostInfo | null>(null);
@@ -263,7 +286,10 @@ export function VmProvidersSection() {
   const [testResults, setTestResults] = useState<Record<string, ProviderTestState>>({});
 
   const hosts = providers.data ?? [];
-  const vms = (fleet.data?.computers ?? []).filter(
+  const fleetComputers = computers ?? ownFleet.data?.computers ?? [];
+  const fleetError = computers === undefined ? ownFleet.error : null;
+  const refreshFleet = computers === undefined ? ownFleet.refresh : (onRefreshComputers ?? (() => {}));
+  const vms = fleetComputers.filter(
     (computer) => computer.provider === 'vm',
   ) as ComputerUseComputerInfo[];
   const providerIds = new Set(hosts.map((host) => host.id));
@@ -340,7 +366,7 @@ export function VmProvidersSection() {
       <EmptyState
         icon="🗄"
         title="No VM providers registered"
-        description="Register a KVM/QEMU host to deploy Computer Use VMs: zues over libvirt/SSH, or gpc using this machine's local QEMU/KVM. Deployed VMs appear in the Computer Use fleet with live frames, stats and the usual tools. This is separate from the physical PCs listed below."
+        description="Register a KVM/QEMU host to deploy VMs: zues over libvirt/SSH, or gpc using this machine's local QEMU/KVM. Deployed VMs appear on the Computers tab with live frames, stats and the usual tools."
         action={
           <PrimaryButton onClick={() => setAddOpen(true)} className="px-3 py-1.5 text-xs">
             Add VM provider
@@ -429,15 +455,25 @@ export function VmProvidersSection() {
           </h2>
           <p className="mt-0.5 max-w-3xl text-xs leading-relaxed text-slate-400">
             KVM/QEMU hosts registered with the broker (zues over libvirt/SSH, gpc via local QEMU/KVM)
-            and the VMs deployed on them. VMs are Computer Use computers with{' '}
-            <span className="font-mono text-slate-300">provider: vm</span> — they show in the fleet with
-            live frames, stats and agent tools.{' '}
-            <a
-              href="#/computer-use"
-              className="text-sky-300 underline decoration-sky-800 underline-offset-2 hover:text-sky-200"
-            >
-              Open Computer Use ↗
-            </a>
+            and the VMs deployed on them. VMs are computers with{' '}
+            <span className="font-mono text-slate-300">provider: vm</span> — they show on the Computers
+            tab with live frames, stats and agent tools.{' '}
+            {onShowComputers !== undefined ? (
+              <button
+                type="button"
+                onClick={onShowComputers}
+                className="font-semibold text-sky-300 underline decoration-sky-800 underline-offset-2 hover:text-sky-200"
+              >
+                View computers ↗
+              </button>
+            ) : (
+              <a
+                href="#/devices?tab=computers"
+                className="text-sky-300 underline decoration-sky-800 underline-offset-2 hover:text-sky-200"
+              >
+                Open Devices &amp; computers ↗
+              </a>
+            )}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -465,9 +501,9 @@ export function VmProvidersSection() {
           {providers.error}
         </Notice>
       )}
-      {fleet.data !== null && fleet.error !== null && (
+      {fleetError !== null && (
         <Notice tone="warning" title="VM list may be stale">
-          {fleet.error}
+          {fleetError}
         </Notice>
       )}
 
@@ -483,7 +519,7 @@ export function VmProvidersSection() {
         open={deployTarget !== null}
         provider={deployTarget}
         onClose={() => setDeployTarget(null)}
-        onCreated={fleet.refresh}
+        onCreated={refreshFleet}
       />
 
       <ConfirmDialog

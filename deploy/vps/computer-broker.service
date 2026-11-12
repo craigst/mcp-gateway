@@ -1,0 +1,36 @@
+[Unit]
+Description=Computer Broker (USA VPS)
+Documentation=file:///opt/computer-broker/docs/RUNBOOK.md
+After=network-online.target
+Wants=network-online.target
+
+# The broker used to run on gpc; it lives here since 2026-11-05 so computer-use
+# no longer depends on a home machine being awake. It binds 0.0.0.0 (a rootless
+# podman container reaches the host as host.containers.internal, which a
+# 10.10.1.4-only listener would miss) and UFW admits 7443 only from
+# 10.10.0.0/16 and 172.16.0.0/12, so it is not reachable from the internet.
+[Service]
+Type=simple
+User=craigst
+Group=craigst
+WorkingDirectory=/opt/computer-broker
+EnvironmentFile=/home/craigst/.config/computer-broker/broker.env
+# Rootless podman (container computers) needs the user runtime dir and bus to
+# use systemd cgroups; without them every `podman run` fails with
+# "unable to start unit ... interactive authentication". Requires
+# `loginctl enable-linger craigst` and user@1000 running.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+ExecStart=/opt/computer-broker/venv/bin/python -m broker.cli run
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+# Connectors are independent processes on other hosts, not children of this
+# unit, so a broker restart must stop only the broker; podman's conmon and the
+# per-desktop port forwarders must survive it.
+KillMode=process
+SendSIGKILL=no
+
+[Install]
+WantedBy=multi-user.target

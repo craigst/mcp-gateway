@@ -153,7 +153,7 @@ describe('Layout', () => {
     );
 
     expect(screen.getByText('page content')).toBeTruthy();
-    for (const label of ['Dashboard', 'Catalog', 'Configurations', 'Secrets', 'RBAC', 'Vault', 'Audit', 'Delegation', 'Playground', 'Settings']) {
+    for (const label of ['Dashboard', 'Catalog', 'Devices & computers', 'Configurations', 'Secrets', 'RBAC', 'Vault', 'Audit', 'Delegation', 'Playground', 'Settings']) {
       expect(screen.getAllByText(label).length).toBeGreaterThan(0);
     }
     expect(await screen.findByText('Gateway online')).toBeTruthy();

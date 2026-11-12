@@ -76,7 +76,7 @@ export function DeployVmDialog({ open, provider, onClose, onCreated }: DeployVmD
       });
       toast(
         'success',
-        `${created.name} is starting on ${provider.name} — first boot takes 3–8 minutes until it appears ready in Computer Use.`,
+        `${created.name} is starting on ${provider.name} — first boot takes 3–8 minutes until it appears ready on the Computers tab.`,
       );
       onCreated();
       onClose();
@@ -91,7 +91,7 @@ export function DeployVmDialog({ open, provider, onClose, onCreated }: DeployVmD
     <ConfirmDialog
       open={open}
       title={provider === null ? 'Deploy VM' : `Deploy VM on ${provider.name}`}
-      description="Creates a qcow2/overlay disk, builds the cloud-init seed and starts the VM on this provider. The VM then enrols as a normal Computer Use computer."
+      description="Creates a qcow2/overlay disk, builds the cloud-init seed and starts the VM on this provider. The VM then enrols as a normal broker computer."
       size="lg"
       busy={busy}
       confirmLabel="Deploy VM"
@@ -113,7 +113,7 @@ export function DeployVmDialog({ open, provider, onClose, onCreated }: DeployVmD
           </p>
         )}
 
-        <Field label="VM name" hint="Shown in the Computer Use fleet and in the VM providers list.">
+        <Field label="VM name" hint="Shown on the Computers tab and in the VM providers list.">
           <TextInput
             value={name}
             onChange={(event) => setName(event.target.value)}
@@ -178,7 +178,7 @@ export function DeployVmDialog({ open, provider, onClose, onCreated }: DeployVmD
         <Notice tone="info" title="What happens next">
           The VM boots Ubuntu 24.04 with Xvfb + Xfce and the broker connector. It stays{' '}
           <Badge tone="warning">starting</Badge> for roughly 3–8 minutes, then becomes{' '}
-          <Badge tone="success">ready</Badge> in this list and on the Computer Use page. NAT networking
+          <Badge tone="success">ready</Badge> in this list and on the Computers tab. NAT networking
           only — the guest dials out to the broker.
         </Notice>
 

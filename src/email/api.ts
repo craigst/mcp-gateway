@@ -8,12 +8,22 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ErrorCodes, GatewayError, accessDenied, invalidKey, invalidParams } from '../core/errors.js';
 import { createLogger, type Logger } from '../core/logger.js';
+import { nowIso } from '../core/ids.js';
 import type { GatewayConfig } from '../core/config.js';
-import type { KeyService } from '../core/ports.js';
+import type { AuditService, KeyService } from '../core/ports.js';
 import type { AuthenticatedKey } from '../core/types.js';
 import { readJsonBody } from '../gateway/server.js';
+import type { EmailAccessService } from './access.js';
 import type { EmailService } from './service.js';
-import type { EmailAccountInput, SendEmailInput } from './types.js';
+import type { EmailTriageStore } from './triage-store.js';
+import type {
+  EmailAccountInput,
+  EmailAccessUpdateInput,
+  EmailTriageAccount,
+  EmailTriageInput,
+  EmailTriageOverview,
+  SendEmailInput,
+} from './types.js';
 import type { AdminSubRouter } from '../admin/types.js';
 
 const AREA = 'email';
@@ -22,6 +32,12 @@ export interface EmailApiDeps {
   config: GatewayConfig;
   keys: KeyService;
   email: EmailService;
+  /** Who can use the email server, and which mailbox. */
+  access: EmailAccessService;
+  /** Which mailboxes the watcher may read, and how far it may act. */
+  triage: EmailTriageStore;
+  /** Records triage setting changes beside the rest of the email audit trail. */
+  audit?: AuditService;
   authenticate?: (req: IncomingMessage) => AuthenticatedKey;
   logger?: Logger;
 }
@@ -89,8 +105,41 @@ function accountInput(body: Record<string, unknown>, partial = false): Partial<E
   return input;
 }
 
-function sendInput(body: Record<string, unknown>): SendEmailInput {
-  const to = stringField(body, 'to', true) as string;
+function senderList(body: Record<string, unknown>, name: string): string[] | undefined {
+  const value = body[name];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+    throw invalidParams(`"${name}" must be an array of addresses`);
+  }
+  return value as string[];
+}
+
+/** Only the fields present change, so the UI can send one switch at a time. */
+function triageInput(body: Record<string, unknown>): EmailTriageInput {
+  const input: EmailTriageInput = {};
+  const enabled = boolField(body, 'enabled');
+  if (enabled !== undefined) input.enabled = enabled;
+  const mode = stringField(body, 'mode');
+  if (mode !== undefined) {
+    if (mode !== 'important' && mode !== 'full') throw invalidParams('"mode" must be "important" or "full"');
+    input.mode = mode;
+  }
+  const pollSeconds = numberField(body, 'pollSeconds');
+  if (pollSeconds !== undefined) input.pollSeconds = pollSeconds;
+  if ('junkFolder' in body) {
+    const raw = body.junkFolder;
+    if (raw === null) input.junkFolder = null;
+    else if (typeof raw === 'string') input.junkFolder = raw;
+    else throw invalidParams('"junkFolder" must be a string or null');
+  }
+  const alwaysImportant = senderList(body, 'alwaysImportant');
+  if (alwaysImportant !== undefined) input.alwaysImportant = alwaysImportant;
+  const neverJunk = senderList(body, 'neverJunk');
+  if (neverJunk !== undefined) input.neverJunk = neverJunk;
+  return input;
+}
+
+function sendInput(body: Record<string, unknown>): SendEmailInput {  const to = stringField(body, 'to', true) as string;
   const subject = stringField(body, 'subject', true) as string;
   const input: SendEmailInput = { to, subject };
   for (const key of ['cc', 'bcc', 'text', 'html'] as const) {
@@ -102,6 +151,28 @@ function sendInput(body: Record<string, unknown>): SendEmailInput {
   else if (typeof inReplyTo === 'string') input.inReplyTo = inReplyTo;
   if (Array.isArray(body.references) && body.references.every((value) => typeof value === 'string')) {
     input.references = body.references as string[];
+  }
+  return input;
+}
+
+function accessUpdateInput(body: Record<string, unknown>): EmailAccessUpdateInput {
+  const input: EmailAccessUpdateInput = {};
+  const enabled = boolField(body, 'enabled');
+  if (enabled !== undefined) input.enabled = enabled;
+  const rawAccounts = body.accounts;
+  if (rawAccounts !== undefined) {
+    if (rawAccounts === null || typeof rawAccounts !== 'object' || Array.isArray(rawAccounts)) {
+      throw invalidParams('"accounts" must be an object of accountId -> boolean');
+    }
+    const accounts: Record<string, boolean> = {};
+    for (const [accountId, value] of Object.entries(rawAccounts)) {
+      if (typeof value !== 'boolean') throw invalidParams(`"accounts.${accountId}" must be a boolean`);
+      accounts[accountId] = value;
+    }
+    input.accounts = accounts;
+  }
+  if (input.enabled === undefined && input.accounts === undefined) {
+    throw invalidParams('Nothing to update: provide "enabled" and/or "accounts".');
   }
   return input;
 }
@@ -120,7 +191,11 @@ export class EmailApi implements AdminSubRouter {
     const method = (req.method ?? 'GET').toUpperCase();
 
     try {
-      this.requireMaster(req);
+      const actor = this.requireMaster(req);
+      if (rest[0] === 'access') {
+        await this.handleAccess(req, res, rest.slice(1), actor);
+        return true;
+      }
       if (rest.length === 0 && method === 'GET') {
         const accounts = this.deps.email.listAccounts();
         this.sendJson(res, 200, { accounts, count: accounts.length });
@@ -133,10 +208,53 @@ export class EmailApi implements AdminSubRouter {
         this.sendJson(res, 201, { account });
         return true;
       }
+      // Which mailboxes the watcher may read: one call for the whole Email tab.
+      if (rest[0] === 'triage' && rest.length === 1 && method === 'GET') {
+        this.sendJson(res, 200, this.triageOverview());
+        return true;
+      }
       const accountId = rest.length === 0 ? null : decodeURIComponent(rest[0] as string);
 
       if (accountId === null) throw new GatewayError(ErrorCodes.METHOD_NOT_FOUND, 'Unknown email endpoint', { httpStatus: 404 });
 
+      if (rest.length === 2 && rest[1] === 'triage' && (method === 'GET' || method === 'PATCH')) {
+        const overview = this.triageOverview();
+        const current = overview.accounts.find((entry) => entry.accountId === accountId);
+        if (current === undefined) throw new GatewayError(ErrorCodes.TOOL_NOT_FOUND, 'Email account not found', { httpStatus: 404 });
+        if (method === 'GET') {
+          this.sendJson(res, 200, { triage: current });
+          return true;
+        }
+        const body = asRecord(await readJsonBody(req, this.deps.config.requestBodyLimitBytes));
+        const input = triageInput(body);
+        const triage = this.deps.triage.save(current.accountId, input, actor.id);
+        const account: EmailTriageAccount = { ...current, ...triage };
+        this.deps.audit?.record({
+          requestId: null,
+          keyId: actor.id,
+          method: 'admin.email.triage',
+          status: 'ok',
+          latencyMs: 0,
+          payload: {
+            accountId: triage.accountId,
+            accountEmail: account.email,
+            enabled: triage.enabled,
+            mode: triage.mode,
+            pollSeconds: triage.pollSeconds,
+            junkFolder: triage.junkFolder,
+            alwaysImportant: triage.alwaysImportant,
+            neverJunk: triage.neverJunk,
+            changed: input,
+          },
+        });
+        this.logger.info('email triage updated', {
+          accountId: triage.accountId,
+          enabled: triage.enabled,
+          mode: triage.mode,
+        });
+        this.sendJson(res, 200, { triage: account });
+        return true;
+      }
       if (rest.length === 1 && method === 'PATCH') {
         const body = asRecord(await readJsonBody(req, this.deps.config.requestBodyLimitBytes));
         const patch = accountInput(body, true);
@@ -150,6 +268,8 @@ export class EmailApi implements AdminSubRouter {
       if (rest.length === 1 && method === 'DELETE') {
         const deleted = this.deps.email.deleteAccount(accountId);
         if (!deleted) throw new GatewayError(ErrorCodes.TOOL_NOT_FOUND, 'Email account not found', { httpStatus: 404 });
+        // A deleted mailbox must not leave a triage row behind for a future account id to inherit.
+        this.deps.triage.remove(accountId);
         this.sendJson(res, 200, { deleted: true });
         return true;
       }
@@ -227,6 +347,53 @@ export class EmailApi implements AdminSubRouter {
       this.sendJson(res, gatewayError.httpStatus, { error: gatewayError.toJSONRpcError() });
       return true;
     }
+  }
+
+  /**
+   * Who can use the email server, and which mailbox.
+   *
+   * GET   /access                     -> EmailAccessOverview
+   * PATCH /access/keys/:keyId         -> EmailAccessUpdateResult
+   */
+  private async handleAccess(
+    req: IncomingMessage,
+    res: ServerResponse,
+    rest: string[],
+    actor: AuthenticatedKey,
+  ): Promise<void> {
+    const method = (req.method ?? 'GET').toUpperCase();
+    if (rest.length === 0 && method === 'GET') {
+      this.sendJson(res, 200, await this.deps.access.overview());
+      return;
+    }
+    if (rest.length === 2 && rest[0] === 'keys' && method === 'PATCH') {
+      const keyId = decodeURIComponent(rest[1] as string);
+      const body = asRecord(await readJsonBody(req, this.deps.config.requestBodyLimitBytes));
+      this.sendJson(res, 200, this.deps.access.updateKeyAccess(keyId, accessUpdateInput(body), actor.id));
+      return;
+    }
+    throw new GatewayError(ErrorCodes.METHOD_NOT_FOUND, 'Unknown email access endpoint', { httpStatus: 404 });
+  }
+
+  /**
+   * Every mailbox with its triage state, including the ones with no row (off).
+   *
+   * The Email tab renders one switch per mailbox from this, so the console and
+   * the watcher cannot disagree about which mail is being read.
+   */
+  private triageOverview(): EmailTriageOverview {
+    const accounts = this.deps.email.listAccounts();
+    return {
+      accounts: accounts.map((account) => ({
+        // `get` returns the all-off defaults for a mailbox with no row.
+        ...this.deps.triage.get(account.id),
+        name: account.name,
+        email: account.email,
+        isDefault: account.isDefault,
+        accountEnabled: account.enabled,
+      })),
+      generatedAt: nowIso(),
+    };
   }
 
   private requireMaster(req: IncomingMessage): AuthenticatedKey {

@@ -382,3 +382,263 @@ Fix:
 Verified after the fix: `omb-nora` unifi/searxng/brain/homepage/adguard/cloudflare
 all return data; `omb-remy` WhatsApp `list_chats`/`list_messages` return data;
 `dsh-harness-vps2` computer-use `list_devices` returns all 5 devices.
+
+## 2026-11-05 — WireGuard restored; fallback retired
+
+WireGuard is healthy again: latest handshake under 60 s, and both home hosts
+answer from the VPS over `wg0` (gpc `10.10.254.49` and cleo `10.10.254.91`,
+~98 ms). The 2026-11-01 fallback — SSH reverse tunnels from gpc, upstream URLs
+on `172.19.0.1`, compose `extra_hosts` and the gpc-hosted `.lan` console path —
+was therefore retired.
+
+By the time of the revert most connectors had already been migrated to
+gateway-local installs, so only **three** servers were still remote HTTP and
+pinned to the fallback: `computer-use`, `vaultwarden` and `messenger`.
+`devicebridge` also still used the tunnel for its HTTP hub. The first table
+below describes the fallback as it was built on 2026-11-01; the "New direct
+URLs" table is the state after this revert.
+
+### What was still pinned to the fallback
+
+| Thing | Fallback value | Where |
+|---|---|---|
+| 23 HTTP upstreams | `http://172.19.0.1:2<port>/mcp` (the facade's `88xx` port with a leading `2`, e.g. `8808 → 28808`) | gateway `servers.url` (DB) |
+| `computer-use` | `https://gpc.lan:27443/mcp` — also the wrong port: the broker had already moved to `7443` | gateway DB |
+| `devicebridge` | `https://devicebridge.lan:28443/mcp` | gateway DB |
+| name resolution | `extra_hosts`: `gpc.lan`, `devicebridge.lan` → `172.19.0.1` | `deploy/vps/docker-compose.yml` on the VPS |
+| console DNS | AdGuard rewrite `mcp-gateway.lan → 10.10.254.49` (the gpc tunnel host) | AdGuard Home |
+| console path | `mcp-gateway-ui-tunnel.service` (gpc): SSH local forward `0.0.0.0:8484 → VPS 127.0.0.1:8484` | gpc `~/.config/systemd/user/` |
+| upstream path | `mcp-gateway-upstream-tunnel.service` (gpc): SSH `-R` forwards for the 23 facades, broker and DeviceBridge, bound to the VPS docker bridge IPs — crash-looping: `ExitOnForwardFailure`, exit 255 every 5 s because the old forwards were already held | gpc `~/.config/systemd/user/` |
+| upstream path (**the live one**) | `/etc/systemd/system/usvps-mcp-tunnels.service` on **cleo** — a system unit that actually held all 24 `172.19.0.1:2xxxx` forwards. The gpc unit above was a duplicate that could never bind, which is exactly why it looped forever while the ports stayed up | cleo `/etc/systemd/system/` |
+
+The deployed compose file also still carried the pre-fallback image tag
+`0.14.1`; it is now parameterised as `${MCP_IMAGE_TAG:-0.15.5}` and the
+`extra_hosts` block is gone.
+
+### New direct URLs (over WireGuard)
+
+| Gateway server | New `servers.url` |
+|---|---|
+| `computer-use` (broker) | `https://10.10.254.49:7443` |
+| `vaultwarden` | `http://10.10.254.91:8808/mcp` |
+| `messenger` | `http://10.10.254.91:8814/mcp` |
+| `media-devices` | **no longer remote**: kept as a gateway-local stdio install, but its state now lives at `MEDIA_DEVICES_DIR=/data/secrets/media-devices` (see "Connector fixes" below) |
+| the other cleo facades | cleo `10.10.254.91` + the facade's original `88xx` port (the `2` prefix disappears: `28814 → 8814`) |
+| `devicebridge` | `https://10.10.254.91:8443/mcp` (cleo's DeviceBridge hub; CA already in `/certs/combined-ca.pem`) |
+
+The broker certificate is mkcert-issued with SANs `10.10.254.49` and `gpc.lan`,
+so using the IP avoids DNS and `extra_hosts` entirely.
+`MCP_COMPUTER_BROKER_URL`, `MCP_COMPUTER_BROKER_PUBLIC_URL` and
+`MCP_COMPUTER_INSTALL_BASE_URL` are all `https://10.10.254.49:7443`;
+`deploy/vps/gateway.env.example` is aligned.
+
+### Connector fixes applied with the revert
+
+Retiring the tunnel exposed four connectors that had been silently relying on
+home-host state or on defaults that do not exist in the container. All were
+repaired in the gateway DB (`servers.env`) and verified with
+`POST /mcp/v1/admin/servers/:id/test` — **24/24 pass**.
+
+| Connector | Failure | Fix |
+|---|---|---|
+| `computer-use` | `ECONNREFUSED 172.19.0.1:27443` — stale fallback URL *and* the wrong port | `servers.url` + `computer_use_settings.broker_url` → `https://10.10.254.49:7443`; broker healthy (5 computers, `list_computers` OK) |
+| `media-devices` | registry empty: env used `MEDIA_DEVICES_CONFIG`, which the plugin **does not read** (`lib/config.js` only honours `MEDIA_DEVICES_DIR` / `_REGISTRY` / `_SSH_CONFIG` / `_HELPER` / `_HA_*`), so it fell back to `$HOME/.config/media-devices` — a directory that does not exist for uid 1000 in the container | env → `MEDIA_DEVICES_DIR=/data/secrets/media-devices`, `_SSH_CONFIG=/data/secrets/media-ssh-config`, `_SSH_TARGET=craigst@10.10.254.85`, `_JOURNAL=.../journal.jsonl`, `_READ_ONLY=1`; registry seeded from cleo's pre-cutover `~/.config/media-devices/devices.json` (3 devices: `bathroomsw/ha_pager`, `tembed/tembed_pager`, `tv-bedroom/kodi_tv`) |
+| `ssh`, `homepage`, `omb` | all shell out to `ssh`; `SSH_KEY` pointed at `/home/node/.ssh/id_ed25519`, which never existed (ephemeral `$HOME`), and `zues`/`shadow`/`pi5` did not resolve | created `./data/ssh-home/.ssh` (key + `known_hosts` + config: `pi5`→`10.10.254.85` user `craigst`, `zues`→`10.10.254.13` root, `shadow`→`10.10.254.84` root) and mounted it at `/home/node/.ssh`; `SSH_KEY` repointed for the two servers that read it |
+| `devicebridge` | MCP bridge still dialled `devicebridge.lan:28443` (tunnel) | `DEVICEBRIDGE_URL=https://10.10.254.91:8443/mcp` |
+| DeviceBridge fleet | `gpc` device offline 6 days — the connector was `disabled`/`inactive` on the host | `systemctl --user enable --now devicebridge-connector.service` on gpc; it dials `wss://10.10.254.91:8443/ws/connector` and is online again |
+
+Still outstanding, all **application/credential** state rather than gateway
+config, and each needs the operator:
+
+- `vaultwarden` — `login_status: "locked"`; unlock with the master password.
+- `instagram` — `login_required`: save a fresh session with `ig-mcp login`.
+- `n8n` — key authenticates (HTTP 200) but the instance returns
+  `{"data":[],"nextCursor":null}`: there are no workflows to list.
+- `tv-bedroom` (Kodi on `doc`) — `media_probe` reports `kodi_running: false`,
+  so the device probe fails with `ConnectionRefusedError`; Kodi has to be
+  running on the media hub.
+
+### Revert commands
+
+AdGuard — replace the rewrite (the delete must match the old answer exactly;
+the gateway's `adguard` server exposes `adguard_delete_rewrite` /
+`adguard_add_rewrite` for the same two calls):
+
+```bash
+curl -sk -u "$ADGUARD_USER:$ADGUARD_PASS" https://adguard.lan/control/rewrite/delete \
+  -H 'Content-Type: application/json' \
+  -d '{"domain":"mcp-gateway.lan","answer":"10.10.254.49"}'
+curl -sk -u "$ADGUARD_USER:$ADGUARD_PASS" https://adguard.lan/control/rewrite/add \
+  -H 'Content-Type: application/json' \
+  -d '{"domain":"mcp-gateway.lan","answer":"10.10.1.4"}'
+```
+
+gpc tunnel units:
+
+```bash
+systemctl --user stop mcp-gateway-upstream-tunnel.service mcp-gateway-ui-tunnel.service
+systemctl --user disable mcp-gateway-upstream-tunnel.service mcp-gateway-ui-tunnel.service
+systemctl --user reset-failed mcp-gateway-upstream-tunnel.service
+# prove the reverse forwards are really gone
+ssh root@10.10.1.4 'ss -tlnp | grep -E ":(287[0-9]{2}|27443|28443)\b" || echo "no fallback listeners"'
+```
+
+cleo — the system unit that actually owned the live forwards (this is the one
+that keeps the ports up; stopping only the gpc unit changes nothing). Its
+2-minute watchdog **must be disabled first**: the watchdog probes
+`172.19.0.1:28801` and restarts the tunnel whenever the probe fails, so
+disabling only the tunnel unit leaves it resurrected within two minutes.
+
+```bash
+ssh craigst@10.10.254.91 '
+  sudo systemctl disable --now usvps-mcp-tunnels-watchdog.timer
+  sudo systemctl stop usvps-mcp-tunnels-watchdog.service
+  sudo systemctl disable --now usvps-mcp-tunnels.service'
+ssh root@10.10.1.4 'ss -tlnp | grep "172.19.0.1" || echo "0 fallback listeners"'
+```
+
+`reset-failed` matters because the upstream unit was in a restart loop. If a
+port is still held, an orphan `sshd-session` on the VPS owns it — kill that
+process rather than re-enabling the unit.
+
+Compose (after removing `extra_hosts` from
+`/opt/mcp-gateway/docker-compose.yml`):
+
+```bash
+docker compose -f /opt/mcp-gateway/docker-compose.yml up -d
+curl -s http://127.0.0.1:8484/mcp/v1/health
+```
+
+Verify from the LAN — with the tunnel units stopped this proves the WG path:
+
+```bash
+getent hosts mcp-gateway.lan          # must be 10.10.1.4
+curl -s http://mcp-gateway.lan:8484/mcp/v1/health
+```
+
+### Rollback
+
+Re-enable the tunnel units (both the gpc duplicates **and** cleo's system unit —
+the cleo one is what actually binds the ports) and restore the pre-fallback
+gateway data:
+
+```bash
+# gpc
+systemctl --user enable --now mcp-gateway-upstream-tunnel.service mcp-gateway-ui-tunnel.service
+# cleo — without this the 172.19.0.1 forwards never come back; the watchdog
+# is what keeps them up afterwards
+ssh craigst@10.10.254.91 '
+  sudo systemctl enable --now usvps-mcp-tunnels.service
+  sudo systemctl enable --now usvps-mcp-tunnels-watchdog.timer'
+
+# on the VPS: keep the current DB under a fresh name, then restore the snapshot
+docker compose -f /opt/mcp-gateway/docker-compose.yml down
+cp -a /opt/mcp-gateway/data/gateway.db \
+  /opt/mcp-gateway/backups/gateway.db.bak-before-restore-$(date -u +%Y%m%dT%H%M%SZ)
+install -m 600 -o 1000 -g 1000 \
+  /opt/mcp-gateway/backups/gateway.db.bak-tunnel-20261101T002121Z \
+  /opt/mcp-gateway/data/gateway.db
+rm -f /opt/mcp-gateway/data/gateway.db-wal /opt/mcp-gateway/data/gateway.db-shm
+docker compose -f /opt/mcp-gateway/docker-compose.yml up -d
+```
+
+Caveat, so nobody restores the wrong state: `gateway.db.bak-tunnel-20261101T002121Z`
+was taken **before** the 2026-11-01 URL rewrite (see that section), so it brings
+back the pre-fallback rows, not the `172.19.0.1` ones. To reproduce the fallback
+exactly, also re-add the `extra_hosts` block (`gpc.lan`, `devicebridge.lan` →
+`172.19.0.1`) and set the `172.19.0.1:2<port>`, `gpc.lan:27443` and
+`devicebridge.lan:28443` URLs again using the 2026-11-01 table above. Snapshot
+the DB *before* starting the revert if the fallback URLs need to be recoverable
+verbatim.
+
+### Follow-ups found after the post-revert audit (2026-11-05, later)
+
+- **`computer_screenshot` → `connector_unavailable: connector disconnected`**
+  while the broker listed gpc's connector as online. Two `python -m connector`
+  processes were alive with the *same* identity/state dir
+  (`~/.local/share/computer-broker-connector-computer`, `BRK_NAME=gpc`) — a
+  stale duplicate next to the systemd-managed one. Killed the duplicate and
+  `systemctl --user restart computer-broker-connector-computer.service`; a real
+  gpc frame then came back. If a screenshot fails again, count the connector
+  processes first (`pgrep -af 'connector-venv/bin/python -m connector'`).
+- **gpc container inventory read unavailable**
+  (`docker socket is not present (/run/user/1000/podman/podman.sock)`) although
+  `podman.socket` was `active`: the socket file itself had been deleted.
+  `systemctl --user restart podman.socket` recreated it; after restarting the
+  DeviceBridge connector, `device_docker` on gpc reports `available: true`
+  (17 containers).
+- **Email tool names:** the gateway advertises the 11 bare `email_*` tools
+  (confirmed with `tools/list`, and `tools/call email_list_accounts` returns the
+  accounts). A session that offers `email_<account>__<tool>` names is showing a
+  stale client-side tool cache from before the four per-account email servers
+  were retired — reconnect the harness; the gateway is correct.
+- **`computer_use_availability` has zero rows and that is correct:**
+  `src/computer_use/settings-store.ts` treats absence as *available*; rows exist
+  only for per-computer overrides or a global pause.
+- **`devicebridge` on gpc:** the connector is a user unit and was
+  `disabled`/`inactive` (the device had read offline for 6 days). It is
+  `enable --now`'d again and dials `wss://10.10.254.91:8443/ws/connector`.
+
+## 2026-11-05 (later) — Computer Broker moved from gpc to the USA VPS
+
+**Why.** The broker ran on gpc, so every computer-use tool died whenever the
+bedroom PC was off — the gateway stayed up but its only broker did not. The
+broker now runs next to the gateway, so computer-use needs nothing but the VPS:
+gpc and every other machine are just connectors that come and go.
+
+**What moved**
+
+| Thing | Before (gpc) | After (VPS) |
+|---|---|---|
+| broker process | user unit `computer-broker.service` on gpc | system unit `computer-broker.service`, `/opt/computer-broker`, venv in `/opt/computer-broker/venv` |
+| listen | `0.0.0.0:7443` on gpc | `10.10.1.4:7443` (WireGuard only; UFW also admits the Docker subnets) |
+| state | `~/.local/share/computer-broker` on gpc | same path for `craigst` on the VPS (`broker.db` 53 MB, `secret.key`, `tls/`, `computers/`) |
+| config | `~/.config/computer-broker/broker.env` | same path on the VPS, plus `BRK_BIND=10.10.1.4`, `BRK_PORT=7443`, `BRK_PUBLIC_URL=https://10.10.1.4:7443` |
+| TLS | mkcert cert/key in `tls/` | unchanged files — SANs already include `10.10.1.4`, `127.0.0.1`, `localhost`, `gpc.lan` |
+| gateway | `MCP_COMPUTER_BROKER_URL=https://10.10.254.49:7443` | `https://10.10.1.4:7443` (env, `computer_use_settings`, `servers.url`) |
+| connectors | `wss://10.10.254.49:7443/connector` (gpc) or `127.0.0.1` (gpc) | `wss://10.10.1.4:7443/connector` on gpc, cleo, doc, us-vps |
+
+**Cutover order that was used** (downtime ≈ 1 minute): install code + venv +
+unit on the VPS → stop gpc's broker → rsync `broker.db`/`secret.key`/`tls/`/
+`computers/`/`broker.env` (a clean stop checkpoints the WAL; `quick_check` was
+`ok`, 5 computers / 10 connectors / 5 devices / 2 agents) → append the bind to
+`broker.env` → `systemctl enable --now computer-broker` (healthz proved
+`tls:true`) → prove the gateway container can reach it
+(`docker exec mcp-gateway node -e "fetch('https://10.10.1.4:7443/healthz')…"`) →
+repoint the gateway (stop container, patch env + DB, start) → repoint and restart
+each connector → `computer_screenshot` through the gateway returned a real gpc
+frame.
+
+**Enrolment is not needed again:** `broker.db` carries the connector pubkeys and
+the two agent tokens, so connectors re-attach as their existing `cnr_…` identity
+and `MCP_COMPUTER_BROKER_TOKEN` keeps working.
+
+**Rollback:** re-enable gpc's `computer-broker.service`, restore the
+`10.10.254.49:7443` URLs, and reverse `BRK_BROKER_URL` on each connector. The
+pre-move broker DB/config are in `/opt/mcp-gateway/backups/broker-<stamp>/`.
+
+**Still to do, when the device is next on:** `roof` (10.10.254.205) was powered
+off during the move, so its `BRK_BROKER_URL` still names gpc; the one-liner is in
+`docs/VPS-DEPLOY.md` ("Known limits after the move").
+
+### 2026-11-05 (later still) — VM hosts and container computers made to work from the VPS
+
+The move left three computers that were tied to gpc. All three were addressed:
+
+| Computer | What was wrong | Fix |
+|---|---|---|
+| `zues-vm-1` | VM host `libvirt-ssh` used `host: "zues"`, which does not resolve from the VPS, and had no key; the VM's cloud-init seed also embedded the old broker URL `wss://10.10.254.49:7443/connector` | `vm_hosts.config` → `host/ssh_host=10.10.254.13`, `ssh_key=/home/craigst/.ssh/id_ed25519` (key authorised on zues); `POST …/vm-hosts/:id/test` → `{ok:true, baseReady:true}`; then the guest's `/etc/brk/env` edited **offline** through `qemu-nbd` on zues (stop the computer through the API first or the reconciler restarts the domain). VM boots, connector online, `computer_screenshot` returned its XFCE desktop |
+| `agent-desktop` (container) | the host had no podman and no `desktop-base` image; the old record's connector identity lived in a podman volume that did not travel with `broker.db`, so its connector refused to start ("no identity and no BRK_BOOTSTRAP_TOKEN") | installed podman + uidmap, `loginctl enable-linger craigst`, put `XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` in the broker unit (rootless podman cannot pick systemd cgroups without the user bus), built `localhost/computer-broker/desktop-base:1` from `images/desktop-base/Containerfile` and pinned `BRK_IMAGE_DIGEST`; then destroyed and re-created the record via `POST /api/computers` so the fresh volume gets an enrolment token. Container runs, connector online, screenshot OK |
+| `gpc-vm-1` | its VM host is `qemu-local` — "this machine runs qemu-system-x86_64" — and the broker no longer runs on gpc | retired (old disk and base images kept on gpc under `~/.local/share/computer-broker/vm/`) and **recreated as `zues-vm-2`** on the zues hypervisor (2 vCPU / 4 GB / 30 GB, XFCE): ready, connector online, screenshot OK. Creating it also exposed a missing host dependency: the broker builds the cloud-init seed locally and needs `genisoimage` (`apt-get install genisoimage`), otherwise every VM create fails with `vm create failed: genisoimage was not found` |
+
+Two things that surprised and are worth remembering:
+
+- The broker's `_env_contents` prefers `BRK_PUBLIC_URL` for the URL it writes into
+  container computers. If that is set to the host's WG address, a rootless
+  container dials an address it cannot reach; leaving `BRK_PUBLIC_URL` empty makes
+  it use `host.containers.internal`, which the mkcert cert already covers.
+- `BRK_BIND` had to become `0.0.0.0`: a rootless container's connection to the
+  host SNATs to the host's primary address, so a `10.10.1.4`-only listener is
+  unreachable from a container computer. UFW remains the boundary — verified that
+  `https://74.208.55.116:7443` times out from the LAN while the WG address
+  answers 200.

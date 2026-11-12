@@ -23,6 +23,8 @@ data/
 /secrets/
 *.pem
 *.key
+# pre-change exports written by the cutover scripts; they contain API keys
+backups/
 
 # env
 .env

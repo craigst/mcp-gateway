@@ -215,7 +215,7 @@ export function DevicesSection({
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div className="min-w-0">
           <h2 id="connector-devices-heading" className="text-base font-semibold text-slate-100">
-            Devices
+            Device connectors
           </h2>
           <p className="mt-0.5 text-xs text-slate-400">
             {devices.length} connector{devices.length === 1 ? '' : 's'} enrolled with the broker

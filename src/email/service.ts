@@ -12,6 +12,8 @@ import type {
   EmailFolder,
   EmailMessage,
   EmailMessageSummary,
+  EmailNewMessage,
+  EmailNewMessages,
   SendEmailInput,
 } from './types.js';
 
@@ -56,6 +58,76 @@ function addressValue(
 function emptyPreview(subject: string): string {
   return subject.trim();
 }
+
+/** Bytes of a message read for a triage preview; enough for headers and the opening lines. */
+const PREVIEW_SOURCE_BYTES = 8192;
+const PREVIEW_TEXT_MAX = 600;
+const NO_REPLY_SENDER = /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|mailer-daemon|postmaster|bounce[sd]?)(?:[+._-][^@]*)?@/iu;
+
+const collapse = (value: string): string => value.replace(/\s+/gu, ' ').trim();
+
+/** Strip tags from an HTML body so a preview never carries markup into a model's input. */
+function fromHtml(html: string): string {
+  return collapse(
+    html
+      .replace(/<(?:script|style)\b[^>]*>[\s\S]*?<\/(?:script|style)>/giu, ' ')
+      .replace(/<[^>]+>/gu, ' ')
+      .replace(/&nbsp;/giu, ' ')
+      .replace(/&amp;/giu, '&')
+      .replace(/&lt;/giu, '<')
+      .replace(/&gt;/giu, '>')
+      .replace(/&quot;/giu, '"')
+      .replace(/&#39;/giu, "'"),
+  );
+}
+
+interface PreviewRead {
+  preview: string;
+  listUnsubscribe: boolean;
+  automated: boolean;
+}
+
+/**
+ * Read a preview and two bulk signals from the first part of a message.
+ *
+ * The source is truncated, so a parse failure is expected for a body that was
+ * cut mid-encoding: the subject is then the preview. A preview is advisory —
+ * the real body is only read when a reply is actually drafted.
+ */
+async function readPreview(source: Buffer | undefined, subject: string, from: string): Promise<PreviewRead> {
+  const fallback: PreviewRead = {
+    preview: collapse(subject).slice(0, PREVIEW_TEXT_MAX),
+    listUnsubscribe: false,
+    automated: NO_REPLY_SENDER.test(from.trim().toLowerCase()),
+  };
+  if (source === undefined || source.length === 0) return fallback;
+  try {
+    const parsed = await simpleParser(source, { skipHtmlToText: false, skipTextToHtml: true });
+    const text = collapse(parsed.text ?? '') || fromHtml(parsed.html || '');
+    const header = (name: string): string => {
+      const value = parsed.headers.get(name);
+      if (value === undefined || value === null) return '';
+      if (typeof value === 'string') return value.toLowerCase();
+      if (Array.isArray(value)) return value.join(' ').toLowerCase();
+      return '';
+    };
+    const precedence = header('precedence');
+    const autoSubmitted = header('auto-submitted');
+    return {
+      preview: (text || fallback.preview).slice(0, PREVIEW_TEXT_MAX),
+      listUnsubscribe: header('list-unsubscribe').length > 0,
+      automated:
+        fallback.automated ||
+        (autoSubmitted !== '' && autoSubmitted !== 'no') ||
+        precedence === 'bulk' ||
+        precedence === 'list' ||
+        precedence === 'junk',
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 
 function mapSummary(message: ImapFetchMessage): EmailMessageSummary {
   const flags = message.flags === undefined ? [] : [...message.flags];
@@ -226,6 +298,87 @@ export class EmailService {
           );
         }
         return filtered.sort((a, b) => Date.parse(b.date) - Date.parse(a.date)).slice(0, limit);
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
+  /**
+   * Messages newer than the stored cursor, for the triage watcher.
+   *
+   * Read-only (the mailbox is opened EXAMINE), headers first, and only the
+   * first few kB of each message so a preview costs nothing for attachments.
+   * A first run (`afterUid` 0) reads the newest `limit` rather than the whole
+   * mailbox, so enabling triage on a 40 000-message inbox does not try to read
+   * all of it. The caller advances the cursor only after it has accepted the
+   * batch, which is what keeps a crash from skipping mail.
+   */
+  async listNewMessages(
+    selector: string,
+    options: { folder?: string; afterUid?: number; uidValidity?: string | null; limit?: number } = {},
+  ): Promise<EmailNewMessages> {
+    const account = this.requireAccount(selector);
+    const folder = options.folder?.trim() || 'INBOX';
+    const limit = Math.max(1, Math.min(options.limit ?? 20, 50));
+    return this.withClient(account, async (client) => {
+      const lock = await client.getMailboxLock(folder, { readOnly: true });
+      try {
+        const mailbox = client.mailbox;
+        const uidValidity = mailbox === false ? '0' : String(mailbox.uidValidity);
+        const uidNext = mailbox === false ? 0 : Number(mailbox.uidNext);
+        const exists = mailbox === false ? 0 : Number(mailbox.exists);
+        const empty: EmailNewMessages = {
+          accountId: account.id,
+          accountEmail: account.email,
+          uidValidity,
+          uidNext,
+          messages: [],
+        };
+        if (!Number.isFinite(uidNext) || exists === 0) return empty;
+
+        // A renumbered mailbox (a different UIDVALIDITY) starts again rather than skipping.
+        const renumbered = options.uidValidity != null && options.uidValidity !== uidValidity;
+        const afterUid = renumbered ? 0 : Math.max(0, Math.trunc(options.afterUid ?? 0));
+        const firstRun = afterUid === 0;
+        if (!firstRun && uidNext <= afterUid + 1) return empty;
+
+        const range = firstRun ? `${Math.max(1, exists - limit + 1)}:*` : `${afterUid + 1}:*`;
+        const messages: EmailNewMessage[] = [];
+        for await (const raw of client.fetch(
+          range,
+          {
+            uid: true,
+            envelope: true,
+            flags: true,
+            internalDate: true,
+            source: { start: 0, maxLength: PREVIEW_SOURCE_BYTES },
+          },
+          // On a first run the range is sequence numbers; after that it is UIDs.
+          firstRun ? {} : { uid: true },
+        )) {
+          const message = raw as unknown as ImapFetchMessage & { source?: Buffer };
+          const flags = message.flags === undefined ? [] : [...message.flags];
+          const from = addressList(message.envelope?.from);
+          const subject = message.envelope?.subject ?? '(no subject)';
+          const preview = await readPreview(message.source, subject, from);
+          messages.push({
+            id: `${account.id}:${uidValidity}:${message.uid}`,
+            accountId: account.id,
+            accountEmail: account.email,
+            uid: message.uid,
+            from,
+            subject,
+            preview: preview.preview,
+            date: (message.internalDate ?? message.envelope?.date ?? new Date()).toISOString(),
+            unread: !flags.includes('\\Seen'),
+            listUnsubscribe: preview.listUnsubscribe,
+            automated: preview.automated,
+          });
+          if (messages.length >= limit) break;
+        }
+        messages.sort((a, b) => a.uid - b.uid);
+        return { ...empty, messages };
       } finally {
         lock.release();
       }

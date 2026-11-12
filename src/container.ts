@@ -64,7 +64,9 @@ import { InspectorApi } from './admin/inspector-api.js';
 import { DefaultComputerUseService } from './computer_use/index.js';
 import { ComputerUseApi } from './admin/computer-use-api.js';
 import { EmailService } from './email/service.js';
+import { EmailTriageStore } from './email/triage-store.js';
 import { EmailApi } from './email/api.js';
+import { EmailAccessService, type EmailAccessBot } from './email/access.js';
 import { InstagramApi } from './social/instagram-api.js';
 
 export interface GatewayServices {
@@ -137,8 +139,14 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     authenticate,
     logger: createLogger('admin.watchers', config.logLevel),
   });
+  // Email: one service for every mailbox, plus per-mailbox triage state.
+  // Created before the watcher API because the watcher reads mail through it.
+  const email = new EmailService({ db });
+  const emailTriage = new EmailTriageStore(db);
   const watcherApi = new WatcherApi({
     service: watcherService,
+    email,
+    triage: emailTriage,
     authenticate,
     logger: createLogger('gateway.watcher', config.logLevel),
   });
@@ -336,17 +344,71 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     computerUse,
     logger,
   });
-  const email = new EmailService({ db });
+
+  // Who can use the shared email server, and which mailbox. Bots come from the
+  // `omb` sub-server (one `omb_bots` call, cached by the service); if OMB is
+  // unreachable the access view still lists gateway API keys.
+  const listOmbBots = async (): Promise<EmailAccessBot[]> => {
+    const server = repository.getServerByName('omb');
+    if (server === null) return [];
+    let client = supervisor.client(server.id);
+    if (client === null) {
+      try {
+        await supervisor.start(server.id);
+      } catch {
+        return [];
+      }
+      client = supervisor.client(server.id);
+    }
+    if (client === null) return [];
+    const result = await client.callTool('omb_bots', {}, { timeoutMs: 4_000 });
+    const first = result.content?.[0] as { text?: unknown } | undefined;
+    const text = typeof first?.text === 'string' ? first.text : null;
+    if (text === null) return [];
+    const parsed = JSON.parse(text) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const bots: EmailAccessBot[] = [];
+    for (const raw of parsed) {
+      if (raw === null || typeof raw !== 'object') continue;
+      const bot = raw as Record<string, unknown>;
+      if (typeof bot.id !== 'string' || typeof bot.name !== 'string') continue;
+      bots.push({
+        id: bot.id,
+        name: bot.name,
+        title: typeof bot.title === 'string' ? bot.title : null,
+        mcpServers: Array.isArray(bot.mcp_servers)
+          ? bot.mcp_servers.filter((value): value is string => typeof value === 'string')
+          : [],
+      });
+    }
+    return bots;
+  };
+
+  const emailAccess = new EmailAccessService({
+    db,
+    keys,
+    email,
+    repository,
+    listBots: listOmbBots,
+    audit,
+    logger: createLogger('email.access', config.logLevel),
+  });
+  // Which mailboxes the triage watcher may read. Every mailbox starts off.
   const emailApi = new EmailApi({
     config,
     keys,
     email,
+    access: emailAccess,
+    triage: emailTriage,
+    audit,
     authenticate,
     logger: createLogger('admin.email', config.logLevel),
   });
 
   const socialApi = new InstagramApi({
     config,
+    db,
+    vault,
     authenticate,
     listServers: () => repository.listServers(),
     restartServer: async (name) => {
@@ -355,6 +417,7 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     },
     logger: createLogger('admin.instagram', config.logLevel),
   });
+  socialApi.startAutoRefresh();
 
   const admin = new AdminApi({
     config,

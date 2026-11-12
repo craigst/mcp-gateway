@@ -2,23 +2,10 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api } from '../lib/api.js';
 import { cx } from '../lib/cx.js';
+import type { PageKey } from '../lib/routes.js';
 
-export type PageKey =
-  | 'dashboard'
-  | 'email'
-  | 'catalog'
-  | 'computer-use'
-  | 'connectors'
-  | 'server'
-  | 'configurations'
-  | 'secrets'
-  | 'settings'
-  | 'vaultwarden'
-  | 'rbac'
-  | 'vault'
-  | 'audit'
-  | 'delegation'
-  | 'playground';
+// Re-exported from the routing module so existing page imports keep working.
+export type { PageKey } from '../lib/routes.js';
 
 export interface NavItem {
   key: PageKey;
@@ -37,16 +24,10 @@ export const NAV_ITEMS: readonly NavItem[] = [
     description: 'Browse private catalogs, install servers and import local harnesses.',
   },
   {
-    key: 'computer-use',
-    label: 'Computer Use',
+    key: 'devices',
+    label: 'Devices & computers',
     icon: '⧉',
-    description: 'Agent desktops, live previews and availability controls for the Computer Broker.',
-  },
-  {
-    key: 'connectors',
-    label: 'Connectors',
-    icon: '⌁',
-    description: 'Onboard Linux PCs, pair device connectors and open interactive terminals.',
+    description: 'Computers, connectors, VM providers and the agent tools that drive them.',
   },
   {
     key: 'configurations',
@@ -168,7 +149,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
           {NAV_ITEMS.map((item) => navButton(item, false))}
         </nav>
         <div className="shrink-0 space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
-          <p>v0.14.2 · MCP 2025-06-18</p>
+          <p>v0.15.1 · MCP 2025-06-18</p>
           <div className="rounded-lg border border-slate-800 px-2.5 py-2">
             <div className="flex items-center gap-2">
               <span

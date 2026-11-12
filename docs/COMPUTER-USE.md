@@ -11,6 +11,12 @@ v0.10 adds **Connectors** — onboarding physical Linux PCs as device connectors
 single-use pairing token, plus an operator terminal proxied through the gateway. See
 [Connectors: onboarding Linux PCs](#connectors-onboarding-linux-pcs-v010).
 
+> **Console layout (current).** The fleet, connectors and VM provider controls live on one
+> page: **Devices & computers** (`#/devices`) with tabs **Computers**, **Connectors**,
+> **VM providers** and **Agent access**. The retired `#/computer-use` and `#/connectors` links
+> still resolve to the Computers and Connectors tabs. This page is UI-only: the managed
+> `computer-use` MCP server and its `device_*` tools are unchanged.
+
 The broker token never leaves the gateway process: it is not stored on the managed server row,
 never returned by the API, and screenshots are proxied server-side.
 
@@ -59,6 +65,15 @@ The broker surface consumed by the gateway is deliberately small:
 | `POST /api/computers/{id}/start` · `/stop` | Computer lifecycle actions. |
 | `GET /api/computers/{id}/frame?max_width=` | JPEG stills proxied to the console. |
 | `POST /mcp` | Streamable-HTTP MCP JSON-RPC — the tool surface agents see. |
+
+> **Where the broker runs in this deployment (2026-11-05).** The broker lives on
+> the USA VPS next to the gateway, not on an operator workstation: the gateway
+> reaches it at `https://10.10.1.4:7443` over WireGuard and every host connector
+> dials `wss://10.10.1.4:7443/connector`. That is deliberate — computer-use then
+> depends only on the VPS being up; each PC is just a connector that can be
+> switched off without taking the tool away. Deployment steps, firewall,
+> connector list and rollback are in
+> [`VPS-DEPLOY.md`](./VPS-DEPLOY.md#computer-broker-now-on-this-vps-2026-11-05).
 
 ## Configuration
 
@@ -392,10 +407,11 @@ asks the broker for a single-use enrollment token, hands the operator a one-line
 command, and thereafter proxies device operations (terminal included) to the broker's
 `/api/devices/{id}/call` route.
 
-This replaces the legacy **DeviceBridge** connector/service, which is retired. The gateway
-registers **no DeviceBridge MCP server** and there is no DeviceBridge configuration to keep:
-device onboarding now happens in **Connectors**, and the `device_*` tools continue to come
-from the managed `computer-use` server covered above.
+This replaces the legacy **DeviceBridge** connector/service as an onboarding path. Device
+onboarding now happens in the **Connectors** tab of **Devices & computers**, and the
+`device_*` tools continue to come from the managed `computer-use` server covered above. A
+legacy `devicebridge` MCP server, if one is still registered for its own device fleet, plays no
+part in connector onboarding.
 
 The flow is deliberately outbound-only:
 
@@ -416,7 +432,7 @@ console → POST /admin/computer-use/connectors/enrollments
              │
              ▼
        broker claims the token once, the device goes online, and the pending pairing
-       disappears from Connectors. No inbound port is opened on the new PC.
+       disappears from the Connectors tab. No inbound port is opened on the new PC.
 ```
 
 The gateway never stores the connector's identity and never sees the enrollment token again
@@ -430,6 +446,14 @@ These broker routes back the installer and pairing flow. The `/api/enrollments` 
 authenticated with the same broker bearer token the gateway already uses (admin scope); the
 `/install/*` routes are intentionally public, but the connector bundle is gated by the
 single-use enrollment token.
+
+> **Trap (hit 2026-11-06):** the broker agent token must carry the `admin` scope, or the
+> console's Connectors tab shows `Request failed — Computer Broker GET /api/enrollments:
+> insufficient_scope` and the pending-pairings list stays empty. The scoped token is the one
+> matching `MCP_COMPUTER_BROKER_TOKEN` in `gateway.env`; check it with
+> `python -m broker.cli token list` on the broker host (the token itself is never printed).
+> The CLI has no "update scopes" action — append `admin` to that agent's `scopes` in the
+> broker store (`agents` table) and re-check; no token rotation or gateway restart is needed.
 
 | Method | Route | Purpose |
 |---|---|---|
@@ -463,18 +487,19 @@ desktop-kind connector instead. `name` is trimmed/collapsed to 60 characters and
 15–1440 minutes); `allowTerminal` defaults to `false`. Creating an enrollment **requires a
 configured public broker URL** (`MCP_COMPUTER_BROKER_PUBLIC_URL`, or the server-side broker URL
 when no public one is set): the token would be useless if the new PC cannot reach the broker,
-so the request fails with a message pointing at Computer-use settings. `GET /` is what the
-wizard polls to detect the device appearing.
+so the request fails with a message pointing at the broker settings
+(**Devices & computers → Broker settings**). `GET /` is what the wizard polls to detect the
+device appearing.
 
 ### Pairing walkthrough
 
-1. **Make the broker reachable from the new PC.** In **Computer Use → Settings**, set the
-   *public broker URL* to the address the new machine will use (LAN hostname and port, or the
-   reverse-proxied `https://` origin). The install command is built from it.
-2. **Connectors → Add Linux PC.** Give the machine a name, choose whether it may host an
-   interactive terminal (off by default), pick a pairing lifetime, and submit. The wizard
-   shows the **one-line install command**, its expiry and the CA download URL. The command
-   shape is:
+1. **Make the broker reachable from the new PC.** In **Devices & computers → Broker settings**,
+   set the *public broker URL* to the address the new machine will use (LAN hostname and port,
+   or the reverse-proxied `https://` origin). The install command is built from it.
+2. **Devices & computers → Connectors → Add Linux PC.** Give the machine a name, choose whether
+   it may host an interactive terminal (off by default), pick a pairing lifetime, and submit.
+   The wizard shows the **one-line install command**, its expiry and the CA download URL. The
+   command shape is:
 
    ```bash
    curl -fsSLk 'https://broker.example.com/install/install-connector.sh' \
@@ -493,9 +518,9 @@ wizard polls to detect the device appearing.
      `--user` unit, then enables/starts it and applies `loginctl enable-linger`;
    - dials **out** to `wss://<broker>/connector` — no inbound port and no listening service.
 4. **Wait for the device to appear online.** The broker claims the token exactly once, records
-   the connector identity, and the device shows in Connectors with hostname/platform and
-   capabilities. The pending pairing disappears; the token is spent (once an identity exists,
-   the installer removes the bootstrap token from `connector.env`).
+   the connector identity, and the device shows in the Connectors tab with hostname/platform
+   and capabilities. The pending pairing disappears; the token is spent (once an identity
+   exists, the installer removes the bootstrap token from `connector.env`).
 5. **Pending pairings** are listed with their expiry and can be revoked at any time
    (`DELETE …/enrollments/:id`); revocation kills the token immediately. Expiry (default 60
    minutes) has the same effect — a dead token cannot be claimed and the operator simply
@@ -588,38 +613,50 @@ an SSH session to that machine — same privileges, same data.
 
 ## Console walkthrough
 
-The **Computer Use** page (sidebar: *Computer Use*, `computer-use`) is available to the
-signed-in operator:
+The **Devices & computers** page (sidebar: *Devices & computers*, `#/devices`) is available to
+the signed-in operator. It is one page with four tabs; the retired `#/computer-use` and
+`#/connectors` links resolve to the Computers and Connectors tabs respectively.
 
-1. **Connection settings** — broker URL, public URL, CA path, write-only token and enabled
-   switch. Saving persists the settings and restarts the managed server; **Sync** re-registers
-   it and refreshes tools.
-2. **Broker card** — configured/reachable, version, TLS, computer/device/online-connector
-   counts and the last error. A red card is the fastest way to distinguish a TLS/CA problem
-   from a paused fleet.
-3. **Fleet view** — one tile per computer with state, connector state, control-lease holder, a
-   periodically refreshed frame preview (`/frame` with a cache-buster) and an **Open live
-   desktop** link when a public URL is set. Tiles expose the per-computer pause/resume control
-   with reason and auto-resume.
-4. **Global availability** — pause all agent computer use with a reason and optional
-   auto-resume; the banner stays visible while paused and shows the expiry.
-5. **Activity** — recent ok/error/denied audit rows for the `computer-use` server, including
-   the refusal reason, so pauses and RBAC denials are visible in one place.
+**Computers tab** (default)
 
-The **Connectors** page (sidebar: *Connectors*, `connectors`) is the device-onboarding surface:
+1. **Global availability** — pause all agent computer use with a reason and optional
+   auto-resume; the card stays visible while paused and shows the expiry.
+2. **Broker card** — **Broker settings** (broker URL, public URL, CA path, write-only token and
+   enabled switch), configured/reachable, version, TLS, computer/device/online-connector counts
+   and the last error. Saving persists the settings and restarts the managed server; **Sync
+   broker** re-registers it and refreshes tools. A red card is the fastest way to distinguish a
+   TLS/CA problem from a paused fleet.
+3. **Fleet view** — one tile per computer (host PCs, VMs and agent desktops) with state,
+   connector state, control-lease holder, a periodically refreshed frame preview (`/frame` with
+   a cache-buster) and an **Open live desktop** link. Host tiles add live CPU/memory/disk stats
+   and **Update connector** / **Remove connector** (the update pushes the broker's current
+   connector bundle and restarts the unit; removal disables the service and deletes its
+   identity). Every tile exposes the per-computer pause/resume control with reason and
+   auto-resume. **Add physical computer** mints the one-line host installer.
 
-- **Broker status** — configured/reachable, version, TLS, online device and pending-pairing
-  counts; when the broker is unreachable the page says so instead of pretending.
+**Connectors tab** — device onboarding and operator terminals:
+
+- **Public broker URL context** — the URL used to build pairing commands, or an explicit "not
+  set — pairing is blocked" warning.
 - **Add Linux PC** — the wizard (name, *allow interactive terminal* with an explicit warning
   that it is a real shell, pairing lifetime in minutes). Submitting shows the one-line install
   command with a copy button, the CA URL and the expiry, and polls the connector list so the
   dialog can report the machine connecting.
 - **Pending pairings** — expiry countdown and *Revoke*.
-- **Devices** — name, online/offline state, hostname/platform, last seen, capability badges
-  (terminal capability highlighted), a *Terminal* button (disabled with the reason when the
-  connector does not support it) and a *Broker UI* link.
+- **Device connectors** — name, online/offline state, hostname/platform, last seen, capability
+  badges (terminal capability highlighted), a *Terminal* button (disabled with the reason when
+  the connector does not support it) and a *Broker UI* link.
 - **Terminal dialog** — opens a 30×120 session, polls output, sends a line on Enter and closes
   the session when dismissed. Policy refusals are shown verbatim rather than swallowed.
+
+**VM providers tab** — registered KVM/QEMU hosts, their defaults and base-image readiness, the
+VMs each host is running, and **Add/Test/Delete provider** / **Deploy VM** actions. **View
+computers** jumps back to the Computers tab where the deployed VMs appear.
+
+**Agent access tab** — the managed `computer-use` MCP server (status, tool count, inspector
+link), the tools it advertises with privilege/approval badges, and recent ok/error/denied audit
+rows for the server including the refusal reason, so pauses and RBAC denials are visible in one
+place.
 
 The pause dialog uses local time and converts it to the ISO `until` the API expects; leaving
 it empty creates an open-ended pause that only an operator can clear.
@@ -669,8 +706,9 @@ not-supported. See the broker repo's `docs/HOST-DESKTOP.md` for the full story.
 
 ### Managing physical PCs from the console (v0.12)
 
-**Connectors → Physical computers** is the new one-stop panel for the Computer Use host fleet.
-It replaces the old DeviceBridge loop with:
+**Devices & computers → Computers** is the one-stop panel for the Computer Use host fleet:
+host PCs are ordinary tiles in the merged fleet grid, with their extra stats and connector
+actions inline. It replaces the old DeviceBridge loop with:
 
 - **One-line onboarding.** *Add physical computer* creates the broker computer and a one-time
   enrollment, then shows a single copyable bash command. Set
@@ -702,7 +740,8 @@ only if the installer endpoint is behind a trusted reverse proxy on the LAN.
 connector **1.1.0+**. A connector from v0.11 or earlier still works for remote desktop but has
 no stats/update/remove; reinstall it once with the one-line command (or the existing checkout
 installer). Device connectors (shell/files/terminal) are separate from host-computer
-connectors; the Physical computers panel only manages the latter.
+connectors; the Connectors tab only manages the former, while host tiles on the Computers tab
+manage the latter.
 
 ### VM providers (v0.13)
 
@@ -716,15 +755,15 @@ of containers on the broker machine. Two provider kinds are supported:
   host has no `qemu-img`.
 
 Register a provider and deploy VMs from either console:
-- **Gateway → Connectors → VM providers** (v0.13.1) lists the registered providers (zues/gpc),
+- **Devices & computers → VM providers** (v0.13.1) lists the registered providers (zues/gpc),
   their base-image readiness, defaults and **which VMs each host is running**, with Add/Test/
   Delete provider and Deploy VM actions.
 - **Broker console → Fleet → VM providers** offers the same provider/deploy controls.
 
-The resulting VMs appear in the gateway **Computer Use** fleet with `provider: vm`, a `frames`
-viewer, live preview, Start/Stop, stats and the same **Open live desktop** hand-off. All VM
-provider operations are proxied through the gateway admin API to the broker; the broker remains
-the authority for VM lifecycle.
+The resulting VMs appear on the **Computers** tab of **Devices & computers** with
+`provider: vm`, a `frames` viewer, live preview, Start/Stop, stats and the same **Open live
+desktop** hand-off. All VM provider operations are proxied through the gateway admin API to the
+broker; the broker remains the authority for VM lifecycle.
 
 Each VM boots an Ubuntu 24.04 cloud image with Xvfb + Xfce (optionally Chrome via the
 provider's install-browser option), installs the broker connector from the seed, and becomes
@@ -754,7 +793,7 @@ API (`/api/vm-hosts`, `/api/computers/vm`) and limits.
 | "Open live desktop" link is unreachable but agent tools work | `MCP_COMPUTER_BROKER_PUBLIC_URL` wrong or not browser-reachable | Set the public URL (reverse proxy DNS/TLS) and Sync. |
 | Broker restarted/upgraded | Managed client errored, tool catalogue stale | **Sync** (or restart the managed server) to reconnect and refresh tools. |
 | Connector device shows offline | Connector service stopped or restarted, broker unreachable, or TLS/CA failure | On the PC: `systemctl --user status computer-broker-connector-device` and `journalctl --user -u computer-broker-connector-device -n 40 --no-pager`; confirm the broker URL resolves and its port is reachable; restart the unit. |
-| Add Linux PC fails with a public-URL error | No public broker URL configured | Set the browser/PC-reachable broker URL in **Computer Use → Settings**, save, then create the enrollment again. |
+| Add Linux PC fails with a public-URL error | No public broker URL configured | Set the browser/PC-reachable broker URL in **Devices & computers → Broker settings**, save, then create the enrollment again. |
 | Install command fails at `curl` | `publicBrokerUrl` not reachable from the new PC (DNS, port, firewall) | Resolve the URL from that machine; ensure the broker is reachable on its LAN port or through the reverse proxy, then re-run with a fresh token. |
 | Installer reports `enrollment_invalid` | Token already claimed, expired (default 60 min) or revoked | Create a new pairing — a spent token cannot be reused. |
 | Connector fails its TLS/CA bootstrap | CA URL unreachable, or the certificate does not cover the hostname used | Check `/install/broker-ca.pem` from the new PC; use the hostname/SAN the certificate actually covers; pass `--ca /path/broker-ca.pem` when the CA is pre-provisioned. |
@@ -811,9 +850,11 @@ API (`/api/vm-hosts`, `/api/computers/vm`) and limits.
 - **Device operations use the broker admin token server-side.** Console terminal routes
   authenticate the operator (master key or console session) and proxy through the gateway; no
   broker credential reaches the browser.
-- **DeviceBridge is retired.** The gateway registers no DeviceBridge MCP server and there is
-  nothing to configure: device onboarding is **Connectors** only. Remove any legacy
-  DeviceBridge service still running on formerly-enrolled machines.
+- **DeviceBridge is not part of connector onboarding.** Onboarding is the **Connectors** tab
+  only; there is nothing to configure. A legacy `devicebridge` MCP server, if still registered
+  for a separate device fleet, plays no part in onboarding and can be removed once its remaining
+  tools are not needed. Remove any legacy DeviceBridge service still running on
+  formerly-enrolled machines.
 - **Backups.** With a vault-stored token, the broker token is included in the
   password-encrypted gateway backup; protect the backup password accordingly. An env-injected
   token lives outside the backup and must be re-supplied on restore. Pairing tokens are not

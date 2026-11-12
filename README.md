@@ -36,8 +36,8 @@ If not, the tool is invisible — not merely denied.
 | ⚙️ | **Encrypted configuration profiles** | Save credentials/endpoints (IPs, ports, API keys, headers) once **in the AES-256 vault**, reference named secrets, and apply one profile to many MCP servers. No env files — values are decrypted only into the sub-process environment. |
 | 🔬 | **Server inspector** | Open any MCP server: every tool (with schema + live Try), prompts, resources and templates, capabilities/instructions, encrypted configuration with audited reveal, version/update/changelog, and per-server request history — ok, failed **and denied** — with the API key that used it. |
 | 🛡️ | **API key console** | Click any key in RBAC: see **its own activity** (requests, tools/servers used, ok/error/denied, latency), **rename it for the bot it belongs to**, and **pause access** — the whole key, one MCP server, or individual tools — from simple toggles, then resume just as easily. |
-| 🖥️ | **Computer use** | Fronts a self-hosted **Computer Broker** as a managed `computer-use` MCP server: computer list/status/screenshot/windows, click/type/key/scroll/open-app and device exec/files/terminal — with per-key RBAC, audit, approval-gated destructive tools and console pause/resume. |
-| 🔌 | **Connectors & onboarding** | Enrol physical **Linux PCs** as Computer Broker device connectors: a single-use pairing token and one-line installer (downloads connector + CA, installs a systemd user unit, dials out — no inbound ports). The Connectors page lists devices and online state, pending/revoked pairings, and proxies an interactive terminal (opt-in connector policy). **Replaces DeviceBridge.** |
+| 🖥️ | **Devices & computers** | One console page for the whole device/computer estate. **Computers**: the broker fleet with live frames, host CPU/memory/disk stats, start/stop, connector update/removal and global or per-computer agent pause. **Connectors**: enrol physical **Linux PCs** with a single-use pairing token and one-line installer (downloads connector + CA, installs a systemd user unit, dials out — no inbound ports), pending/revoked pairings and an operator terminal (opt-in connector policy). **VM providers**: KVM/QEMU hosts and deployed agent VMs. **Agent access**: the managed `computer-use` MCP server, its tools, and recent audit activity. |
+| 🧩 | **Computer-use MCP surface** | Fronts the self-hosted **Computer Broker** as a managed `computer-use` MCP server: computer list/status/screenshot/windows, click/type/key/scroll/open-app and device exec/files/terminal — with per-key RBAC, audit, approval-gated destructive tools and broker-token isolation. **Replaces DeviceBridge.** |
 | 🔑 | **Vaultwarden as the default password/API manager** | Configure your Vaultwarden server (URL, client id/secret, master password) in the UI — the gateway materialises the connector config securely, browses/reveals items, and can inject API keys into MCP servers by reference. **1Password** (Connect host + API token, or service-account token with the `op` CLI) is a first-class alternative; the built-in AES vault is the fallback. |
 | 🚀 | **First-run onboarding** | A fresh gateway starts in setup mode: the Web UI wizard creates the operator account, offers an optional master API key (shown once) and can restore an existing backup — no env files or manual key bootstrapping needed. |
 | 💾 | **Password-encrypted backups** | One-click backup of the whole gateway — accounts, API keys, servers, profiles, catalog sources and **every vault secret** — encrypted with scrypt + AES-256-GCM using your account password. Restore on any fresh gateway (setup wizard or Settings) with that password; servers whose code was not in the backup get a one-click **Reinstall**. |
@@ -223,13 +223,13 @@ desktops and talks to the gateway over its own HTTPS MCP endpoint (`/mcp`).
 `MCP_COMPUTER_BROKER_CA` at a PEM CA bundle — in Docker, mount it read-only
 (`./certs/broker-ca.pem:/certs/broker-ca.pem:ro`). The bearer token can come from
 `MCP_COMPUTER_BROKER_TOKEN` (an env token takes precedence over the vault), but the preferred
-path is **Computer Use → Settings** in the console, which stores it in the encrypted vault;
+path is **Devices & computers → Broker settings** in the console, which stores it in the encrypted vault;
 the token is never written to the server row and never returned by the API. The integration
 only activates once a broker URL and a token resolve; leave the URL unset (or set
 `MCP_COMPUTER_USE_ENABLED=false`) to keep it disabled.
 
-**Manage availability.** The console adds a Computer use page with a fleet view (live frame
-previews and a link to the broker's own live desktop UI) and availability switches: pause
+**Manage availability.** The console's **Devices & computers** page (Computers tab) adds a fleet view
+(live frame previews and a link to the broker's own live desktop UI) and availability switches: pause
 **all** computer use or a **single computer**, optionally with a reason and an ISO `until`
 auto-resume. Pausing is operational, not RBAC: grants stay intact and a paused computer is
 refused with `-32001 ACCESS_DENIED` (`COMPUTER_USE_PAUSED` / `COMPUTER_PAUSED`), never
@@ -253,10 +253,10 @@ Full guide: [`docs/COMPUTER-USE.md`](./docs/COMPUTER-USE.md).
 
 The broker can drive **real machines**, not just virtual desktops. A small **connector** runs
 on a Linux PC (laptop, workstation, server), dials out to the broker over a WebSocket and
-executes the device tools — files, exec and an optional terminal. The gateway's new
-**Connectors** page is the onboarding surface: enrolled devices with online/offline state,
-hostname/platform/capabilities, pending pairings, an **Add Linux PC** wizard and an operator
-terminal.
+executes the device tools — files, exec and an optional terminal. The gateway console's
+**Devices & computers → Connectors** tab is the onboarding surface: enrolled devices with
+online/offline state, hostname/platform/capabilities, pending pairings, an **Add Linux PC**
+wizard and an operator terminal.
 
 **Pairing is one command.** Choose a name and pairing lifetime in the wizard, then paste the
 generated one-liner on the new machine (as the user who should own the connector — no root,
@@ -274,8 +274,9 @@ The connector then dials **out** to `wss://<broker>/connector` — no inbound po
 service. The
 single-use token (default 60 minutes) is claimed exactly once, the device appears online and
 the pending pairing disappears; pending pairings can be revoked from the console and an
-expired token is simply replaced. Creating a pairing requires a **public broker URL** in
-Computer-use settings, because the new PC must be able to reach it.
+expired token is simply replaced. Creating a pairing requires a **public broker URL** in the
+broker settings (**Devices & computers → Broker settings**), because the new PC must be able to
+reach it.
 
 **Terminal is opt-in.** The wizard's *Allow interactive terminal* checkbox passes `--terminal`,
 which sets `terminal.enabled: true` in the connector's local policy on a fresh install (an
@@ -287,9 +288,9 @@ path.
 
 **DeviceBridge is retired.** The legacy DeviceBridge connector/service is disabled in favour
 of the Computer Broker's device connectors. The gateway does **not** register a DeviceBridge
-MCP server and there is no DeviceBridge integration to configure: onboarding happens in
-**Connectors**, and the `device_*` tools agents already use continue to come from the managed
-`computer-use` server.
+MCP server and there is no DeviceBridge integration to configure: onboarding happens in the
+**Devices & computers → Connectors** tab, and the `device_*` tools agents already use continue
+to come from the managed `computer-use` server.
 
 Full guide: [`docs/COMPUTER-USE.md#connectors-onboarding-linux-pcs-v010`](./docs/COMPUTER-USE.md#connectors-onboarding-linux-pcs-v010).
 
@@ -569,7 +570,8 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 | v0.7.0 | Vaultwarden as the default password/API manager, 1Password option, unified Secrets page and password-manager references in configuration profiles | ✅ shipped |
 | v0.8.0 | RBAC API-key console: per-key activity, rename for bot references, pause/resume whole keys, MCP servers or individual tools | ✅ shipped |
 | **v0.9.0** | **Computer use: managed `computer-use` MCP server fronting a self-hosted Computer Broker, console fleet view with live frames, global and per-computer availability with reason/auto-resume, approval-gated destructive calls** | ✅ shipped |
-| **v0.13.1** | **VM providers in the gateway Connectors console: zues (libvirt) and gpc (QEMU/KVM) provider cards, per-provider running-VM attribution, add/test/delete providers and deploy VMs from the gateway UI** | ✅ **current** |
+| **v0.13.1** | **VM providers in the gateway Connectors console: zues (libvirt) and gpc (QEMU/KVM) provider cards, per-provider running-VM attribution, add/test/delete providers and deploy VMs from the gateway UI** | ✅ shipped |
+| **Unreleased** | **Devices & computers: the Computer Use and Connectors console pages merged into one tabbed page (Computers · Connectors · VM providers · Agent access), with one unified computers grid (host stats + connector maintenance inline) and legacy `#/computer-use` / `#/connectors` links aliased. UI only — the `computer-use` and `devicebridge` MCP servers are unchanged** | ✅ **current** |
 | **v0.13.0** | **VM providers: register KVM/QEMU hosts (Unraid/libvirt over SSH or local QEMU/KVM), deploy Ubuntu 24.04 cloud-image agent VMs, and manage/control them through the same Computer Use fleet, live viewer, stats and agent tools** | ✅ shipped |
 | **v0.12.0** | **Physical-computer fleet management: one-line bash onboarding for a real PC, live CPU/RAM/disk stats in the console, pushed connector self-update and remote connector removal (service + identity), LAN-only enrolment; replaces the old DeviceBridge loop** | ✅ shipped |
 | **v0.11.0** | **Physical host desktops: register a real Linux PC (KDE Wayland) as a Computer — live frames, per-display views, absolute mouse/keyboard for people and agents; gateway fleet + live-desktop hand-off work unchanged** | ✅ shipped |

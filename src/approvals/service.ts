@@ -260,7 +260,13 @@ export class SqliteApprovalService implements ApprovalService {
       }
       const client = this.supervisor.client(serverId);
       if (!client) throw new Error(`Server '${serverId}' is unavailable.`);
-      result = await client.callTool(toolName, args, { timeoutMs: this.timeoutMs });
+      // Re-execute as the key that requested approval: sub-servers that enforce
+      // caller-scoped rules (the email server's per-account ACL) must see the
+      // real key, not an anonymous internal call.
+      result = await client.callTool(toolName, args, {
+        timeoutMs: this.timeoutMs,
+        meta: { key_id: row.key_id },
+      });
       // A tool-level isError is still an executed approval: store it verbatim so
       // the agent can retry and see the same outcome.
       this.logger.info('approved tool call executed', { ticketId, serverId, toolName });

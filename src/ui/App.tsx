@@ -3,15 +3,17 @@ import { api } from './lib/api.js';
 import type { LoginResponse, SessionUser } from './lib/api.js';
 import { Layout } from './components/Layout.js';
 import type { PageKey } from './components/Layout.js';
+import { pageHash, parseHash } from './lib/routes.js';
 import { ToastProvider } from './components/Toasts.js';
 import { LoginPage } from './pages/Login.js';
 import { DashboardPage } from './pages/Dashboard.js';
 import { EmailPage } from './pages/Email.js';
 import { CatalogPage } from './pages/Catalog.js';
-import { ComputerUsePage } from './pages/computer-use/ComputerUsePage.js';
-import { ConnectorsPage } from './pages/connectors/ConnectorsPage.js';
 import { ConfigurationsPage } from './pages/Configurations.js';
 import type { CatalogTab } from './pages/Catalog.js';
+import { DevicesPage } from './pages/devices/DevicesPage.js';
+import { DEFAULT_DEVICES_TAB } from './pages/devices/tabs.js';
+import type { DevicesTab } from './pages/devices/tabs.js';
 import { SecretsPage } from './pages/secrets/SecretsPage.js';
 import { RbacPage } from './pages/Rbac.js';
 import { VaultPage } from './pages/Vault.js';
@@ -22,67 +24,8 @@ import { ServerInspectorPage } from './pages/ServerInspector.js';
 import { SetupWizard } from './pages/Setup.js';
 import { SettingsPage } from './pages/Settings.js';
 
-const PAGE_KEYS: readonly string[] = [
-  'dashboard',
-  'email',
-  'catalog',
-  'computer-use',
-  'connectors',
-  'configurations',
-  'secrets',
-  'rbac',
-  'vault',
-  'audit',
-  'delegation',
-  'playground',
-  'settings',
-];
-
-function isPageKey(value: string): value is PageKey {
-  return PAGE_KEYS.includes(value);
-}
-
-function isCatalogTab(value: string | null): value is CatalogTab {
-  return value === 'installed' || value === 'discover' || value === 'sources' || value === 'import';
-}
-
-interface HashLocation {
-  page: PageKey;
-  catalogTab: CatalogTab | null;
-  /** Set when the hash is `#/server/<id>`. */
-  serverId: string | null;
-  /** Set when the hash is `#/rbac/<keyId>`. */
-  keyId: string | null;
-}
-
-function locationFromHash(): HashLocation {
-  if (typeof window === 'undefined') return { page: 'dashboard', catalogTab: null, serverId: null, keyId: null };
-  const raw = window.location.hash.replace(/^#\/?/, '').trim();
-  const [pathPart = '', queryPart = ''] = raw.split('?');
-  const segments = pathPart.split('/').filter((segment) => segment.length > 0);
-  const tab = new URLSearchParams(queryPart).get('tab');
-  if (segments[0] === 'server' && segments[1] !== undefined) {
-    return {
-      page: 'server',
-      catalogTab: null,
-      serverId: decodeURIComponent(segments[1]),
-      keyId: null,
-    };
-  }
-  // Backwards-compatible alias: the Vault Warden page is now Secrets.
-  if (segments[0] === 'vaultwarden') {
-    return { page: 'secrets', catalogTab: null, serverId: null, keyId: null };
-  }
-  if (segments[0] === 'rbac' && segments[1] !== undefined) {
-    return {
-      page: 'rbac',
-      catalogTab: null,
-      serverId: null,
-      keyId: decodeURIComponent(segments[1]),
-    };
-  }
-  const page = isPageKey(segments[0] ?? '') ? (segments[0] as PageKey) : 'dashboard';
-  return { page, catalogTab: isCatalogTab(tab) ? tab : null, serverId: null, keyId: null };
+function locationFromHash() {
+  return parseHash(typeof window === 'undefined' ? '' : window.location.hash);
 }
 
 type SessionState =
@@ -93,10 +36,12 @@ type SessionState =
 
 interface RenderContext {
   catalogTab: CatalogTab;
+  devicesTab: DevicesTab;
   serverId: string | null;
   keyId: string | null;
   username: string;
   onCatalogTabChange: (tab: CatalogTab) => void;
+  onDevicesTabChange: (tab: DevicesTab) => void;
   onNavigate: (page: PageKey, options?: { catalogTab?: CatalogTab }) => void;
   onOpenServer: (serverId: string) => void;
   onOpenKey: (keyId: string | null) => void;
@@ -126,10 +71,8 @@ function renderPage(page: PageKey, context: RenderContext) {
       );
     case 'configurations':
       return <ConfigurationsPage onNavigate={context.onNavigate} />;
-    case 'computer-use':
-      return <ComputerUsePage />;
-    case 'connectors':
-      return <ConnectorsPage />;
+    case 'devices':
+      return <DevicesPage initialTab={context.devicesTab} onTabChange={context.onDevicesTabChange} />;
     case 'secrets':
       return <SecretsPage onNavigate={context.onNavigate} />;
     case 'rbac':
@@ -182,6 +125,7 @@ export function App() {
   const [signingOut, setSigningOut] = useState(false);
   const [page, setPage] = useState<PageKey>(initial.page);
   const [catalogTab, setCatalogTab] = useState<CatalogTab>(initial.catalogTab ?? 'installed');
+  const [devicesTab, setDevicesTab] = useState<DevicesTab>(initial.devicesTab ?? DEFAULT_DEVICES_TAB);
   const [serverId, setServerId] = useState<string | null>(initial.serverId);
   const [keyId, setKeyId] = useState<string | null>(initial.keyId);
 
@@ -220,6 +164,7 @@ export function App() {
       setServerId(next.serverId);
       setKeyId(next.keyId);
       if (next.catalogTab !== null) setCatalogTab(next.catalogTab);
+      if (next.devicesTab !== null) setDevicesTab(next.devicesTab);
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
@@ -229,7 +174,7 @@ export function App() {
     setPage(next);
     setServerId(null);
     setKeyId(null);
-    if (typeof window !== 'undefined') window.location.hash = `#/${next}`;
+    if (typeof window !== 'undefined') window.location.hash = pageHash(next);
   }, []);
 
   const openServer = useCallback((id: string) => {
@@ -255,9 +200,7 @@ export function App() {
     setServerId(null);
     setKeyId(null);
     if (typeof window !== 'undefined') {
-      window.location.hash = options?.catalogTab
-        ? `#/${next}?tab=${options.catalogTab}`
-        : `#/${next}`;
+      window.location.hash = pageHash(next, { catalogTab: options?.catalogTab ?? null });
     }
   }, []);
 
@@ -325,10 +268,12 @@ export function App() {
       >
         {renderPage(page, {
           catalogTab,
+          devicesTab,
           serverId,
           keyId,
           username: session.user.username,
           onCatalogTabChange: setCatalogTab,
+          onDevicesTabChange: setDevicesTab,
           onNavigate: handleNavigate,
           onOpenServer: openServer,
           onOpenKey: openKey,

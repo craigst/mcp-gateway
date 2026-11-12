@@ -16,13 +16,26 @@ same locked draft-only behaviour.
 |---|---|
 | **Push incoming messages to Remy** | Off pauses pushes; the watcher still advances its cursor so nothing is replayed later. |
 | **All incoming messages** | Every DM/group/thread event is pushed (historical behaviour). |
-| **Selected contacts only** | Only the chosen contact/thread keys can push. Empty selection = nothing. |
+| **Selected contacts only** | Only the chosen contact/thread keys can push. A **person** key matches their **direct messages** only; a group message passes only when that **group** key is selected. Empty selection = nothing. |
 | **Selected contacts** | Searchable chips/list from the watcher's synced catalog; manual `Add` for a key not in the catalog yet. |
 | **Auto-reply** | Locked **OFF**. The API refuses `autoReply: true` (HTTP 400). Remy drafts and waits for confirmation. |
 
 Settings are stored per source in the gateway's `settings` table
 (`watcher:whatsapp:*`, `watcher:instagram:*`) and are separate — changing one
 source never changes the other.
+
+### Group filtering (fixed 2026-11-06)
+
+A WhatsApp **group** is its own contact key (`group:<jid>`). Before the fix the
+watcher also matched a group message against the *sender's* phone/LID, so a
+selected individual posting in an unselected group pulled the whole group in —
+"Daily walk around checks" reached Remy whenever a selected driver posted a
+walk-around photo, and Remy ran its WhatsApp webhook routine and drafted a
+reply. The filter now ignores sender keys for `@g.us` chats: selecting a person
+exposes their DMs only, and a group pushes only when that group itself is
+selected. Deployed to the gateway's `social-watchers` worker on 2026-11-06
+(`/data/repos/remy-watchers/remy_watchers.py`), verified with synthetic group
+and DM events.
 
 ## How the watchers get the settings
 
@@ -102,6 +115,15 @@ automatic action; comments, replies and mentions stay drafts.
 the current posts/comments/activity as seen and performs **no likes**. Only items
 arriving afterwards are liked, so enabling a toggle never likes a backlog.
 Disabling and re-enabling a toggle creates a new baseline at that moment.
+
+**How a post counts as new (fixed 2026-11-10):** the poll reads a page of
+`REMY_INSTAGRAM_POSTS_AMOUNT` posts (**default 12**, never fewer than 4 — below
+that Instagram's ranked feed can answer 200 with an empty list), sorts them by
+`taken_at` instead of trusting profile order (pinned posts sit first), and
+ignores anything older than `REMY_INSTAGRAM_POST_MAX_AGE_DAYS` (**default 7**).
+A post the account has already liked is marked seen without spending a like.
+An empty page is logged as a warning, because "no posts returned" means the
+poll is blind, not that there is nothing new.
 
 Polling: automation/activity every **15 minutes** (`REMY_INSTAGRAM_AUTOMATION_INTERVAL_SECONDS`),
 DMs every **30 minutes**, settings every 15 seconds. The watcher account is

@@ -1,11 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, formatApiError } from '../lib/api.js';
-import type { EmailAccount, EmailAccountInput, EmailConnectionStatus, EmailFolder, EmailMessage, EmailMessageSummary } from '../../email/types.js';
+import type {
+  EmailAccessOverview,
+  EmailAccount,
+  EmailAccountInput,
+  EmailConnectionStatus,
+  EmailFolder,
+  EmailMessage,
+  EmailMessageSummary,
+  EmailTriageAccount,
+  EmailTriageOverview,
+} from '../../email/types.js';
 import { Badge } from '../components/Badge.js';
 import { Card } from '../components/Card.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonBlock } from '../components/Skeleton.js';
 import { cx } from '../lib/cx.js';
+import { EmailAccessDialog } from './email/EmailAccessDialog.js';
+import { EmailTriageDrawer } from './email/EmailTriageDrawer.js';
 
 type ComposeState = {
   open: boolean;
@@ -30,6 +42,10 @@ const EMPTY_COMPOSE: ComposeState = {
 };
 
 const SPECIAL_FOLDERS = new Set(['INBOX', 'Sent', 'Drafts', 'Trash', 'Archive', 'Junk']);
+
+function plural(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? '' : 's'}`;
+}
 
 function folderLabel(folder: EmailFolder): string {
   return folder.specialUse?.replace(/^\\/, '') ?? folder.name ?? folder.path;
@@ -67,6 +83,18 @@ export function EmailPage() {
   const [showAccountDialog, setShowAccountDialog] = useState(false);
   const [editing, setEditing] = useState<EmailAccount | null>(null);
   const [sending, setSending] = useState(false);
+  // Access overview is fetched separately so a failure never blocks the mailbox list.
+  const [access, setAccess] = useState<EmailAccessOverview | null>(null);
+  const [accessLoading, setAccessLoading] = useState(true);
+  const [accessError, setAccessError] = useState<string | null>(null);
+  const [showAccess, setShowAccess] = useState(false);
+  const [accessFocus, setAccessFocus] = useState<string | null>(null);
+  // Triage is fetched separately too: which mailboxes are watched must never
+  // depend on the access view loading.
+  const [triage, setTriage] = useState<EmailTriageOverview | null>(null);
+  const [triageLoading, setTriageLoading] = useState(true);
+  const [triageFocus, setTriageFocus] = useState<string | null>(null);
+  const [showTriage, setShowTriage] = useState(false);
 
   const active = useMemo(() => accounts.find((account) => account.id === activeAccount) ?? null, [accounts, activeAccount]);
 
@@ -87,6 +115,74 @@ export function EmailPage() {
   useEffect(() => {
     void loadAccounts();
   }, [loadAccounts]);
+
+  const loadAccess = useCallback(async () => {
+    setAccessLoading(true);
+    try {
+      setAccess(await api.getEmailAccess());
+      setAccessError(null);
+    } catch (cause) {
+      setAccessError(formatApiError(cause));
+    } finally {
+      setAccessLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAccess();
+  }, [loadAccess]);
+
+  const loadTriage = useCallback(async () => {
+    setTriageLoading(true);
+    try {
+      setTriage(await api.getEmailTriage());
+    } catch {
+      // A triage failure must not stop the mailbox list from rendering.
+      setTriage(null);
+    } finally {
+      setTriageLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadTriage();
+  }, [loadTriage]);
+
+  const triageByAccount = useMemo(() => {
+    const map = new Map<string, EmailTriageAccount>();
+    for (const entry of triage?.accounts ?? []) map.set(entry.accountId, entry);
+    return map;
+  }, [triage]);
+
+  const openTriage = (accountId: string): void => {
+    setTriageFocus(accountId);
+    setShowTriage(true);
+  };
+
+  const applyTriage = useCallback((next: EmailTriageAccount) => {
+    setTriage((current) =>
+      current === null
+        ? current
+        : { ...current, accounts: current.accounts.map((entry) => (entry.accountId === next.accountId ? next : entry)) },
+    );
+  }, []);
+
+  const accessCounts = useMemo(() => {
+    const counts = new Map<string, { bots: number; keys: number }>();
+    if (access === null) return counts;
+    for (const account of access.accounts) {
+      counts.set(account.id, {
+        bots: access.bots.filter((subject) => subject.emailEnabled && subject.accounts[account.id] !== false).length,
+        keys: access.keys.filter((subject) => subject.emailEnabled && subject.accounts[account.id] !== false).length,
+      });
+    }
+    return counts;
+  }, [access]);
+
+  const openAccess = (accountId: string | null = null): void => {
+    setAccessFocus(accountId);
+    setShowAccess(true);
+  };
 
   useEffect(() => {
     if (activeAccount === null) {
@@ -281,17 +377,28 @@ export function EmailPage() {
               <p className="text-sm font-semibold text-slate-100">Mailboxes</p>
               <p className="text-[11px] text-slate-500">{accounts.length} account{accounts.length === 1 ? '' : 's'}</p>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setEditing(null);
-                setShowAccountDialog(true);
-              }}
-              className="rounded-md border border-slate-700 px-2 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-800"
-              title="Add an email account"
-            >
-              + Add
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => openAccess(null)}
+                className="rounded-md border border-slate-700 px-2 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+                title="See which bots and API keys can use email"
+                aria-label="Manage email access from the mailbox list"
+              >
+                Access
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditing(null);
+                  setShowAccountDialog(true);
+                }}
+                className="rounded-md border border-slate-700 px-2 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+                title="Add an email account"
+              >
+                + Add
+              </button>
+            </div>
           </div>
           {loading ? (
             <div className="space-y-2">
@@ -305,37 +412,80 @@ export function EmailPage() {
               {accounts.map((account) => {
                 const accountStatus = status[account.id];
                 const connected = accountStatus?.ok ?? account.lastTestOk;
+                const accessCount = accessCounts.get(account.id) ?? { bots: 0, keys: 0 };
+                const accessLabel =
+                  access !== null
+                    ? `Access: ${plural(accessCount.bots, 'bot')} · ${plural(accessCount.keys, 'key')}`
+                    : accessLoading
+                      ? 'Access: checking…'
+                      : 'Access: unavailable';
+                const triageEntry = triageByAccount.get(account.id);
+                const triageLabel =
+                  triageEntry === undefined
+                    ? triageLoading
+                      ? 'Triage: checking…'
+                      : 'Triage: unavailable'
+                    : triageEntry.enabled
+                      ? triageEntry.mode === 'full'
+                        ? 'Triage: on · cards + filing'
+                        : 'Triage: on · cards only'
+                      : 'Triage: off';
                 return (
-                  <button
+                  <div
                     key={account.id}
-                    type="button"
-                    onClick={() => {
-                      setActiveAccount(account.id);
-                      setActiveFolder('INBOX');
-                      setSelected(null);
-                    }}
                     className={cx(
-                      'w-full rounded-lg border px-2.5 py-2 text-left transition-colors',
+                      'rounded-lg border transition-colors',
                       account.id === activeAccount
                         ? 'border-sky-500/50 bg-sky-500/10'
                         : 'border-transparent hover:border-slate-700 hover:bg-slate-900',
                     )}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-xs font-semibold text-slate-200">{account.name}</span>
-                      <span
-                        className={cx(
-                          'h-2 w-2 shrink-0 rounded-full',
-                          connected === true ? 'bg-emerald-400' : connected === false ? 'bg-rose-400' : 'bg-slate-600',
-                        )}
-                        title={connected === true ? 'Connected' : connected === false ? 'Not connected' : 'Not tested'}
-                      />
-                    </div>
-                    <p className="mt-0.5 truncate text-[11px] text-slate-500">{account.email}</p>
-                    {accountStatus?.ok === false && accountStatus.error !== null && (
-                      <p className="mt-1 line-clamp-2 text-[10px] text-rose-300">{accountStatus.error}</p>
-                    )}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveAccount(account.id);
+                        setActiveFolder('INBOX');
+                        setSelected(null);
+                      }}
+                      className="w-full px-2.5 pt-2 text-left"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-xs font-semibold text-slate-200">{account.name}</span>
+                        <span
+                          className={cx(
+                            'h-2 w-2 shrink-0 rounded-full',
+                            connected === true ? 'bg-emerald-400' : connected === false ? 'bg-rose-400' : 'bg-slate-600',
+                          )}
+                          title={connected === true ? 'Connected' : connected === false ? 'Not connected' : 'Not tested'}
+                        />
+                      </div>
+                      <p className="mt-0.5 truncate text-[11px] text-slate-500">{account.email}</p>
+                      {accountStatus?.ok === false && accountStatus.error !== null && (
+                        <p className="mt-1 line-clamp-2 text-[10px] text-rose-300">{accountStatus.error}</p>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openAccess(account.id)}
+                      aria-label={`Manage access to ${account.name}`}
+                      title={`Who can use the ${account.name} mailbox`}
+                      className="w-full px-2.5 pt-1 text-left text-[10px] font-medium text-slate-500 transition-colors hover:text-sky-300"
+                    >
+                      {accessLabel}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openTriage(account.id)}
+                      aria-label={`Manage triage for ${account.name}`}
+                      title={`Whether new mail in ${account.name} is judged and drafted for you`}
+                      className={cx(
+                        'w-full rounded-b-lg px-2.5 pb-1.5 pt-0.5 text-left text-[10px] font-medium transition-colors',
+                        triageEntry?.enabled === true ? 'text-emerald-400/80 hover:text-emerald-300' : 'text-slate-500 hover:text-sky-300',
+                      )}
+                    >
+                      {triageLabel}
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -522,14 +672,30 @@ export function EmailPage() {
           )}
           {active !== null && <span>{active.imapUser} via {active.imapHost}:{active.imapPort}</span>}
         </div>
-        <button
-          type="button"
-          onClick={() => openCompose('new')}
-          disabled={activeAccount === null}
-          className="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          New email
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openAccess(null)}
+            aria-label="Manage email access"
+            title="See which bots and API keys can use email"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition-colors hover:bg-slate-800"
+          >
+            Access
+            {access !== null && (
+              <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-slate-300">
+                {access.bots.length + access.keys.length}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => openCompose('new')}
+            disabled={activeAccount === null}
+            className="rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            New email
+          </button>
+        </div>
       </div>
 
       {compose.open && (
@@ -593,6 +759,23 @@ export function EmailPage() {
           </div>
         </div>
       )}
+
+      <EmailAccessDialog
+        open={showAccess}
+        onClose={() => setShowAccess(false)}
+        overview={access}
+        loading={accessLoading}
+        error={accessError}
+        onRefresh={loadAccess}
+        focusAccountId={accessFocus}
+      />
+
+      <EmailTriageDrawer
+        open={showTriage}
+        triage={triageFocus === null ? null : (triageByAccount.get(triageFocus) ?? null)}
+        onClose={() => setShowTriage(false)}
+        onSaved={applyTriage}
+      />
 
       {showAccountDialog && (
         <AccountDialog

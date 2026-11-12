@@ -1,0 +1,20 @@
+services:
+  android-connector:
+    build: ./build
+    image: localhost/computer-broker-android:1.1.1
+    container_name: computer-broker-connector-android
+    restart: unless-stopped
+    env_file:
+      - ./connector-android.env
+    volumes:
+      - ./state:/state
+      - ./adb-keys:/root/.android
+    mem_limit: 256m
+    healthcheck:
+      # Re-establishes the phone's Wi-Fi ADB transport when it drops; the
+      # connector's frame pump does not reconnect ADB on its own.
+      test: ["CMD-SHELL", "adb connect 10.10.254.80:5555 2>&1 | grep -Eq 'connected to|already connected'"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 20s

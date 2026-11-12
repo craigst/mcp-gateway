@@ -78,12 +78,18 @@ import type {
 } from '../../core/types.js';
 import type { DelegationTrace, MetricsSnapshot, SubServerLogLine } from '../../core/ports.js';
 import type {
+  EmailAccessOverview,
+  EmailAccessUpdateInput,
+  EmailAccessUpdateResult,
   EmailAccount,
   EmailAccountInput,
   EmailConnectionStatus,
   EmailFolder,
   EmailMessage,
   EmailMessageSummary,
+  EmailTriageAccount,
+  EmailTriageInput,
+  EmailTriageOverview,
   SendEmailInput,
 } from '../../email/types.js';
 
@@ -490,6 +496,54 @@ export interface InstagramSessionInfo {
   modifiedAt: string | null;
   proxyConfigured: boolean;
   proxyHost: string | null;
+  /** `expired` when the connector's last error is newer than its last success. */
+  status: 'valid' | 'expired' | 'unknown';
+  lastError: string | null;
+  lastErrorAt: string | null;
+  lastOkAt: string | null;
+  lastLoginAt: string | null;
+  username: string | null;
+  /** Set only when a live check ran (`getInstagramSession(true)`). */
+  verifiedAt: string | null;
+  verifyError: string | null;
+}
+
+export interface InstagramAutoRefreshStatus {
+  enabled: boolean;
+  username: string;
+  minIntervalHours: number;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  hasPassword: boolean;
+  hasTotp: boolean;
+  vaultEnabled: boolean;
+  /** Earliest another automatic attempt is allowed. */
+  nextEligibleAt: string | null;
+  totpSecondsRemaining: number;
+}
+
+export interface InstagramOverview {
+  session: InstagramSessionInfo;
+  autoRefresh: InstagramAutoRefreshStatus;
+}
+
+export interface InstagramAutoRefreshInput {
+  enabled?: boolean;
+  username?: string;
+  password?: string;
+  totpSecret?: string;
+  minIntervalHours?: number;
+  clearPassword?: boolean;
+  clearTotp?: boolean;
+}
+
+export interface InstagramLoginResult {
+  ok: boolean;
+  username: string | null;
+  autoRefresh: InstagramAutoRefreshStatus;
+  session: InstagramSessionInfo;
 }
 
 export interface RequestOptions {
@@ -857,7 +911,7 @@ export class ApiClient {
     const response = await this.request<{ result: RestoreResult }>('/mcp/v1/admin/backups/restore', {
       method: 'POST',
       body: JSON.stringify({ backup: input.backup, password: input.password, confirm: 'RESTORE' }),
-    }, 120_000);
+    }, 660_000);
     return response.result;
   }
 
@@ -1820,27 +1874,73 @@ export class ApiClient {
       body: JSON.stringify(input),
     });
   }
-  // -- Instagram session/proxy ---------------------------------------------
 
-  async getInstagramSession(): Promise<InstagramSessionInfo> {
-    const response = await this.request<{ session: InstagramSessionInfo }>('/mcp/v1/admin/social/instagram');
-    return response.session;
+  // -- email access (which bots / keys may use the email server) -------------
+
+  /** Who may use the shared email MCP server, and which mailboxes each may read. */
+  getEmailAccess(): Promise<EmailAccessOverview> {
+    return this.request<EmailAccessOverview>('/mcp/v1/admin/email/access');
   }
 
-  async setInstagramSession(sessionid: string, userId: string): Promise<InstagramSessionInfo> {
-    const response = await this.request<{ session: InstagramSessionInfo }>('/mcp/v1/admin/social/instagram/session', {
+  /** Toggle a key's email grant and/or its explicit per-mailbox decisions. */
+  updateEmailKeyAccess(keyId: string, input: EmailAccessUpdateInput): Promise<EmailAccessUpdateResult> {
+    return this.request<EmailAccessUpdateResult>(
+      `/mcp/v1/admin/email/access/keys/${encodeURIComponent(keyId)}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+    );
+  }
+
+  // -- email triage (which mailboxes are watched, and how far they may act) ---
+
+  /** Every mailbox with its triage state; mailboxes with no row are off. */
+  getEmailTriage(): Promise<EmailTriageOverview> {
+    return this.request<EmailTriageOverview>('/mcp/v1/admin/email/triage');
+  }
+
+  /** Change one mailbox's triage settings; omitted fields are left alone. */
+  updateEmailTriage(accountId: string, input: EmailTriageInput): Promise<{ triage: EmailTriageAccount }> {
+    return this.request<{ triage: EmailTriageAccount }>(
+      `/mcp/v1/admin/email/${encodeURIComponent(accountId)}/triage`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+    );
+  }
+  // -- Instagram session/proxy ---------------------------------------------
+
+  async getInstagramSession(verify = false): Promise<InstagramOverview> {
+    return this.request<InstagramOverview>(
+      `/mcp/v1/admin/social/instagram${verify ? '?verify=1' : ''}`,
+      {},
+      verify ? 240_000 : undefined,
+    );
+  }
+
+  async setInstagramSession(sessionid: string, userId: string): Promise<InstagramOverview> {
+    return this.request<InstagramOverview>('/mcp/v1/admin/social/instagram/session', {
       method: 'POST',
       body: JSON.stringify({ sessionid, userId }),
     });
-    return response.session;
   }
 
-  async setInstagramProxy(proxy: string): Promise<InstagramSessionInfo> {
-    const response = await this.request<{ session: InstagramSessionInfo }>('/mcp/v1/admin/social/instagram/proxy', {
+  async setInstagramProxy(proxy: string): Promise<InstagramOverview> {
+    return this.request<InstagramOverview>('/mcp/v1/admin/social/instagram/proxy', {
       method: 'POST',
       body: JSON.stringify({ proxy }),
     });
-    return response.session;
+  }
+
+  async saveInstagramAutoRefresh(input: InstagramAutoRefreshInput): Promise<InstagramOverview> {
+    return this.request<InstagramOverview>('/mcp/v1/admin/social/instagram/autorefresh', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async testInstagramLogin(): Promise<InstagramLoginResult> {
+    return this.request<InstagramLoginResult>('/mcp/v1/admin/social/instagram/login', {
+      method: 'POST',
+      body: '{}',
+      headers: { 'content-type': 'application/json' },
+    }, 660_000);
   }
 }
 

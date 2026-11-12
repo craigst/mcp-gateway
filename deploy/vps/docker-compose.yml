@@ -2,9 +2,19 @@
 #
 # OMB reaches the gateway at http://mcp-gateway:8080 (shared Docker network);
 # WG clients reach it at http://10.10.1.4:8484. Nothing is published publicly.
+#
+# The 2026-11-01 tunnel fallback (extra_hosts gpc.lan / devicebridge.lan ->
+# 172.19.0.1, SSH reverse tunnels from gpc) is RETIRED: WireGuard is healthy
+# again and every upstream is reached directly over wg0. Do not re-add
+# extra_hosts; see docs/FULL-MIGRATION.md "WireGuard restored; fallback retired".
 services:
   gateway:
-    image: localhost/mcp-gateway:0.14.1
+    # Tag matches the version inside the image (0.15.1, per /mcp/v1/health and
+    # package.json). 0.15.1 adds per-mailbox email triage switches (/triage and
+    # the watcher's scoped email endpoints); 0.15.0 adds the Email tab access controller (bots/API keys
+    # and per-mailbox toggles) and enforces it inside the email MCP server.
+    # Bump package.json before re-tagging; do not reuse an old mislabelled tag.
+    image: localhost/mcp-gateway:${MCP_IMAGE_TAG:-0.15.1}
     container_name: mcp-gateway
     restart: unless-stopped
     env_file:
@@ -15,6 +25,12 @@ services:
     volumes:
       - ./data:/data
       - ./certs:/certs:ro
+      # Persistent SSH identity + config for the `ssh`, `homepage` and `omb`
+      # connectors (all three shell out to ssh). Host aliases live here, so a
+      # fresh deploy must create ./data/ssh-home/.ssh with id_ed25519,
+      # known_hosts and a config mapping pi5/zues/shadow to their WireGuard
+      # addresses — see docs/VPS-DEPLOY.md "Container SSH identity".
+      - ./data/ssh-home/.ssh:/home/node/.ssh
     networks:
       default: {}
       openmausbot_default:
@@ -22,6 +38,16 @@ services:
           - mcp-gateway
     security_opt:
       - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/mcp/v1/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 networks:
   openmausbot_default:

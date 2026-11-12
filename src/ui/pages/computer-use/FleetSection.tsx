@@ -17,6 +17,7 @@ import { formatTimestamp } from '../../lib/format.js';
 import type {
   ComputerUseComputerInfo,
   ComputerUseComputersResponse,
+  ComputerUseStats,
 } from '../../../core/types.js';
 import {
   computerStateTone,
@@ -25,6 +26,12 @@ import {
   isComputerRunning,
   resumeAtLabel,
 } from './shared.js';
+import {
+  HostStatsStrip,
+  connectorRemoveBlockedReason,
+  connectorUpdateBlockedReason,
+  useHostStats,
+} from '../devices/hostStats.js';
 
 export interface FleetSectionProps {
   data: ComputerUseComputersResponse | null;
@@ -42,6 +49,13 @@ export interface FleetSectionProps {
   onResume: (computer: ComputerUseComputerInfo) => void;
   onStart: (computer: ComputerUseComputerInfo) => void;
   onStop: (computer: ComputerUseComputerInfo) => void;
+  /** Extra actions rendered next to "Refresh fleet" (e.g. Add physical computer). */
+  headerActions?: ReactNode;
+  /** Host connector maintenance — rendered only for `provider: "host"` cards. */
+  onUpdateConnector?: (computer: ComputerUseComputerInfo) => void;
+  onRemoveConnector?: (computer: ComputerUseComputerInfo) => void;
+  /** Computer id with an in-flight connector maintenance action, if any. */
+  connectorBusyId?: string | null;
 }
 
 interface FrameProps {
@@ -95,12 +109,18 @@ interface ComputerCardProps {
   frameTick: number;
   busy: boolean;
   globalPaused: boolean;
+  /** Live system stats for host computers; `null` for other providers. */
+  hostStats: ComputerUseStats | null;
+  /** True while a connector maintenance action is in flight for this card. */
+  connectorBusy: boolean;
   onPreview: (computer: ComputerUseComputerInfo) => void;
   onPause: (computer: ComputerUseComputerInfo) => void;
   onEditPause: (computer: ComputerUseComputerInfo) => void;
   onResume: (computer: ComputerUseComputerInfo) => void;
   onStart: (computer: ComputerUseComputerInfo) => void;
   onStop: (computer: ComputerUseComputerInfo) => void;
+  onUpdateConnector?: (computer: ComputerUseComputerInfo) => void;
+  onRemoveConnector?: (computer: ComputerUseComputerInfo) => void;
 }
 
 function ComputerCard({
@@ -108,12 +128,16 @@ function ComputerCard({
   frameTick,
   busy,
   globalPaused,
+  hostStats,
+  connectorBusy,
   onPreview,
   onPause,
   onEditPause,
   onResume,
   onStart,
   onStop,
+  onUpdateConnector,
+  onRemoveConnector,
 }: ComputerCardProps) {
   const running = isComputerRunning(computer.state);
   const available = computer.availability.available;
@@ -121,8 +145,17 @@ function ComputerCard({
   // The fleet response merges global availability into every computer, so a
   // paused tile may be paused globally rather than individually.
   const individuallyPaused = paused && !globalPaused;
-  const liveUrl = computer.liveUrl === null ? null : api.computerUseLiveDesktopUrl(computer.id);
+  // Host computers get the link even when the broker omits `liveUrl` (the old
+  // Physical computers card always offered the gateway hand-off); other
+  // providers only link when the broker advertises one.
+  const liveUrl =
+    computer.liveUrl !== null || computer.provider === 'host'
+      ? api.computerUseLiveDesktopUrl(computer.id)
+      : null;
   const connector = computer.connector;
+  const isHost = computer.provider === 'host';
+  const updateBlockedReason = isHost ? connectorUpdateBlockedReason(computer) : null;
+  const removeBlockedReason = isHost ? connectorRemoveBlockedReason(computer) : null;
 
   return (
     <article
@@ -208,6 +241,8 @@ function ComputerCard({
             </dd>
           </div>
         </dl>
+
+        {isHost && <HostStatsStrip computer={computer} stats={hostStats} />}
 
         {computer.error !== null && (
           <Notice tone="error" title="Broker error">
@@ -303,6 +338,30 @@ function ComputerCard({
             ) : (
               <span className="text-[11px] text-slate-500">Live link unavailable</span>
             )}
+            {isHost && onUpdateConnector !== undefined && (
+              <span title={updateBlockedReason ?? undefined} className="inline-flex">
+                <SecondaryButton
+                  onClick={() => onUpdateConnector(computer)}
+                  disabled={connectorBusy || updateBlockedReason !== null}
+                  aria-label={`Update connector on ${computer.name}`}
+                  className="px-2.5 py-1.5 text-xs"
+                >
+                  Update connector
+                </SecondaryButton>
+              </span>
+            )}
+            {isHost && onRemoveConnector !== undefined && (
+              <span title={removeBlockedReason ?? undefined} className="inline-flex">
+                <DangerButton
+                  onClick={() => onRemoveConnector(computer)}
+                  disabled={connectorBusy || removeBlockedReason !== null}
+                  aria-label={`Remove connector on ${computer.name}`}
+                  className="px-2.5 py-1.5 text-xs"
+                >
+                  Remove connector
+                </DangerButton>
+              </span>
+            )}
           </div>
           <p className="text-[10px] leading-relaxed text-slate-500">
             Live control happens in the broker&apos;s own desktop UI. Pause availability here to stop agent
@@ -330,7 +389,10 @@ function PreviewDialog({ computer, frameTick, onClose }: PreviewDialogProps) {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
 
-  const liveUrl = computer.liveUrl === null ? null : api.computerUseLiveDesktopUrl(computer.id);
+  const liveUrl =
+    computer.liveUrl !== null || computer.provider === 'host'
+      ? api.computerUseLiveDesktopUrl(computer.id)
+      : null;
   const running = isComputerRunning(computer.state);
 
   return (
@@ -412,9 +474,14 @@ export function FleetSection({
   onResume,
   onStart,
   onStop,
+  headerActions,
+  onUpdateConnector,
+  onRemoveConnector,
+  connectorBusyId,
 }: FleetSectionProps) {
   const [preview, setPreview] = useState<ComputerUseComputerInfo | null>(null);
   const computers = data?.computers ?? [];
+  const hostStats = useHostStats(computers.filter((computer) => computer.provider === 'host'));
   const globalPaused = data?.availability.state === 'paused';
   const configured = data?.broker.configured === true;
 
@@ -454,13 +521,17 @@ export function FleetSection({
             computer={computer}
             frameTick={frameTick}
             busy={busyKey === computer.id}
+            connectorBusy={connectorBusyId === computer.id}
             globalPaused={globalPaused}
+            hostStats={computer.provider === 'host' ? (hostStats[computer.id] ?? null) : null}
             onPreview={setPreview}
             onPause={onPause}
             onEditPause={onEditPause}
             onResume={onResume}
             onStart={onStart}
             onStop={onStop}
+            onUpdateConnector={onUpdateConnector}
+            onRemoveConnector={onRemoveConnector}
           />
         ))}
       </div>
@@ -480,9 +551,12 @@ export function FleetSection({
             {globalPaused ? ' · global pause active' : ''}
           </p>
         </div>
-        <SecondaryButton onClick={onRefresh} disabled={refreshing} className="px-3 py-1.5 text-xs">
-          {refreshing ? 'Refreshing…' : 'Refresh fleet'}
-        </SecondaryButton>
+        <div className="flex flex-wrap items-center gap-2">
+          {headerActions}
+          <SecondaryButton onClick={onRefresh} disabled={refreshing} className="px-3 py-1.5 text-xs">
+            {refreshing ? 'Refreshing…' : 'Refresh fleet'}
+          </SecondaryButton>
+        </div>
       </div>
 
       {data !== null && error !== null && (

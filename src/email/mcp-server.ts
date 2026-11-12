@@ -3,9 +3,10 @@
  * Single account-aware email MCP server.
  *
  * One process serves every mailbox. Callers choose an account by id, name or
- * email address; omitting it uses the default account. The gateway key controls
- * whether this server is reachable at all, so accounts are shared by API keys
- * rather than by running one server per mailbox.
+ * email address; omitting it uses the default account. The gateway server grant
+ * decides whether a key can reach this server at all; the per-account decisions
+ * in `email_account_access` (applied here from the `_meta.key_id` the gateway
+ * sends with every call) decide which mailbox a key may use.
  *
  * Transport: newline-delimited JSON-RPC 2.0 over stdio (the gateway's native
  * stdio transport). The database is the gateway DB, shared with the Email tab.
@@ -13,11 +14,17 @@
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
 import { EmailService } from './service.js';
-import type { EmailMessage, EmailMessageSummary } from './types.js';
+import type { EmailAccountWithSecrets } from './store.js';
+import {
+  EmailAccountAccessStore,
+  checkEmailToolAccess,
+  lookupKeyType,
+} from './access-store.js';
 
 const DB_PATH = process.env.EMAIL_DB_PATH ?? '/data/gateway.db';
 const db = new DatabaseSync(DB_PATH);
 const service = new EmailService({ db });
+const accountAccess = new EmailAccountAccessStore(db);
 
 interface RpcRequest {
   jsonrpc?: string;
@@ -198,23 +205,64 @@ function accountArg(args: Record<string, unknown>): string {
   return stringArg(args, 'account', '') ?? '';
 }
 
-async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+/**
+ * Resolve the account a tool call will use and enforce per-account access.
+ *
+ * Resolution mirrors EmailService (explicit selector first, then the default
+ * account) so the account that is authorised is exactly the account that is
+ * used. The returned id is then passed down as the selector.
+ */
+function resolveAccount(args: Record<string, unknown>, context: CallContext): string {
+  const selector = accountArg(args);
+  const account: EmailAccountWithSecrets | null =
+    (selector === '' ? null : service.getAccount(selector)) ?? service.store.defaultAccount();
+  if (account === null) return selector;
+  const decision = checkEmailToolAccess(
+    accountAccess,
+    context.keyId,
+    context.keyType,
+    account.id,
+    account.name,
+  );
+  if (!decision.allowed) {
+    throw new Error(decision.detail ?? `Access denied: mailbox "${account.name}" is not permitted.`);
+  }
+  return account.id;
+}
+
+interface CallContext {
+  /** Gateway API key id from the JSON-RPC `_meta`; null for internal calls. */
+  keyId: string | null;
+  /** Gateway key type for that id; null when unknown or internal. */
+  keyType: string | null;
+}
+
+async function callTool(
+  name: string,
+  args: Record<string, unknown>,
+  context: CallContext,
+): Promise<unknown> {
   switch (name) {
-    case 'email_list_accounts':
-      return service.listAccounts();
+    case 'email_list_accounts': {
+      const accounts = service.listAccounts();
+      if (context.keyId === null || context.keyType === null || context.keyType === 'master') {
+        return accounts;
+      }
+      return accounts.filter((account) => accountAccess.isAllowed(context.keyId, account.id));
+    }
     case 'email_test_account':
-      return service.testAccount(accountArg(args));
+      return service.testAccount(resolveAccount(args, context));
     case 'email_list_folders':
-      return service.listFolders(accountArg(args));
+      return service.listFolders(resolveAccount(args, context));
     case 'email_list_messages':
-      return service.listMessages(accountArg(args), {
+      return service.listMessages(resolveAccount(args, context), {
         folder: stringArg(args, 'folder', 'INBOX'),
         limit: numberArg(args, 'limit') ?? 30,
         unreadOnly: args.unread_only === true,
         search: stringArg(args, 'search'),
       });
     case 'email_search':
-      return service.listMessages(accountArg(args), {
+      return service.listMessages(resolveAccount(args, context), {
         folder: stringArg(args, 'folder', 'INBOX'),
         limit: numberArg(args, 'limit') ?? 30,
         search: stringArg(args, 'query'),
@@ -222,32 +270,32 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
     case 'email_read_message': {
       const uid = numberArg(args, 'uid');
       if (uid === undefined) throw new Error('uid is required');
-      return service.readMessage(accountArg(args), uid, stringArg(args, 'folder', 'INBOX'));
+      return service.readMessage(resolveAccount(args, context), uid, stringArg(args, 'folder', 'INBOX'));
     }
     case 'email_mark_read': {
       const uid = numberArg(args, 'uid');
       if (uid === undefined) throw new Error('uid is required');
-      await service.markRead(accountArg(args), uid, args.read !== false, stringArg(args, 'folder', 'INBOX'));
+      await service.markRead(resolveAccount(args, context), uid, args.read !== false, stringArg(args, 'folder', 'INBOX'));
       return { ok: true };
     }
     case 'email_move': {
       const uid = numberArg(args, 'uid');
       const target = stringArg(args, 'target');
       if (uid === undefined || target === undefined) throw new Error('uid and target are required');
-      await service.moveMessage(accountArg(args), uid, stringArg(args, 'folder', 'INBOX') as string, target);
+      await service.moveMessage(resolveAccount(args, context), uid, stringArg(args, 'folder', 'INBOX') as string, target);
       return { ok: true };
     }
     case 'email_delete': {
       const uid = numberArg(args, 'uid');
       if (uid === undefined) throw new Error('uid is required');
-      await service.deleteMessage(accountArg(args), uid, stringArg(args, 'folder', 'INBOX'));
+      await service.deleteMessage(resolveAccount(args, context), uid, stringArg(args, 'folder', 'INBOX'));
       return { ok: true };
     }
     case 'email_send': {
       const to = stringArg(args, 'to');
       const subject = stringArg(args, 'subject');
       if (to === undefined || subject === undefined) throw new Error('to and subject are required');
-      return service.send(accountArg(args), {
+      return service.send(resolveAccount(args, context), {
         to,
         subject,
         cc: stringArg(args, 'cc'),
@@ -262,11 +310,12 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
       const uid = numberArg(args, 'uid');
       const text = stringArg(args, 'text');
       if (uid === undefined || text === undefined) throw new Error('uid and text are required');
-      const source = await service.readMessage(accountArg(args), uid, stringArg(args, 'folder', 'INBOX'));
+      const account = resolveAccount(args, context);
+      const source = await service.readMessage(account, uid, stringArg(args, 'folder', 'INBOX'));
       const replyTo = source.replyTo || source.from;
       const subject = source.subject.toLowerCase().startsWith('re:') ? source.subject : `Re: ${source.subject}`;
       const references = [...source.references, ...(source.messageId === null ? [] : [source.messageId])];
-      return service.send(accountArg(args), {
+      return service.send(account, {
         to: replyTo,
         cc: args.reply_all === true ? source.to : undefined,
         subject,
@@ -318,13 +367,21 @@ input.on('line', (line) => {
     return;
   }
   if (request.method === 'tools/call') {
-    const params = request.params as { name?: string; arguments?: Record<string, unknown> } | undefined;
+    const params = request.params as
+      | { name?: string; arguments?: Record<string, unknown>; _meta?: Record<string, unknown> }
+      | undefined;
     const name = params?.name;
     if (typeof name !== 'string') {
       replyError(request.id, -32602, 'tools/call requires a name');
       return;
     }
-    void callTool(name, params?.arguments ?? {})
+    const rawKeyId = params?._meta?.key_id;
+    const keyId = typeof rawKeyId === 'string' && rawKeyId.trim() !== '' ? rawKeyId.trim() : null;
+    const context: CallContext = {
+      keyId,
+      keyType: keyId === null ? null : lookupKeyType(db, keyId),
+    };
+    void callTool(name, params?.arguments ?? {}, context)
       .then((result) => reply(request.id, textContent(result)))
       .catch((error: unknown) => reply(request.id, errorContent(error)));
     return;

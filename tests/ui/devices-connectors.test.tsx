@@ -16,11 +16,19 @@ const { apiMock } = vi.hoisted(() => ({
     updateComputerUseConnector: vi.fn(),
     removeComputerUseConnector: vi.fn(),
     computerUseLiveDesktopUrl: vi.fn(),
+    computerUseFrameUrl: vi.fn(),
     listComputerUseVmHosts: vi.fn(),
     createComputerUseVmHost: vi.fn(),
     testComputerUseVmHost: vi.fn(),
     deleteComputerUseVmHost: vi.fn(),
     createComputerUseVm: vi.fn(),
+    getComputerUseOverview: vi.fn(),
+    getComputerUseActivity: vi.fn(),
+    setComputerUseAvailability: vi.fn(),
+    updateComputerUseSettings: vi.fn(),
+    syncComputerUse: vi.fn(),
+    startComputerUseComputer: vi.fn(),
+    stopComputerUseComputer: vi.fn(),
   },
 }));
 
@@ -31,7 +39,8 @@ vi.mock('../../src/ui/lib/api.js', async (importOriginal) => {
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ToastProvider } from '../../src/ui/components/Toasts.js';
-import { ConnectorsPage } from '../../src/ui/pages/connectors/ConnectorsPage.js';
+import { DevicesPage } from '../../src/ui/pages/devices/DevicesPage.js';
+import type { DevicesTab } from '../../src/ui/pages/devices/tabs.js';
 import type {
   ComputerUseAvailability,
   ComputerUseBrokerInfo,
@@ -42,6 +51,7 @@ import type {
   ComputerUseEnrollmentInfo,
   ComputerUseEnrollmentResponse,
   ComputerUseHostComputer,
+  ComputerUseOverview,
   ComputerUseStats,
   ComputerUseVmHostInfo,
 } from '../../src/core/types.js';
@@ -169,6 +179,41 @@ const availableAvailability: ComputerUseAvailability = {
   updatedAt: '2026-10-29T22:00:00.000Z',
   updatedBy: 'operator',
 };
+
+/** Overview payload the merged page fetches for availability/broker/server. */
+const pageOverview: ComputerUseOverview = {
+  settings: {
+    brokerUrl: 'https://127.0.0.1:7443',
+    publicBrokerUrl: 'https://broker.example.lan',
+    caFile: null,
+    tokenConfigured: true,
+    tokenSource: 'vault',
+    enabled: true,
+    updatedAt: '2026-10-29T21:00:00.000Z',
+  },
+  broker: brokerOnline,
+  availability: availableAvailability,
+  server: {
+    id: 'srv_computer_use',
+    name: 'computer-use',
+    status: 'running',
+    toolCount: 0,
+    lastError: null,
+  },
+  tools: [],
+  counts: { computers: 0, available: 0, paused: 0, ready: 0, connectorsOnline: 0 },
+};
+
+/** Which tab the current test renders; each describe overrides it. */
+let pageTab: DevicesTab = 'connectors';
+
+function renderPage(tab: DevicesTab = pageTab): void {
+  render(
+    <ToastProvider>
+      <DevicesPage initialTab={tab} />
+    </ToastProvider>,
+  );
+}
 
 function makeHostComputer(
   overrides: Partial<ComputerUseComputerInfo> & { id: string; name: string },
@@ -374,6 +419,18 @@ const vmHostTestResult = {
 };
 
 beforeEach(() => {
+  pageTab = 'connectors';
+  apiMock.getComputerUseOverview.mockResolvedValue(pageOverview);
+  apiMock.getComputerUseActivity.mockResolvedValue([]);
+  apiMock.setComputerUseAvailability.mockResolvedValue(pageOverview);
+  apiMock.updateComputerUseSettings.mockResolvedValue(pageOverview);
+  apiMock.syncComputerUse.mockResolvedValue(pageOverview);
+  apiMock.startComputerUseComputer.mockResolvedValue(studioComputer);
+  apiMock.stopComputerUseComputer.mockResolvedValue(studioComputer);
+  apiMock.computerUseFrameUrl.mockImplementation(
+    (computerId: string, maxWidth = 480) =>
+      `/mcp/v1/admin/computer-use/computers/${computerId}/frame?maxWidth=${maxWidth}`,
+  );
   apiMock.getComputerUseConnectors.mockResolvedValue(connectorsResponse);
   apiMock.createComputerUseEnrollment.mockResolvedValue(enrollmentResponse);
   apiMock.revokeComputerUseEnrollment.mockResolvedValue(true);
@@ -402,18 +459,13 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('Connectors page', () => {
+describe('Devices & computers — Connectors tab', () => {
   it('renders broker status, pending pairings and enrolled devices', async () => {
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
 
-    // Broker status card: configured + reachable + version + TLS.
-    expect(await screen.findByText('Broker status')).toBeTruthy();
-    expect(screen.getByText('1.4.0')).toBeTruthy();
-    expect(screen.getByText('https://127.0.0.1:7443')).toBeTruthy();
+    // Merged page shell + the Connectors tab's broker/public-URL context.
+    expect(await screen.findByText('Devices & computers')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Connectors' })).toBeTruthy();
     expect(screen.getByText('https://broker.example.lan')).toBeTruthy();
 
     // Pending pairing row with its kind + revoke action.
@@ -449,11 +501,7 @@ describe('Connectors page', () => {
       .mockResolvedValueOnce(connectorsResponse)
       .mockResolvedValue(connectedResponse);
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
     await screen.findByRole('article', { name: 'Connector alpha-pc' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Add Linux PC' }));
@@ -493,11 +541,7 @@ describe('Connectors page', () => {
   });
 
   it('revokes a pending pairing after confirmation', async () => {
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke pairing enr-001' }));
     const dialog = await screen.findByRole('dialog', { name: /Revoke pairing enr-001/ });
@@ -522,11 +566,7 @@ describe('Connectors page', () => {
         changed: true,
       });
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
 
     await screen.findByRole('article', { name: 'Connector alpha-pc' });
     fireEvent.click(screen.getByRole('button', { name: 'Open terminal on alpha-pc' }));
@@ -565,11 +605,7 @@ describe('Connectors page', () => {
   it('explains an unreachable broker and blocks pairing', async () => {
     apiMock.getComputerUseConnectors.mockResolvedValue(unreachableResponse);
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
 
     expect((await screen.findAllByText('Broker unreachable')).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('connect ECONNREFUSED 127.0.0.1:7443').length).toBeGreaterThanOrEqual(1);
@@ -583,17 +619,17 @@ describe('Connectors page', () => {
   });
 });
 
-describe('Connectors page — physical computers (v0.12)', () => {
-  it('lists host computers with live stats and hides container desktops', async () => {
+describe('Devices & computers — physical computers (v0.12)', () => {
+  beforeEach(() => {
+    pageTab = 'computers';
+  });
+
+  it('lists host computers with live stats alongside container desktops', async () => {
     apiMock.listComputerUseComputers.mockResolvedValue(hostFleet);
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
 
-    const card = await screen.findByRole('article', { name: 'Physical computer studio-pc' });
+    const card = await screen.findByRole('article', { name: 'Computer studio-pc' });
 
     // Compact stats strip: CPU / memory / disk / uptime.
     expect(await within(card).findByText('12%')).toBeTruthy();
@@ -602,13 +638,13 @@ describe('Connectors page — physical computers (v0.12)', () => {
     expect(within(card).getByText('2h 5m')).toBeTruthy();
     expect(within(card).getByText(/studio-pc\.local/)).toBeTruthy();
     expect(within(card).getByText(/10\.10\.1\.20/)).toBeTruthy();
-    expect(within(card).getByText('connector v1.0.0')).toBeTruthy();
+    expect(within(card).getByText('v1.0.0')).toBeTruthy();
 
-    // Remote-desktop host only: the container desktop is not listed here.
-    expect(screen.queryByText('Desktop Alpha')).toBeNull();
+    // One merged grid: container desktops are listed too, not filtered out.
+    expect(screen.getByText('Desktop Alpha')).toBeTruthy();
 
-    // Live desktop hand-off and connector lifecycle actions.
-    const liveLink = within(card).getByRole('link', { name: 'Open live desktop for studio-pc' });
+    // Live desktop hand-off and connector lifecycle actions on the same card.
+    const liveLink = within(card).getByRole('link', { name: /Open live desktop/ });
     expect(liveLink.getAttribute('href')).toBe(
       '/mcp/v1/admin/computer-use/computers/host-studio/live-desktop',
     );
@@ -620,12 +656,8 @@ describe('Connectors page — physical computers (v0.12)', () => {
   it('creates a physical computer and shows the one-line bash installer', async () => {
     apiMock.listComputerUseComputers.mockResolvedValue(hostFleet);
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
-    await screen.findByRole('article', { name: 'Physical computer studio-pc' });
+    renderPage();
+    await screen.findByRole('article', { name: 'Computer studio-pc' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Add physical computer' }));
     const dialog = await screen.findByRole('dialog', { name: 'Add physical computer' });
@@ -656,12 +688,8 @@ describe('Connectors page — physical computers (v0.12)', () => {
   it('updates a host connector after confirmation and shows the new version', async () => {
     apiMock.listComputerUseComputers.mockResolvedValue(hostFleet);
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
-    const card = await screen.findByRole('article', { name: 'Physical computer studio-pc' });
+    renderPage();
+    const card = await screen.findByRole('article', { name: 'Computer studio-pc' });
 
     fireEvent.click(within(card).getByRole('button', { name: 'Update connector on studio-pc' }));
     const dialog = await screen.findByRole('dialog', { name: /Update connector on studio-pc/ });
@@ -679,12 +707,8 @@ describe('Connectors page — physical computers (v0.12)', () => {
   it('removes a host connector and optionally the computer', async () => {
     apiMock.listComputerUseComputers.mockResolvedValue(hostFleet);
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
-    const card = await screen.findByRole('article', { name: 'Physical computer studio-pc' });
+    renderPage();
+    const card = await screen.findByRole('article', { name: 'Computer studio-pc' });
 
     fireEvent.click(within(card).getByRole('button', { name: 'Remove connector on studio-pc' }));
     const dialog = await screen.findByRole('dialog', { name: /Remove connector from studio-pc/ });
@@ -705,16 +729,16 @@ describe('Connectors page — physical computers (v0.12)', () => {
   });
 });
 
-describe('Connectors page — VM providers (v0.13)', () => {
+describe('Devices & computers — VM providers (v0.13)', () => {
+  beforeEach(() => {
+    pageTab = 'providers';
+  });
+
   it('lists providers with defaults, base readiness, VM counts and running-VM grouping', async () => {
     apiMock.listComputerUseVmHosts.mockResolvedValue([zuesVmHost, gpcVmHost]);
     apiMock.listComputerUseComputers.mockResolvedValue(vmFleet);
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
 
     const zuesCard = await screen.findByRole('article', { name: 'VM provider zues' });
     const gpcCard = screen.getByRole('article', { name: 'VM provider gpc' });
@@ -746,29 +770,27 @@ describe('Connectors page — VM providers (v0.13)', () => {
     expect(within(summary).getAllByText('zues').length).toBeGreaterThanOrEqual(1);
     expect(within(summary).getAllByText('gpc').length).toBeGreaterThanOrEqual(1);
 
-    // Header counts and the link to the Computer Use fleet.
+    // Header counts and the in-page jump to the Computers tab.
     expect(screen.getByText('2 providers')).toBeTruthy();
     expect(screen.getByText('2 running VMs')).toBeTruthy();
-    expect(screen.getByRole('link', { name: /Open Computer Use/ }).getAttribute('href')).toBe(
-      '#/computer-use',
-    );
 
     // VM live-desktop hand-off URLs are wired per VM.
     const vmLive = within(zuesCard).getByRole('link', { name: 'Open live desktop for zues-vm-1' });
     expect(vmLive.getAttribute('href')).toBe(
       '/mcp/v1/admin/computer-use/computers/comp-vm-zues-1/live-desktop',
     );
+
+    // The old cross-page link is now a tab switch inside the merged page.
+    fireEvent.click(screen.getByRole('button', { name: /View computers/ }));
+    expect(await screen.findByText('Available to agents')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Computers/ }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('deploys a VM with the provider defaults prefilled and refreshes the fleet', async () => {
     apiMock.listComputerUseVmHosts.mockResolvedValue([zuesVmHost, gpcVmHost]);
     apiMock.listComputerUseComputers.mockResolvedValue(vmFleet);
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
 
     const zuesCard = await screen.findByRole('article', { name: 'VM provider zues' });
     fireEvent.click(within(zuesCard).getByRole('button', { name: 'Deploy VM on zues' }));
@@ -804,11 +826,7 @@ describe('Connectors page — VM providers (v0.13)', () => {
     apiMock.listComputerUseVmHosts.mockResolvedValue([zuesVmHost]);
     apiMock.listComputerUseComputers.mockResolvedValue(vmFleet);
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
 
     const zuesCard = await screen.findByRole('article', { name: 'VM provider zues' });
     fireEvent.click(within(zuesCard).getByRole('button', { name: 'Test provider zues' }));
@@ -827,11 +845,7 @@ describe('Connectors page — VM providers (v0.13)', () => {
     // Only zues hosts a VM; gpc is empty and therefore deletable.
     apiMock.listComputerUseComputers.mockResolvedValue({ ...vmFleet, computers: [zuesVmOne] });
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
 
     const zuesCard = await screen.findByRole('article', { name: 'VM provider zues' });
     const gpcCard = screen.getByRole('article', { name: 'VM provider gpc' });
@@ -867,11 +881,7 @@ describe('Connectors page — VM providers (v0.13)', () => {
       test: { ok: true, kvm: true },
     });
 
-    render(
-      <ToastProvider>
-        <ConnectorsPage />
-      </ToastProvider>,
-    );
+    renderPage();
     await screen.findByRole('article', { name: 'VM provider zues' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Add VM provider' }));

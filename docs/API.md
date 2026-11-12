@@ -206,6 +206,11 @@ responses use the standard envelope above. Response types are declared in the
 `v0.9 — computer use` block of `src/core/types.ts`; the feature guide, availability
 semantics, tool catalogue and runbook are in [`COMPUTER-USE.md`](./COMPUTER-USE.md).
 
+> These routes did not change when the console pages were merged: the operator surface is now
+> the **Devices & computers** page (`#/devices`), with fleet/availability on the **Computers**
+> tab, connectors on the **Connectors** tab and the managed server/tools/activity on the
+> **Agent access** tab.
+
 | Method | Route | Body | Result |
 |---|---|---|---|
 | `GET` | `/` | — | `ComputerUseOverview` (settings, broker health, availability, managed server, tools, counts) |
@@ -271,11 +276,12 @@ GET /mcp/v1/admin/computer-use/activity?limit=50
 
 ## 7. Connector onboarding & terminal (v0.10)
 
-The console gains a **Connectors** page for onboarding physical Linux PCs as Computer Broker
-device connectors. It lists enrolled devices (online/offline, hostname/platform/capabilities)
-and pending pairings, and its **Add Linux PC** wizard mints a single-use enrollment plus a
-one-line install command. Terminal sessions to a connected device are opened, driven and read
-through the gateway, which proxies them server-side.
+The console's **Connectors** tab (on the **Devices & computers** page, `#/devices?tab=connectors`)
+onboards physical Linux PCs as Computer Broker device connectors. It lists enrolled devices
+(online/offline, hostname/platform/capabilities) and pending pairings, and its **Add Linux PC**
+wizard mints a single-use enrollment plus a one-line install command. Terminal sessions to a
+connected device are opened, driven and read through the gateway, which proxies them
+server-side.
 
 All routes are mounted under `/mcp/v1/admin/computer-use/connectors` and are **master-only**
 (Bearer master key or an authenticated console session). The broker bearer token stays in the
@@ -319,7 +325,8 @@ POST /mcp/v1/admin/computer-use/connectors/enrollments
 
 `kind` is `"device"` (default) or `"computer"`; `name` defaults to `linux-pc`. `ttlSeconds`
 is clamped to 60–86400 (default 3600; the console wizard offers 15–1440 minutes). Creating an
-enrollment requires a **public broker URL** to be configured in Computer-use settings, because
+enrollment requires a **public broker URL** to be configured in the broker settings
+(**Devices & computers → Broker settings**), because
 the new machine must be able to reach it — without one the request fails with an explanatory
 error. `GET /` is also the polling source for the wizard: it reports the same
 `publicBrokerUrl` and the current pending `enrollments`, so the console can detect the new
@@ -365,8 +372,9 @@ keeps the computer row in `offline` state so it can be re-paired to the same rec
 
 ### VM providers (v0.13)
 
-Master-only console APIs for the gateway Connectors page; all are proxied to the broker and use
-the same `ComputerUseVmHostInfo`/`ComputerUseComputerInfo` shapes.
+Master-only console APIs for the **VM providers** tab of the **Devices & computers** page; all
+are proxied to the broker and use the same `ComputerUseVmHostInfo`/`ComputerUseComputerInfo`
+shapes.
 
 | Method | Route | Body | Result |
 |---|---|---|---|
