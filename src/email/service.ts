@@ -66,6 +66,12 @@ const NO_REPLY_SENDER = /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|
 
 const collapse = (value: string): string => value.replace(/\s+/gu, ' ').trim();
 
+/** The bare address out of `Name <addr>`, so a display name cannot hide a no-reply sender. */
+function bareAddress(value: string): string {
+  const angled = /<([^>]+)>/u.exec(value);
+  return (angled?.[1] ?? value).trim().toLowerCase();
+}
+
 /** Strip tags from an HTML body so a preview never carries markup into a model's input. */
 function fromHtml(html: string): string {
   return collapse(
@@ -81,7 +87,7 @@ function fromHtml(html: string): string {
   );
 }
 
-interface PreviewRead {
+export interface PreviewRead {
   preview: string;
   listUnsubscribe: boolean;
   automated: boolean;
@@ -94,28 +100,38 @@ interface PreviewRead {
  * cut mid-encoding: the subject is then the preview. A preview is advisory —
  * the real body is only read when a reply is actually drafted.
  */
-async function readPreview(source: Buffer | undefined, subject: string, from: string): Promise<PreviewRead> {
+export async function readPreview(source: Buffer | undefined, subject: string, from: string): Promise<PreviewRead> {
   const fallback: PreviewRead = {
     preview: collapse(subject).slice(0, PREVIEW_TEXT_MAX),
     listUnsubscribe: false,
-    automated: NO_REPLY_SENDER.test(from.trim().toLowerCase()),
+    automated: NO_REPLY_SENDER.test(bareAddress(from)),
   };
   if (source === undefined || source.length === 0) return fallback;
   try {
     const parsed = await simpleParser(source, { skipHtmlToText: false, skipTextToHtml: true });
     const text = collapse(parsed.text ?? '') || fromHtml(parsed.html || '');
+    // mailparser turns some headers (List-Unsubscribe, References) into objects
+    // or arrays of objects, so presence must be read without assuming a string.
     const header = (name: string): string => {
       const value = parsed.headers.get(name);
       if (value === undefined || value === null) return '';
       if (typeof value === 'string') return value.toLowerCase();
-      if (Array.isArray(value)) return value.join(' ').toLowerCase();
-      return '';
+      if (Array.isArray(value)) return value.map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry))).join(' ').toLowerCase();
+      return JSON.stringify(value).toLowerCase();
     };
+    // mailparser normalises `List-Unsubscribe` into the `list` header, whose
+    // `unsubscribe` entry is the offer itself; the raw name is checked too.
+    const listHeader = parsed.headers.get('list');
+    const listUnsubscribe =
+      header('list-unsubscribe').length > 0 ||
+      (typeof listHeader === 'object' &&
+        listHeader !== null &&
+        'unsubscribe' in (listHeader as unknown as Record<string, unknown>));
     const precedence = header('precedence');
     const autoSubmitted = header('auto-submitted');
     return {
       preview: (text || fallback.preview).slice(0, PREVIEW_TEXT_MAX),
-      listUnsubscribe: header('list-unsubscribe').length > 0,
+      listUnsubscribe,
       automated:
         fallback.automated ||
         (autoSubmitted !== '' && autoSubmitted !== 'no') ||
