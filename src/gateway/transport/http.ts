@@ -28,6 +28,28 @@ interface JsonRpcEnvelope {
   error?: { code: number; message: string; data?: unknown };
 }
 
+interface JsonRpcRequestPayload {
+  jsonrpc: '2.0';
+  id: number;
+  method: string;
+  params: unknown;
+}
+
+/** Raised when the remote rejected a session-bound request because it expired. */
+class SessionExpiredError extends GatewayError {
+  constructor(
+    readonly staleSessionId: string,
+    method: string,
+  ) {
+    super(
+      ErrorCodes.UPSTREAM_ERROR,
+      `Remote MCP session expired before '${method}' was dispatched`,
+      { data: { status: 'UPSTREAM_ERROR', reason: 'SESSION_EXPIRED' } },
+    );
+    this.name = 'SessionExpiredError';
+  }
+}
+
 /**
  * MCP client for remote servers exposed over HTTP (Streamable HTTP transport).
  * Supports JSON and SSE-encoded responses and session-id propagation.
@@ -36,6 +58,7 @@ export class HttpMcpClient implements McpClient {
   readonly serverId: string;
   private sessionId: string | null = null;
   private nextId = 1;
+  private recovery: Promise<void> | null = null;
   private readonly logger: Logger;
   private serverInfo: { name: string; version: string } = { name: 'unknown', version: '0.0.0' };
 
@@ -45,11 +68,7 @@ export class HttpMcpClient implements McpClient {
   }
 
   async initialize(): Promise<McpInitializeResult> {
-    const result = await this.request<McpInitializeResult>('initialize', {
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: {},
-      clientInfo: this.options.clientInfo ?? { name: 'mcp-gateway', version: '0.14.2' },
-    });
+    const result = await this.request<McpInitializeResult>('initialize', this.initializeParams());
     this.serverInfo = result?.serverInfo ?? this.serverInfo;
     this.notify('notifications/initialized', {});
     return {
@@ -57,6 +76,14 @@ export class HttpMcpClient implements McpClient {
       serverInfo: this.serverInfo,
       capabilities: result?.capabilities ?? {},
       instructions: typeof result?.instructions === 'string' ? result.instructions : null,
+    };
+  }
+
+  private initializeParams(): Record<string, unknown> {
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: this.options.clientInfo ?? { name: 'mcp-gateway', version: '0.14.2' },
     };
   }
 
@@ -179,16 +206,67 @@ export class HttpMcpClient implements McpClient {
   }
 
   private async request<T>(method: string, params: unknown, timeoutMs?: number): Promise<T> {
-    const id = this.nextId++;
-    const response = await this.post({ jsonrpc: '2.0', id, method, params }, timeoutMs);
-    const session = response.headers.get('mcp-session-id');
-    if (session) this.sessionId = session;
+    // While a recovery handshake is running the client has no session id, so a
+    // request sent now would be rejected as sessionless and could never be
+    // retried. Serialize callers behind the handshake instead: they then go out
+    // on the fresh session. Concurrent expiries still share one handshake via
+    // `recoverSession`.
+    await this.awaitRecovery();
+    const payload: JsonRpcRequestPayload = { jsonrpc: '2.0', id: this.nextId++, method, params };
+    try {
+      return await this.send<T>(payload, method, timeoutMs);
+    } catch (error) {
+      if (!(error instanceof SessionExpiredError)) throw error;
+      this.logger.warn('remote MCP session expired; re-initializing', {
+        serverId: this.serverId,
+        method,
+      });
+      await this.recoverSession(error.staleSessionId);
+      try {
+        return await this.send<T>(payload, method, timeoutMs);
+      } catch (retryError) {
+        if (retryError instanceof SessionExpiredError) {
+          throw new GatewayError(
+            ErrorCodes.UPSTREAM_ERROR,
+            `Remote MCP session expired during '${method}' and the new session was rejected as well`,
+            { data: { status: 'UPSTREAM_ERROR', reason: 'SESSION_EXPIRED' } },
+          );
+        }
+        throw retryError;
+      }
+    }
+  }
+
+  private async send<T>(
+    payload: JsonRpcRequestPayload,
+    method: string,
+    timeoutMs?: number,
+  ): Promise<T> {
+    const sentSessionId = this.sessionId;
+    const response = await this.post(payload, timeoutMs);
 
     if (!response.ok) {
-      throw new GatewayError(ErrorCodes.UPSTREAM_ERROR, `Remote MCP server returned HTTP ${response.status}`, {
-        data: { status: 'UPSTREAM_ERROR', reason: method, details: response.status },
-      });
+      const envelope = await this.parseEnvelope(response);
+      if (sentSessionId !== null && isExpiredSessionResponse(response.status, envelope)) {
+        // Remotes validate `mcp-session-id` before dispatching the message, so a
+        // 404 here proves the upstream tool did not run. Re-sending it after a
+        // fresh handshake therefore cannot duplicate a write.
+        throw new SessionExpiredError(sentSessionId, method);
+      }
+      const upstreamMessage = envelope?.error?.message;
+      throw new GatewayError(
+        ErrorCodes.UPSTREAM_ERROR,
+        upstreamMessage
+          ? `Remote MCP server returned HTTP ${response.status}: ${upstreamMessage}`
+          : `Remote MCP server returned HTTP ${response.status}`,
+        {
+          data: { status: 'UPSTREAM_ERROR', reason: method, details: response.status },
+        },
+      );
     }
+
+    const session = response.headers.get('mcp-session-id');
+    if (session) this.sessionId = session;
 
     const envelope = await this.parseEnvelope(response);
     if (!envelope) {
@@ -200,6 +278,60 @@ export class HttpMcpClient implements McpClient {
       });
     }
     return envelope.result as T;
+  }
+
+  /**
+   * Wait until no recovery handshake is in flight.
+   *
+   * `recoverSession` clears `sessionId` before the handshake and only restores
+   * it on success, so a caller must not send during that window. The loop also
+   * covers a retry that starts a second recovery just as the first settles.
+   * A failed handshake propagates to the waiting caller rather than being
+   * retried silently.
+   */
+  private async awaitRecovery(): Promise<void> {
+    while (this.recovery) {
+      await this.recovery;
+    }
+  }
+
+  /**
+   * Re-establish the Streamable HTTP session after the remote drops it.
+   *
+   * One handshake at a time: concurrent callers that saw the same expiry await
+   * the same recovery instead of each opening a session. A caller whose stale
+   * observation was already superseded returns immediately.
+   */
+  private recoverSession(staleSessionId: string): Promise<void> {
+    if (this.recovery) return this.recovery;
+    this.recovery = (async () => {
+      if (this.sessionId !== staleSessionId) return;
+      this.sessionId = null;
+      const payload: JsonRpcRequestPayload = {
+        jsonrpc: '2.0',
+        id: this.nextId++,
+        method: 'initialize',
+        params: this.initializeParams(),
+      };
+      const result = await this.send<McpInitializeResult>(payload, 'initialize');
+      this.serverInfo = result?.serverInfo ?? this.serverInfo;
+      await this.sendInitialized();
+      this.logger.info('remote MCP session re-established', { serverId: this.serverId });
+    })().finally(() => {
+      this.recovery = null;
+    });
+    return this.recovery;
+  }
+
+  private async sendInitialized(): Promise<void> {
+    try {
+      await this.post({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+    } catch (error) {
+      this.logger.debug('initialized notification failed after session recovery', {
+        serverId: this.serverId,
+        error: String(error),
+      });
+    }
   }
 
   private async parseEnvelope(response: Response): Promise<JsonRpcEnvelope | null> {
@@ -227,6 +359,21 @@ export class HttpMcpClient implements McpClient {
       return null;
     }
   }
+}
+
+/**
+ * True when a session-bound request was rejected because the remote no longer
+ * knows that session. `mcp-proxy` answers with HTTP 404 and
+ * `{"error":{"code":-32001,"message":"Session not found"}}`; the MCP spec
+ * requires a new `initialize` in that case.
+ */
+function isExpiredSessionResponse(status: number, envelope: JsonRpcEnvelope | null): boolean {
+  if (status !== 404) return false;
+  const error = envelope?.error;
+  if (!error) return true;
+  if (error.code === -32001) return true;
+  const message = error.message ?? '';
+  return /session/i.test(message) && /(not found|expired|invalid|unknown|terminated|closed)/i.test(message);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
