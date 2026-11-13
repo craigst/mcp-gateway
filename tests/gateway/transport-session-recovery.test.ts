@@ -33,6 +33,8 @@ class SessionFixture {
   dropSessionsAfterInitialize = false;
   /** Tools that answer HTTP 500 instead of a JSON-RPC result. */
   failingTools = new Set<string>();
+  /** Hold the initialize response open, so callers can arrive mid-handshake. */
+  initializeDelayMs = 0;
 
   private server = createServer((req, res) => this.handle(req, res));
   url = '';
@@ -68,11 +70,17 @@ class SessionFixture {
         const sessionId = `session-${this.initializeCount}`;
         this.sessions.add(sessionId);
         if (this.dropSessionsAfterInitialize) this.sessions.delete(sessionId);
-        this.json(res, 200, message.id, {
-          protocolVersion: '2025-06-18',
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: 'session-fixture', version: '1.0.0' },
-        }, sessionId);
+        const respond = (): void =>
+          this.json(res, 200, message.id, {
+            protocolVersion: '2025-06-18',
+            capabilities: { tools: { listChanged: false } },
+            serverInfo: { name: 'session-fixture', version: '1.0.0' },
+          }, sessionId);
+        if (this.initializeDelayMs > 0) {
+          setTimeout(respond, this.initializeDelayMs);
+        } else {
+          respond();
+        }
         return;
       }
       if (message.method === 'notifications/initialized') {
@@ -243,6 +251,50 @@ describe('HttpMcpClient expired-session recovery', () => {
       client.callTool('echo', { text: 'two' }),
       client.callTool('echo', { text: 'three' }),
     ]);
+
+    expect(results).toHaveLength(3);
+    expect(fixture.initializeCount).toBe(2);
+    expect(fixture.calls.map((call) => call.args.text)).toEqual(['one', 'two', 'three']);
+  });
+
+  it('waits for an in-flight recovery instead of sending a sessionless request', async () => {
+    const { fixture, client } = await startFixture();
+    await client.initialize();
+
+    fixture.expireAll();
+    fixture.initializeDelayMs = 150;
+
+    // The first call observes the expiry and starts the recovery handshake.
+    const first = client.callTool('echo', { text: 'one' });
+    // A second call arrives while the handshake is still open: the client has no
+    // session id at this point, so sending now would be rejected with a 404 that
+    // is not retried.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const second = client.callTool('echo', { text: 'two' });
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult.content).toEqual([{ type: 'text', text: 'ok:echo' }]);
+    expect(secondResult.content).toEqual([{ type: 'text', text: 'ok:echo' }]);
+    expect(fixture.initializeCount).toBe(2);
+    expect(fixture.calls.map((call) => call.args.text)).toEqual(['one', 'two']);
+  });
+
+  it('retries a call that is rejected while another recovery is completing', async () => {
+    const { fixture, client } = await startFixture();
+    await client.initialize();
+
+    fixture.expireAll();
+    fixture.initializeDelayMs = 120;
+
+    const first = client.callTool('echo', { text: 'one' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // This call also races the expiry before the handshake finishes; it must
+    // join the same recovery and still succeed exactly once.
+    const second = client.callTool('echo', { text: 'two' });
+    const third = client.callTool('echo', { text: 'three' });
+
+    const results = await Promise.all([first, second, third]);
 
     expect(results).toHaveLength(3);
     expect(fixture.initializeCount).toBe(2);

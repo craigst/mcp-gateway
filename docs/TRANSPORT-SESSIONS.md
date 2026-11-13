@@ -16,7 +16,10 @@ session, not a tool failure:
 1. It opens a fresh session with `initialize` and `notifications/initialized`.
 2. It replays the rejected request exactly once.
 3. Concurrent calls share one recovery handshake instead of opening a session each.
-4. If the new session is rejected too, the call fails with `UPSTREAM_ERROR`
+4. Calls that arrive while that handshake is in flight wait for it before sending,
+   because the client has no session id in that window and a sessionless request
+   would be rejected without being retried.
+5. If the new session is rejected too, the call fails with `UPSTREAM_ERROR`
    (`reason: SESSION_EXPIRED`) instead of retrying in a loop.
 
 Replay is safe for writes: the remote validates `mcp-session-id` before dispatching

@@ -206,6 +206,12 @@ export class HttpMcpClient implements McpClient {
   }
 
   private async request<T>(method: string, params: unknown, timeoutMs?: number): Promise<T> {
+    // While a recovery handshake is running the client has no session id, so a
+    // request sent now would be rejected as sessionless and could never be
+    // retried. Serialize callers behind the handshake instead: they then go out
+    // on the fresh session. Concurrent expiries still share one handshake via
+    // `recoverSession`.
+    await this.awaitRecovery();
     const payload: JsonRpcRequestPayload = { jsonrpc: '2.0', id: this.nextId++, method, params };
     try {
       return await this.send<T>(payload, method, timeoutMs);
@@ -272,6 +278,21 @@ export class HttpMcpClient implements McpClient {
       });
     }
     return envelope.result as T;
+  }
+
+  /**
+   * Wait until no recovery handshake is in flight.
+   *
+   * `recoverSession` clears `sessionId` before the handshake and only restores
+   * it on success, so a caller must not send during that window. The loop also
+   * covers a retry that starts a second recovery just as the first settles.
+   * A failed handshake propagates to the waiting caller rather than being
+   * retried silently.
+   */
+  private async awaitRecovery(): Promise<void> {
+    while (this.recovery) {
+      await this.recovery;
+    }
   }
 
   /**
