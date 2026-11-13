@@ -131,7 +131,7 @@ console.log(`here tools: ${hereTools.map((t) => t.name).join(', ')}\n`);
 let id = 10;
 let pass = 0;
 let fail = 0;
-for (const [name, args, expectOk = true] of calls) {
+for (const [name, args] of calls) {
   const t0 = performance.now();
   let line;
   try {
