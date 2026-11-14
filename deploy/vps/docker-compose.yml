@@ -9,16 +9,16 @@
 # extra_hosts; see docs/FULL-MIGRATION.md "WireGuard restored; fallback retired".
 services:
   gateway:
-    # Tag matches the version inside the image (0.15.6, per /mcp/v1/health and
-    # package.json). 0.15.6 merges CodeX's 0.15.0 console refresh (Overview /
+    # Tag matches the version inside the image (0.15.7, per /mcp/v1/health and
+    # package.json). 0.15.7 merges CodeX's 0.15.0 console refresh (Overview /
     # Servers / API keys & access / Activity / Approvals navigation, the
     # light-dark switch, page transitions, no agents/delegate) onto the
     # 0.15.1-0.15.4 email line (per-mailbox triage, Jev, reversible filing,
-    # triage report). 0.15.6 moves the YouTube and X watcher sources out of the
+    # triage report). 0.15.7 moves the YouTube and X watcher sources out of the
     # in-container hand patches and into the build, so the console shows their
-    # settings. Bump package.json before re-tagging; never reuse an old
+    # settings; 0.15.7 makes CodeX's light theme legible (tonal badges/panels). Bump package.json before re-tagging; never reuse an old
     # mislabelled tag.
-    image: localhost/mcp-gateway:${MCP_IMAGE_TAG:-0.15.6}
+    image: localhost/mcp-gateway:${MCP_IMAGE_TAG:-0.15.7}
     container_name: mcp-gateway
     restart: unless-stopped
     env_file:

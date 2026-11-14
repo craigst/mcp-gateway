@@ -83,8 +83,32 @@ html.light {
   --color-sky-300: #4338ca;
   --color-sky-400: #4338ca;
   --color-emerald-300: #047857;
+  --color-emerald-400: #047857;
   --color-amber-300: #a16207;
   --color-rose-300: #be123c;
+  --color-rose-400: #be123c;
+  --color-indigo-300: #3730a3;
+  --color-indigo-400: #3730a3;
+
+  /* Tonal fills for badges and status panels. In the dark theme the 800/900/950
+     shades are near-black, so on a light surface a success/ warning/ danger pill
+     rendered dark-on-dark and its label disappeared. Flip them to pale fills with
+     the (now dark) 300-level text on top. */
+  --color-emerald-800: #a7dfc5;
+  --color-emerald-900: #cdeadb;
+  --color-emerald-950: #e7f7ef;
+  --color-amber-800: #ecd39b;
+  --color-amber-900: #f6e8c3;
+  --color-amber-950: #fdf6e3;
+  --color-rose-800: #f0b3bc;
+  --color-rose-900: #f8d7dc;
+  --color-rose-950: #fdeef0;
+  --color-sky-800: #b3cdf4;
+  --color-sky-900: #d3e2fa;
+  --color-sky-950: #eaf1fd;
+  --color-indigo-800: #c3cbf8;
+  --color-indigo-900: #dce2fd;
+  --color-indigo-950: #edf0fe;
 }
 .page-enter { animation: page-enter 180ms ease-out; }
 @keyframes page-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
