@@ -16,3 +16,10 @@ docs
 README.md
 SECURITY.md
 CONTRIBUTING.md
+# Local-only scratch that must never enter a build context: the HERE HGV
+# checkout has its own repo, backups/ holds pre-change API-key exports and the
+# test scratch dirs are regenerated.
+here-hgv-mcp
+backups
+.test-data
+.sidebar-evidence
