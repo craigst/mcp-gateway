@@ -101,6 +101,21 @@ only: `data/`, `gateway.env`, `certs/` and the compose network are unchanged, so
 keys, servers, grants, watchers and mailbox access survive. Full detail:
 `docs/RELEASE-0.15.5.md`.
 
+**0.15.6 (deployed 2026-11-14).** Ports the YouTube and X watcher sources out of
+`/opt/mcp-gateway/patches` and into the build. 0.15.5 renamed the UI bundle from
+`index-DDgyg_Gk.js` to `index-DHQHCZag.js`, so `ui.patched.js` kept being copied
+to a filename nothing served: the API had `youtube`/`x` and the console had no
+settings card for either. After 0.15.6 is healthy, disable
+`mcp-gateway-patches.timer` — the patch marker now matches the image, and a timer
+that can re-copy a 0.15.4-era bundle into a future image is a landmine. See
+`docs/RELEASE-0.15.6.md` and `docs/WATCHER-SETTINGS.md`.
+
+**Deploy ordering trap.** `mcp-gateway-patches.timer` runs every 2 minutes and
+restarts the container whenever it has to re-apply a patch, which happens on
+every recreate. Run `systemctl start mcp-gateway-patches.service` (or confirm the
+image needs no patch) immediately after `docker compose up -d`, or the first
+couple of minutes of the new release can answer 502 while the container bounces.
+
 ## WireGuard restored, fallback retired (2026-11-05)
 
 WireGuard is healthy again (handshake < 60 s; gpc `10.10.254.49` and cleo

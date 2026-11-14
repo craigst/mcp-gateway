@@ -56,6 +56,71 @@ const COPY: Record<WatcherSource, Copy> = {
     manualPlaceholder: 'Add by ig:<username>',
     contactKinds: 'usernames and DM threads',
   },
+  youtube: {
+    title: 'YouTube → Remy',
+    subtitle:
+      'Choose which YouTube activity is pushed to Remy. Comments stay as drafts for your confirmation.',
+    allTitle: 'All watched activity',
+    allDescription: 'Every new upload, Short and comment from the watched channels is pushed to Remy.',
+    searchPlaceholder: 'Search channel or @handle…',
+    manualPlaceholder: 'Add by yt:<channelId>',
+    contactKinds: 'channels and handles',
+  },
+  x: {
+    title: 'X → Remy',
+    subtitle:
+      'Choose which X posts, replies and quotes are pushed to Remy. Replies stay as drafts for your confirmation.',
+    allTitle: 'All watched activity',
+    allDescription: 'Every new post, reply and quote from the watched accounts is pushed to Remy.',
+    searchPlaceholder: 'Search name or @handle…',
+    manualPlaceholder: 'Add by x:<handle>',
+    contactKinds: 'accounts and handles',
+  },
+};
+
+/** A per-class auto-like toggle for the platforms that are not Instagram. */
+interface AutoLikeClass {
+  key: 'videos' | 'shorts' | 'comments' | 'replies' | 'mentions' | 'posts' | 'quotes';
+  label: string;
+  hint: string;
+}
+
+/**
+ * YouTube and X each have their own likeable classes (an X reply *is* a post; a
+ * Short is not a video), so they get one generic block driven by this list
+ * instead of Instagram's bespoke one.
+ */
+const AUTO_LIKE_EXTRA: Partial<
+  Record<
+    WatcherSource,
+    { title: string; description: string; placeholder: string; classes: readonly AutoLikeClass[] }
+  >
+> = {
+  youtube: {
+    title: 'Auto-like (YouTube)',
+    description:
+      'Likes happen automatically only when you enable them. Remy never posts comments or replies on its own — those stay as drafts for your confirmation.',
+    placeholder: 'livecleo',
+    classes: [
+      { key: 'videos', label: 'New videos', hint: 'Likes a new upload from the watched channels.' },
+      { key: 'shorts', label: 'New Shorts', hint: 'Likes a new Short from the watched channels.' },
+      { key: 'comments', label: 'New comments', hint: "Likes new comments on a watched channel's video." },
+      { key: 'replies', label: 'New replies', hint: 'Likes new replies to a watched comment.' },
+      { key: 'mentions', label: 'Comments that mention me', hint: 'Likes a comment that mentions your account.' },
+    ],
+  },
+  x: {
+    title: 'Auto-like (X)',
+    description:
+      'An X reply is itself a post, so the classes below are posts, replies, quotes and mentions. Remy never posts or replies on its own — those stay drafts.',
+    placeholder: 'LiveCleoPatra',
+    classes: [
+      { key: 'posts', label: 'New posts', hint: 'Likes a new post from the watched accounts.' },
+      { key: 'replies', label: 'New replies', hint: 'Likes a new reply from the watched accounts.' },
+      { key: 'quotes', label: 'Quote posts', hint: 'Likes a quote-post of a watched account.' },
+      { key: 'mentions', label: 'Posts that mention me', hint: 'Likes a post that tags your account.' },
+    ],
+  },
 };
 
 function formFromOverview(overview: WatcherOverview): FormState {
@@ -82,6 +147,7 @@ function contactLabel(contact: WatcherContact | undefined, key: string): string 
  */
 export function WatcherCard({ source }: { source: WatcherSource }) {
   const copy = COPY[source];
+  const extra = AUTO_LIKE_EXTRA[source];
   const toast = useToast();
   const watcher = useAsyncData(() => api.getWatcher(source), [source]);
   const [form, setForm] = useState<FormState>({
@@ -490,6 +556,66 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
                   </p>
                 </div>
               )}
+            </div>
+          )}
+
+          {extra !== undefined && (
+            <div className="rounded-xl border border-sky-900/50 bg-sky-950/10 p-3.5">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold text-slate-100">{extra.title}</p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">{extra.description}</p>
+                </div>
+                <Badge tone="success">LIKES ONLY</Badge>
+              </div>
+
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                {extra.classes.map((item) => (
+                  <label
+                    key={item.key}
+                    className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2.5 transition hover:border-slate-700"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.autoLike[item.key] ?? false}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          autoLike: { ...current.autoLike, [item.key]: event.target.checked },
+                        }))
+                      }
+                      className="mt-0.5 h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 accent-emerald-500"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-xs font-medium text-slate-200">{item.label}</span>
+                      <span className="mt-0.5 block text-[10px] leading-relaxed text-slate-500">{item.hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              <div className="mt-3">
+                <p className="mb-1 text-[11px] font-medium text-slate-300">Watched handles</p>
+                <TextInput
+                  value={form.autoLike.cleoAccounts.join(', ')}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      autoLike: {
+                        ...current.autoLike,
+                        cleoAccounts: event.target.value
+                          .split(',')
+                          .map((handle) => handle.trim().replace(/^@/u, ''))
+                          .filter((handle) => handle !== ''),
+                      },
+                    }))
+                  }
+                  placeholder={extra.placeholder}
+                />
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Comma-separated. Only likes are ever sent — replies stay drafts you confirm.
+                </p>
+              </div>
             </div>
           )}
 

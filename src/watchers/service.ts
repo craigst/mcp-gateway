@@ -23,7 +23,7 @@ import type {
   WatcherSource,
 } from '../core/types.js';
 
-const SOURCES: readonly WatcherSource[] = ['whatsapp', 'instagram'];
+const SOURCES: readonly WatcherSource[] = ['whatsapp', 'instagram', 'youtube', 'x'];
 const MAX_SELECTED = 500;
 const MAX_CONTACTS = 2000;
 const MAX_KEY_LENGTH = 128;
@@ -37,6 +37,41 @@ const DEFAULT_AUTO_LIKE: WatcherAutoLike = {
   selectedAccounts: false,
   cleoAccounts: ['livecleo', 'livecleotv'],
 };
+
+/**
+ * YouTube has different things worth liking than an Instagram feed, so it gets
+ * its own defaults: each class is independently toggleable for fine tuning.
+ */
+const DEFAULT_AUTO_LIKE_YOUTUBE: WatcherAutoLike = {
+  cleoAccounts: ['livecleo'],
+  videos: true,
+  shorts: true,
+  comments: true,
+  replies: true,
+  mentions: true,
+};
+
+/**
+ * X has no separate "comment" object — a reply IS a post — so the likeable
+ * classes are posts, replies, quotes and mentions, each toggled separately.
+ */
+const DEFAULT_AUTO_LIKE_X: WatcherAutoLike = {
+  // Her YouTube/Instagram handle is 'livecleo'; on X it is 'LiveCleoPatra'.
+  cleoAccounts: ['LiveCleoPatra'],
+  // Mentions only by default: the operator does not want every post of hers
+  // liked, only the posts that tag him. Each class stays independently switchable.
+  posts: false,
+  replies: false,
+  quotes: false,
+  mentions: true,
+};
+
+/** The auto-like default row for a source. */
+function autoLikeDefaults(source: WatcherSource): WatcherAutoLike {
+  if (source === 'youtube') return DEFAULT_AUTO_LIKE_YOUTUBE;
+  if (source === 'x') return DEFAULT_AUTO_LIKE_X;
+  return DEFAULT_AUTO_LIKE;
+}
 
 const DEFAULT_SETTINGS: WatcherSettings = {
   enabled: true,
@@ -57,8 +92,10 @@ interface ContactsRecord {
 const DEFAULT_CONTACTS: ContactsRecord = { contacts: [], updatedAt: null };
 
 export function parseWatcherSource(raw: unknown): WatcherSource {
-  if (raw === 'whatsapp' || raw === 'instagram') return raw;
-  throw invalidParams(`Unknown watcher source “${String(raw)}”. Expected whatsapp or instagram.`);
+  if (raw === 'whatsapp' || raw === 'instagram' || raw === 'youtube' || raw === 'x') return raw;
+  throw invalidParams(
+    `Unknown watcher source “${String(raw)}”. Expected whatsapp, instagram, youtube or x.`,
+  );
 }
 
 function settingsKey(source: WatcherSource): string {
@@ -81,15 +118,19 @@ function cleanKey(raw: unknown): string {
   return key;
 }
 
-function normalizeAutoLike(raw: unknown, fallback: WatcherAutoLike): WatcherAutoLike {
+function normalizeAutoLike(
+  raw: unknown,
+  fallback: WatcherAutoLike,
+  source: WatcherSource = 'instagram',
+): WatcherAutoLike {
   if (raw === undefined || raw === null) return { ...fallback, cleoAccounts: [...fallback.cleoAccounts] };
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw invalidParams('autoLike must be an object.');
   }
   const value = raw as Record<string, unknown>;
-  const bool = (key: keyof WatcherAutoLike, from: boolean): boolean => {
+  const bool = (key: keyof WatcherAutoLike, from: boolean | undefined): boolean => {
     const candidate = value[key];
-    if (candidate === undefined) return from;
+    if (candidate === undefined) return from ?? false;
     if (typeof candidate !== 'boolean') throw invalidParams(`autoLike.${key} must be true or false.`);
     return candidate;
   };
@@ -107,6 +148,25 @@ function normalizeAutoLike(raw: unknown, fallback: WatcherAutoLike): WatcherAuto
       }
       if (!accounts.includes(handle)) accounts.push(handle);
     }
+  }
+  if (source === 'x') {
+    return {
+      cleoAccounts: accounts,
+      posts: bool('posts', fallback.posts),
+      replies: bool('replies', fallback.replies),
+      quotes: bool('quotes', fallback.quotes),
+      mentions: bool('mentions', fallback.mentions),
+    };
+  }
+  if (source === 'youtube') {
+    return {
+      cleoAccounts: accounts,
+      videos: bool('videos', fallback.videos),
+      shorts: bool('shorts', fallback.shorts),
+      comments: bool('comments', fallback.comments),
+      replies: bool('replies', fallback.replies),
+      mentions: bool('mentions', fallback.mentions),
+    };
   }
   return {
     cleoPosts: bool('cleoPosts', fallback.cleoPosts),
@@ -165,7 +225,7 @@ export class WatcherService {
       // These invariants hold even if an older row said otherwise.
       autoReply: false,
       draftOnly: true,
-      autoLike: normalizeAutoLike((saved as Partial<WatcherSettings>).autoLike, DEFAULT_AUTO_LIKE),
+      autoLike: normalizeAutoLike((saved as Partial<WatcherSettings>).autoLike, autoLikeDefaults(source), source),
       selected: Array.isArray(saved.selected) ? saved.selected.map(String) : [],
     };
   }
@@ -213,7 +273,7 @@ export class WatcherService {
     }
     const selected = [...new Set(input.selected.map(cleanKey))];
     const existing = this.getSettings(source);
-    const autoLike = normalizeAutoLike(input.autoLike, existing.autoLike);
+    const autoLike = normalizeAutoLike(input.autoLike, existing.autoLike, source);
     const settings: WatcherSettings = {
       enabled: input.enabled,
       mode,

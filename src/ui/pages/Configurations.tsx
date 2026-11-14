@@ -76,7 +76,7 @@ export function ConfigurationsPage({ onNavigate }: ConfigurationsPageProps) {
     }
   };
 
-  const scrollToWatcher = (source: 'whatsapp' | 'instagram'): void => {
+  const scrollToWatcher = (source: 'whatsapp' | 'instagram' | 'youtube' | 'x'): void => {
     document.getElementById(`watcher-${source}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
@@ -97,6 +97,12 @@ export function ConfigurationsPage({ onNavigate }: ConfigurationsPageProps) {
           <SecondaryButton onClick={() => scrollToWatcher('instagram')} className="px-2 py-1 text-xs">
             Instagram settings
           </SecondaryButton>
+          <SecondaryButton onClick={() => scrollToWatcher('youtube')} className="px-2 py-1 text-xs">
+            YouTube settings
+          </SecondaryButton>
+          <SecondaryButton onClick={() => scrollToWatcher('x')} className="px-2 py-1 text-xs">
+            X settings
+          </SecondaryButton>
         </div>
       </div>
       <div id="watcher-whatsapp" className="scroll-mt-4">
@@ -105,6 +111,12 @@ export function ConfigurationsPage({ onNavigate }: ConfigurationsPageProps) {
       <div id="watcher-instagram" className="scroll-mt-4 space-y-4">
         <WatcherCard source="instagram" />
         <InstagramSessionCard />
+      </div>
+      <div id="watcher-youtube" className="scroll-mt-4">
+        <WatcherCard source="youtube" />
+      </div>
+      <div id="watcher-x" className="scroll-mt-4">
+        <WatcherCard source="x" />
       </div>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">

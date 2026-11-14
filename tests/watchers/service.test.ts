@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 
-import { WatcherService } from '../../src/watchers/service.js';
+import { WatcherService, parseWatcherSource } from '../../src/watchers/service.js';
 
 function service(): WatcherService {
   const db = new DatabaseSync(':memory:');
@@ -111,5 +111,63 @@ describe('WatcherService', () => {
     expect(() =>
       watcher.syncContacts('instagram', [{ key: 'bad key', name: 'x', phone: null, kind: 'person' }]),
     ).toThrow(/unsupported characters/);
+  });
+
+  it('gives YouTube and X their own auto-like defaults', () => {
+    const watcher = service();
+    expect(watcher.getSettings('youtube').autoLike).toEqual({
+      cleoAccounts: ['livecleo'],
+      videos: true,
+      shorts: true,
+      comments: true,
+      replies: true,
+      mentions: true,
+    });
+    expect(watcher.getSettings('x').autoLike).toEqual({
+      cleoAccounts: ['LiveCleoPatra'],
+      posts: false,
+      replies: false,
+      quotes: false,
+      mentions: true,
+    });
+  });
+
+  it('persists YouTube and X auto-like classes without leaking into Instagram', () => {
+    const watcher = service();
+    const saved = watcher.update(
+      'x',
+      {
+        enabled: true,
+        mode: 'all',
+        selected: [],
+        autoLike: { posts: true, replies: false, quotes: true, mentions: false, cleoAccounts: ['@LiveCleoPatra'] },
+      },
+      'craig',
+    );
+    expect(saved.settings.autoLike).toEqual({
+      cleoAccounts: ['LiveCleoPatra'],
+      posts: true,
+      replies: false,
+      quotes: true,
+      mentions: false,
+    });
+    // Instagram keeps its own classes, and X classes never appear on it.
+    expect(watcher.getSettings('instagram').autoLike.cleoPosts).toBe(true);
+    expect(watcher.getSettings('instagram').autoLike).not.toHaveProperty('posts');
+
+    const youtube = watcher.update(
+      'youtube',
+      { enabled: false, mode: 'selected', selected: ['yt:livecleo'], autoLike: { videos: false, shorts: true, cleoAccounts: ['livecleo'] } },
+      'craig',
+    );
+    expect(youtube.settings.enabled).toBe(false);
+    expect(youtube.settings.autoLike).toMatchObject({ videos: false, shorts: true, comments: true });
+    expect(youtube.settings.autoLike).not.toHaveProperty('cleoPosts');
+  });
+
+  it('accepts youtube and x as watcher sources and names them in the error', () => {
+    expect(parseWatcherSource('youtube')).toBe('youtube');
+    expect(parseWatcherSource('x')).toBe('x');
+    expect(() => parseWatcherSource('tiktok')).toThrow(/whatsapp, instagram, youtube or x/);
   });
 });

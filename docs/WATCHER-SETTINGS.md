@@ -1,11 +1,18 @@
-# Social watcher settings — WhatsApp and Instagram → Remy
+# Social watcher settings — WhatsApp, Instagram, YouTube and X → Remy
 
-Status: **implemented and deployed (gateway 0.14.2, 2026-11-02).**
+Status: **implemented and deployed (gateway 0.15.6, 2026-11-14).**
 
 The Configurations page has a **Push to Remy** heading with quick links at the top, then one card per source:
 
 - **WhatsApp → Remy**
 - **Instagram → Remy**
+- **YouTube → Remy**
+- **X → Remy**
+
+YouTube and X were originally carried as hand patches inside the running
+container (see `patches/README.md` on the VPS). 0.15.6 moves them into the
+source, so they survive an image upgrade instead of being re-copied into a
+container that a recreate would wipe.
 
 Each card controls what is pushed to Remy, with the same two scopes and the
 same locked draft-only behaviour.
@@ -21,8 +28,23 @@ same locked draft-only behaviour.
 | **Auto-reply** | Locked **OFF**. The API refuses `autoReply: true` (HTTP 400). Remy drafts and waits for confirmation. |
 
 Settings are stored per source in the gateway's `settings` table
-(`watcher:whatsapp:*`, `watcher:instagram:*`) and are separate — changing one
-source never changes the other.
+(`watcher:whatsapp:*`, `watcher:instagram:*`, `watcher:youtube:*`,
+`watcher:x:*`) and are separate — changing one source never changes the other.
+
+### Auto-like classes per source
+
+Each platform's likeable classes are its own, and each class has its own
+switch:
+
+| Source | Classes | Default `cleoAccounts` |
+|---|---|---|
+| Instagram | `cleoPosts`, `cleoStories`, `cleoPostComments`, `selectedAccounts`, `mentions` | `livecleo`, `livecleotv` |
+| YouTube | `videos`, `shorts`, `comments`, `replies`, `mentions` | `livecleo` |
+| X | `posts`, `replies`, `quotes`, `mentions` | `LiveCleoPatra` |
+
+X only likes **mentions** by default (the operator wants the posts that tag him,
+not every post of hers); every class stays independently switchable, and
+auto-reply stays impossible everywhere.
 
 ### Group filtering (fixed 2026-11-06)
 
@@ -45,6 +67,8 @@ The watcher processes on cleo poll the gateway over the WireGuard address every
 ```
 GET  http://10.10.1.4:8484/mcp/v1/watcher/whatsapp/settings
 GET  http://10.10.1.4:8484/mcp/v1/watcher/instagram/settings
+GET  http://10.10.1.4:8484/mcp/v1/watcher/youtube/settings
+GET  http://10.10.1.4:8484/mcp/v1/watcher/x/settings
 POST /mcp/v1/watcher/{source}/contacts        (catalog sync, every 5 minutes)
 ```
 
@@ -77,6 +101,10 @@ GET  /mcp/v1/admin/watchers/whatsapp
 POST /mcp/v1/admin/watchers/whatsapp
 GET  /mcp/v1/admin/watchers/instagram
 POST /mcp/v1/admin/watchers/instagram
+GET  /mcp/v1/admin/watchers/youtube
+POST /mcp/v1/admin/watchers/youtube
+GET  /mcp/v1/admin/watchers/x
+POST /mcp/v1/admin/watchers/x
 ```
 
 GET returns `{settings, contacts, contactsUpdatedAt}`; POST accepts

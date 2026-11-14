@@ -1393,10 +1393,10 @@ export interface ComputerUseVmComputerCreateInput {
 }
 
 // ---------------------------------------------------------------------------
-// Social watchers (WhatsApp / Instagram push-to-bot settings)
+// Social watchers (WhatsApp / Instagram / YouTube / X push-to-bot settings)
 // ---------------------------------------------------------------------------
 
-export type WatcherSource = 'whatsapp' | 'instagram';
+export type WatcherSource = 'whatsapp' | 'instagram' | 'youtube' | 'x';
 export type WatcherMode = 'all' | 'selected';
 
 /** One selectable contact in a watcher's synced catalog. */
@@ -1408,18 +1408,42 @@ export interface WatcherContact {
   kind: 'person' | 'group';
 }
 
+/**
+ * Auto-like classes per source. The interactive classes differ by platform, so
+ * this is one superset: every source stores its own classes and its own default
+ * row (`DEFAULT_AUTO_LIKE`, `DEFAULT_AUTO_LIKE_YOUTUBE`, `DEFAULT_AUTO_LIKE_X`
+ * in the watcher service), and a class a source does not have is simply absent.
+ *
+ * - Instagram/WhatsApp: `cleoPosts`, `cleoStories`, `cleoPostComments`,
+ *   `selectedAccounts`
+ * - YouTube: `videos`, `shorts`, `comments`
+ * - X: `posts`, `quotes` (a reply on X *is* a post, so `replies` covers it)
+ * - Every source: `mentions`, `replies`, `cleoAccounts`
+ */
 export interface WatcherAutoLike {
-  /** Like a new post from any configured Cleo account. */
-  cleoPosts: boolean;
-  /** Like every active story from a configured Cleo account. */
-  cleoStories: boolean;
-  /** Like a new comment that mentions the logged-in account. */
-  mentions: boolean;
-  /** Like new comments on Cleo's posts (excluding Cleo's own / self). */
-  cleoPostComments: boolean;
-  /** Like new posts from the Instagram selected-contact allowlist. */
-  selectedAccounts: boolean;
-  /** Cleo accounts whose posts/comments are watched. */
+  /** Instagram: like a new post from any configured Cleo account. */
+  cleoPosts?: boolean;
+  /** Instagram: like every active story from a configured Cleo account. */
+  cleoStories?: boolean;
+  /** Like a new comment/post/reply that mentions the logged-in account. */
+  mentions?: boolean;
+  /** Instagram: like new comments on Cleo's posts (never Cleo's own). */
+  cleoPostComments?: boolean;
+  /** Instagram: like new posts from the selected-contact allowlist. */
+  selectedAccounts?: boolean;
+  /** YouTube: like a new video from a watched channel. */
+  videos?: boolean;
+  /** YouTube: like a new Short from a watched channel. */
+  shorts?: boolean;
+  /** YouTube: like a new comment on a watched channel's video. */
+  comments?: boolean;
+  /** YouTube/X: like a new reply to a watched account. */
+  replies?: boolean;
+  /** X: like a new post from a watched account. */
+  posts?: boolean;
+  /** X: like a quote-post of a watched account. */
+  quotes?: boolean;
+  /** Cleo accounts whose content is watched (per-source default handle). */
   cleoAccounts: string[];
 }
 
