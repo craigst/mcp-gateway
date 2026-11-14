@@ -193,9 +193,6 @@ export function KeyDetail({ keyRecord: key, onClose, onChanged }: KeyDetailProps
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Flags</p>
                   <div className="mt-0.5 flex flex-wrap gap-1">
-                    <Badge tone={key.delegationAllowed ? 'success' : 'neutral'}>
-                      delegate {key.delegationAllowed ? 'on' : 'off'}
-                    </Badge>
                     <Badge tone={key.escalationAllowed ? 'info' : 'neutral'}>
                       escalate {key.escalationAllowed ? 'on' : 'off'}
                     </Badge>

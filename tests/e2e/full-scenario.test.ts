@@ -219,39 +219,11 @@ describe('end-to-end: vault → git import → catalog → delegation', () => {
     (globalThis as Record<string, unknown>).__e2eAgentKey = agentKey;
   });
 
-  it('delegates to a remote observer harness and records the trace', async () => {
+  it('rejects the removed delegation method without contacting the observer', async () => {
     const agentKey = (globalThis as Record<string, unknown>).__e2eAgentKey as string;
-    const delegated = await rpc(agentKey, 'agents/delegate', {
-      targetId: 'observer-bot',
-      payload: { action: 'deploy', target: 'staging' },
-      mode: 'observe_and_verify',
-    });
-
-    expect(delegated.body.result.status).toBe('approved');
-    expect(delegated.body.result.verdict).toBe('payload looks safe');
-    expect(delegated.body.result.approval_token).toBe('apr_e2e_token');
-    expect(delegated.body.result.depth).toBe(1);
-
-    expect(observer.requests.length).toBeGreaterThan(0);
-    const forwarded = observer.requests[0] as { headers: Record<string, string>; body: any };
-    expect(forwarded.headers['x-mcp-delegation-depth']).toBe('1');
-    expect(forwarded.body.payload).toEqual({ action: 'deploy', target: 'staging' });
-
-    const traces = await admin('GET', '/delegations');
-    expect(traces.body.traces.length).toBeGreaterThan(0);
-    expect(traces.body.traces[0]).toEqual(expect.objectContaining({ target: 'observer-bot', status: 'approved' }));
-  });
-
-  it('hard-caps delegation recursion at depth 3', async () => {
-    const agentKey = (globalThis as Record<string, unknown>).__e2eAgentKey as string;
-    const blocked = await rpc(
-      agentKey,
-      'agents/delegate',
-      { targetId: 'observer-bot', payload: { loop: true } },
-      { 'x-mcp-delegation-depth': '3' },
-    );
-    expect(blocked.body.error.code).toBe(-32003);
-    expect(blocked.body.error.data.reason).toBe('DELEGATION_DEPTH_EXCEEDED');
+    const response = await rpc(agentKey, 'agents/delegate', { targetId: 'observer-bot' });
+    expect(response.body.error.code).toBe(-32601);
+    expect(observer.requests).toHaveLength(0);
   });
 
   it('creates an escalation ticket an agent can request explicitly', async () => {
@@ -268,7 +240,7 @@ describe('end-to-end: vault → git import → catalog → delegation', () => {
     expect(listed.body.escalations.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('has a complete audit trail across discovery, execution, denial and delegation', async () => {
+  it('has a complete audit trail across discovery, execution and denial', async () => {
     const audit = await admin('GET', '/audit?limit=200');
     const methods = (audit.body.entries as Array<{ method: string }>).map((entry) => entry.method);
     expect(methods).toEqual(

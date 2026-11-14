@@ -67,3 +67,25 @@
     scrollbar-width: thin;
   }
 }
+
+/* Map the existing console palette onto light surfaces across all pages. */
+html.light {
+  color-scheme: light;
+  --color-slate-950: #f7f8fd;
+  --color-slate-900: #ffffff;
+  --color-slate-800: #e3e7f2;
+  --color-slate-700: #cbd3e4;
+  --color-slate-500: #64748b;
+  --color-slate-400: #52627b;
+  --color-slate-300: #394960;
+  --color-slate-200: #26344d;
+  --color-slate-100: #16223c;
+  --color-sky-300: #4338ca;
+  --color-sky-400: #4338ca;
+  --color-emerald-300: #047857;
+  --color-amber-300: #a16207;
+  --color-rose-300: #be123c;
+}
+.page-enter { animation: page-enter 180ms ease-out; }
+@keyframes page-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .page-enter { animation: none; } }

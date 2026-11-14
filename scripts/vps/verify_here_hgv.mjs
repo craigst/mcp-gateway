@@ -89,7 +89,7 @@ const O = '53.4808,-2.2426'; // Manchester
 const D = '53.8008,-1.5491'; // Leeds
 
 const calls = [
-  ['here_api_health', {}, false],
+  ['here_api_health', {}],
   ['here_geocode', { q: 'Trafford Park, Manchester', limit: 1 }],
   ['here_reverse_geocode', { latitude: 53.4808, longitude: -2.2426, limit: 1 }],
   ['here_search_places', { at: O, q: 'fuel station', limit: 2 }],
@@ -131,7 +131,7 @@ console.log(`here tools: ${hereTools.map((t) => t.name).join(', ')}\n`);
 let id = 10;
 let pass = 0;
 let fail = 0;
-for (const [name, args, expectOk = true] of calls) {
+for (const [name, args] of calls) {
   const t0 = performance.now();
   let line;
   try {

@@ -277,6 +277,15 @@ describe('Key detail drawer', () => {
     });
   });
 
+  it('grants a newly discovered tool while preserving other access settings', async () => {
+    await openAccessTab();
+    const toolRow = (await screen.findByText('other')).closest('li') as HTMLElement;
+    fireEvent.click(within(toolRow).getByRole('checkbox', { name: 'Grant tool' }));
+    await waitFor(() => expect(apiMock.updateKey).toHaveBeenCalledWith('key_agent', {
+      serverGrants: [{ ...agentKey.serverGrants[0], tools: ['echo', 'danger', 'other'] }],
+    }));
+  });
+
   it('pauses a single granted tool via pausedTools and leaves other grants intact', async () => {
     await openAccessTab();
 

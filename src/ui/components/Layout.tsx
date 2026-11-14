@@ -28,11 +28,11 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: readonly NavItem[] = [
-  { key: 'dashboard', label: 'Dashboard', icon: '◔', description: 'Live telemetry, request rate and error budget.' },
+  { key: 'dashboard', label: 'Overview', icon: '◔', description: 'Your gateway at a glance.' },
   { key: 'email', label: 'Email', icon: '✉', description: 'Read, search, compose and manage every connected mailbox from one account-aware client.' },
   {
     key: 'catalog',
-    label: 'Catalog',
+    label: 'Servers',
     icon: '▤',
     description: 'Browse private catalogs, install servers and import local harnesses.',
   },
@@ -44,7 +44,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   },
   {
     key: 'connectors',
-    label: 'Connectors',
+    label: 'Devices & connectors',
     icon: '⌁',
     description: 'Onboard Linux PCs, pair device connectors and open interactive terminals.',
   },
@@ -60,10 +60,10 @@ export const NAV_ITEMS: readonly NavItem[] = [
     icon: '◈',
     description: 'Password-manager items, Vault Warden approvals and built-in vault secrets.',
   },
-  { key: 'rbac', label: 'RBAC', icon: '⬡', description: 'Scoped API keys and per-tool access policy.' },
+  { key: 'rbac', label: 'API keys & access', icon: '⬡', description: 'Scoped API keys and per-tool access policy.' },
   { key: 'vault', label: 'Vault', icon: '▣', description: 'Encrypted secrets injected into sub-server environments.' },
-  { key: 'audit', label: 'Audit', icon: '≡', description: 'Forensic search across JSON-RPC calls and denials.' },
-  { key: 'delegation', label: 'Delegation', icon: '⇄', description: 'Sub-agent traces and escalation approval queue.' },
+  { key: 'audit', label: 'Activity', icon: '≡', description: 'Forensic search across JSON-RPC calls and denials.' },
+  { key: 'delegation', label: 'Approvals', icon: '⇄', description: 'Review protected actions and access requests.' },
   { key: 'playground', label: 'Playground', icon: '⌘', description: 'Send signed JSON-RPC payloads and inspect latency.' },
   {
     key: 'settings',
@@ -94,6 +94,15 @@ export interface LayoutProps {
 /** Console shell: sidebar navigation, gateway health, signed-in operator. */
 export function Layout({ current, onNavigate, user, onSignOut, signingOut = false, children }: LayoutProps) {
   const [connection, setConnection] = useState<ConnectionState>('checking');
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try { return localStorage.getItem('gateway-theme') === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
+  });
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('light', theme === 'light');
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    try { localStorage.setItem('gateway-theme', theme); } catch { /* Storage may be unavailable. */ }
+  }, [theme]);
   const active: NavItem = NAV_ITEMS.find((item) => item.key === current) ?? {
     key: 'server',
     label: 'Server inspector',
@@ -168,7 +177,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
           {NAV_ITEMS.map((item) => navButton(item, false))}
         </nav>
         <div className="shrink-0 space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
-          <p>v0.14.2 · MCP 2025-06-18</p>
+          <p>v0.15.0 · MCP 2025-06-18</p>
           <div className="rounded-lg border border-slate-800 px-2.5 py-2">
             <div className="flex items-center gap-2">
               <span
@@ -202,6 +211,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
               <p className="hidden text-xs text-slate-400 sm:block">{active?.description ?? ''}</p>
             </div>
             <div className="flex items-center gap-2">
+              <button type="button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800">{theme === 'dark' ? '☀ Light' : '☾ Dark'}</button>
               <span
                 className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-slate-300"
                 title="Gateway health probe (/mcp/v1/health)"
@@ -241,7 +251,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
           </nav>
         </header>
 
-        <main className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8">{children}</main>
+        <main key={current} className="page-enter min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8">{children}</main>
       </div>
 
     </div>

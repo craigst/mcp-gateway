@@ -96,7 +96,6 @@ describe('PLAYGROUND_METHODS', () => {
         'tools/search',
         'tools/call',
         'servers/list_permitted',
-        'agents/delegate',
         'escalations/request',
       ]),
     );

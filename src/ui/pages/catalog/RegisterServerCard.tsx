@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api, formatApiError } from '../../lib/api.js';
-import { Field, PrimaryButton, Select, TextArea, TextInput, CheckboxField } from '../../components/Form.js';
+import { Field, PrimaryButton, Select, TextArea, TextInput } from '../../components/Form.js';
 import { Notice } from '../../components/States.js';
 import { useToast } from '../../components/Toasts.js';
 import { parseEnvJson, splitList } from './shared.js';
@@ -164,11 +164,6 @@ export function RegisterServerCard({ onRegistered }: RegisterServerCardProps) {
             placeholder='{"GITHUB_PAT_TOKEN": "GITHUB_PAT"}'
           />
         </Field>
-        <CheckboxField
-          label="Delegation supported (expose this sub-server to sub-agent delegation)"
-          checked={form.delegationSupported}
-          onChange={(checked) => update('delegationSupported', checked)}
-        />
         {error !== null && <Notice tone="error" onDismiss={() => setError(null)}>{error}</Notice>}
         <PrimaryButton onClick={() => void submit()} disabled={busy}>
           {busy ? 'Registering…' : 'Register server'}

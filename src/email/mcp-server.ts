@@ -13,7 +13,6 @@
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
 import { EmailService } from './service.js';
-import type { EmailMessage, EmailMessageSummary } from './types.js';
 
 const DB_PATH = process.env.EMAIL_DB_PATH ?? '/data/gateway.db';
 const db = new DatabaseSync(DB_PATH);

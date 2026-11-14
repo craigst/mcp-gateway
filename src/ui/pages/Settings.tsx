@@ -167,7 +167,6 @@ export function SettingsPage({ username, onNavigate, onReturnToLogin }: Settings
               </span>
             ),
           ],
-          ['Delegation max depth', settingsInfo.delegationMaxDepth],
           ['Autostart servers', settingsInfo.autostart],
           ['Log level', settingsInfo.logLevel],
           ['Users', `${formatNumber(settingsInfo.userCount)} · ${formatNumber(settingsInfo.sessionCount)} active session(s)`],
