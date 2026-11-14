@@ -123,7 +123,7 @@ describe('WatcherApi email triage', () => {
   let role: string;
   let keyName: string;
   let jev: { configured: boolean; judge: ReturnType<typeof vi.fn> };
-  let fileMessage: ReturnType<typeof vi.fn> = vi.fn();
+  const fileMessage: ReturnType<typeof vi.fn> = vi.fn();
   let recorded: Array<{ method: string; payload?: unknown }>;
 
   const api = (): WatcherApi =>

@@ -58,8 +58,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-slate-400">
-          Live snapshot from <code className="text-slate-300">/mcp/v1/metrics</code>
-          {data ? ` · bound ${formatTimestamp(new Date())}` : ''}
+          Your gateway at a glance
+          {data ? ` · updated ${formatTimestamp(new Date())}` : ''}
         </p>
         <button type="button" onClick={refresh} className={buttonSecondary}>
           Refresh
@@ -103,74 +103,15 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           value={data ? formatBytes(data.process.rssBytes) : '—'}
           hint={data ? `heap ${formatBytes(data.process.heapUsedBytes)}` : undefined}
         />
-        <StatTile
-          label="Delegations"
-          value={data ? formatNumber(data.delegations.total) : '—'}
-          hint={data ? `${data.delegations.approved} approved · ${data.delegations.denied} denied` : undefined}
-          tone={data && data.delegations.denied > 0 ? 'warning' : 'default'}
-        />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card
-          title="Request mix"
-          subtitle={data ? `${formatNumber(totalRequests)} JSON-RPC requests processed` : 'Awaiting metrics'}
-        >
-          {metrics.status === 'loading' && <LoadingState label="Loading metrics…" />}
-          {metrics.status === 'error' && <ErrorState message={metrics.error} onRetry={metrics.reload} />}
-          {data && (
-            <div className="space-y-3">
-              {requestBars.map((bar) => {
-                const percent = totalRequests > 0 ? (bar.value / totalRequests) * 100 : 0;
-                return (
-                  <div key={bar.label}>
-                    <div className="mb-1 flex items-center justify-between text-xs">
-                      <span className="font-medium text-slate-300">{bar.label}</span>
-                      <span className="tabular-nums text-slate-400">
-                        {formatNumber(bar.value)} · {percent.toFixed(1)}%
-                      </span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-                      <div className={`h-full rounded-full ${bar.className}`} style={{ width: `${percent}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Card>
-
-        <Card title="Latency percentiles" subtitle="Gateway + sub-server round trip">
-          {data ? (
-            <div className="space-y-3">
-              {latencyBars.map((bar) => (
-                <div key={bar.label}>
-                  <div className="mb-1 flex items-center justify-between text-xs">
-                    <span className="font-medium text-slate-300">{bar.label}</span>
-                    <span className="tabular-nums text-slate-400">{formatDuration(bar.value)}</span>
-                  </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-                    <div
-                      className="h-full rounded-full bg-sky-500"
-                      style={{ width: `${(bar.value / maxLatency) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <LoadingState label="Loading latency…" />
-          )}
-        </Card>
       </div>
 
       <Card
-        title="Sub-server status"
+        title="Servers"
         subtitle={`${runningCount} running · ${serverList.length} registered`}
         actions={
           onNavigate !== undefined ? (
             <button type="button" onClick={() => onNavigate('catalog')} className={buttonSecondary}>
-              Manage catalog
+              Manage servers
             </button>
           ) : undefined
         }
@@ -240,6 +181,61 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             />
           ))}
       </Card>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card
+          title="Request mix"
+          subtitle={data ? `${formatNumber(totalRequests)} JSON-RPC requests processed` : 'Awaiting metrics'}
+        >
+          {metrics.status === 'loading' && <LoadingState label="Loading metrics…" />}
+          {metrics.status === 'error' && <ErrorState message={metrics.error} onRetry={metrics.reload} />}
+          {data && (
+            <div className="space-y-3">
+              {requestBars.map((bar) => {
+                const percent = totalRequests > 0 ? (bar.value / totalRequests) * 100 : 0;
+                return (
+                  <div key={bar.label}>
+                    <div className="mb-1 flex items-center justify-between text-xs">
+                      <span className="font-medium text-slate-300">{bar.label}</span>
+                      <span className="tabular-nums text-slate-400">
+                        {formatNumber(bar.value)} · {percent.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                      <div className={`h-full rounded-full ${bar.className}`} style={{ width: `${percent}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+
+        <Card title="Latency percentiles" subtitle="Gateway + sub-server round trip">
+          {data ? (
+            <div className="space-y-3">
+              {latencyBars.map((bar) => (
+                <div key={bar.label}>
+                  <div className="mb-1 flex items-center justify-between text-xs">
+                    <span className="font-medium text-slate-300">{bar.label}</span>
+                    <span className="tabular-nums text-slate-400">{formatDuration(bar.value)}</span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                    <div
+                      className="h-full rounded-full bg-sky-500"
+                      style={{ width: `${(bar.value / maxLatency) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <LoadingState label="Loading latency…" />
+          )}
+        </Card>
+      </div>
+
+
     </div>
   );
 }

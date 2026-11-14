@@ -38,6 +38,7 @@ interface RpcToolItem {
   description?: string;
   server_id: string;
   tool_id?: string;
+  upstream_name?: string;
 }
 
 interface RpcToolList {
@@ -49,6 +50,7 @@ interface CreateFormState {
   name: string;
   keyType: KeyType;
   expiresHours: string;
+  toolLimit: string;
   delegationAllowed: boolean;
   escalationAllowed: boolean;
 }
@@ -70,6 +72,7 @@ const EMPTY_FORM: CreateFormState = {
   name: '',
   keyType: 'agent',
   expiresHours: '',
+  toolLimit: '',
   delegationAllowed: false,
   escalationAllowed: true,
 };
@@ -110,7 +113,7 @@ function buildGrantsFromSelection(matrix: ScopeRow[], selection: Record<string, 
       .map((cell) => cell.toolName);
     grants.push({
       serverId: row.serverId,
-      tools: chosenTools.length === normalCells.length ? null : chosenTools,
+      tools: chosenTools,
       highPrivilegeTools,
     });
   }
@@ -165,7 +168,7 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
     tools.status === 'ready'
       ? (tools.data.tools ?? []).map((tool) => ({
           id: tool.tool_id ?? `${tool.server_id}:${tool.name}`,
-          name: tool.name,
+          name: tool.upstream_name ?? tool.name,
           serverId: tool.server_id,
         }))
       : [];
@@ -217,6 +220,13 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
       escalationAllowed: form.escalationAllowed,
       expiresInSeconds,
     });
+    if (form.keyType === 'master' && form.toolLimit.trim() !== '') nextErrors.serverGrants = 'Master keys have unrestricted tool access; use an agent key for a tool limit.';
+    else if (form.toolLimit.trim() !== '') {
+      const limit = Number(form.toolLimit);
+      const selectedCount = grants.reduce((sum, grant) => sum + (grant.tools?.length ?? 0) + (grant.highPrivilegeTools?.length ?? 0), 0);
+      if (!Number.isSafeInteger(limit) || limit < 0) nextErrors.serverGrants = 'Tool limit must be a non-negative whole number.';
+      else if (selectedCount > limit) nextErrors.serverGrants = `Selected ${selectedCount} tools, exceeding the limit of ${limit}.`;
+    }
     setErrors(nextErrors);
     if (hasFormErrors(nextErrors)) return;
 
@@ -434,9 +444,6 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
                   header: 'Flags',
                   render: (key) => (
                     <div className="flex flex-wrap gap-1">
-                      <Badge tone={key.delegationAllowed ? 'success' : 'neutral'}>
-                        delegate {key.delegationAllowed ? 'on' : 'off'}
-                      </Badge>
                       <Badge tone={key.escalationAllowed ? 'info' : 'neutral'}>
                         escalate {key.escalationAllowed ? 'on' : 'off'}
                       </Badge>
@@ -540,8 +547,13 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
             </Field>
           </div>
 
+          <Field label="Client tool limit" hint="Optional creation-time check for clients with a tool limit. Select only the tools this bot needs.">
+            <TextInput type="number" min={0} step={1} value={form.toolLimit} onChange={(event) => setForm((previous) => ({ ...previous, toolLimit: event.target.value }))} placeholder="No limit" />
+          </Field>
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Server &amp; tool grants</p>
+            {form.keyType === 'master' && <p className="mb-2 text-xs text-amber-300">Master keys have unrestricted tool access regardless of the selections below.</p>}
+            <p className="mb-2 text-xs text-slate-400">{buildGrantsFromSelection(matrix, selection).reduce((sum, grant) => sum + (grant.tools?.length ?? 0) + (grant.highPrivilegeTools?.length ?? 0), 0)} tools selected. New tools added by server updates will require an explicit grant.</p>
             {servers.status === 'loading' && <LoadingState label="Loading servers…" />}
             {servers.status === 'error' && <ErrorState message={servers.error} onRetry={servers.reload} />}
             {servers.status === 'ready' && matrix.length === 0 && (
@@ -599,11 +611,6 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
           </div>
 
           <div className="flex flex-wrap gap-4">
-            <CheckboxField
-              label="Allow sub-agent delegation"
-              checked={form.delegationAllowed}
-              onChange={(checked) => setForm((previous) => ({ ...previous, delegationAllowed: checked }))}
-            />
             <CheckboxField
               label="Allow transient scope escalation"
               checked={form.escalationAllowed}

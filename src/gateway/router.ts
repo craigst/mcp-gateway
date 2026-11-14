@@ -42,7 +42,7 @@ export interface RouterDeps {
 }
 
 const PROTOCOL_VERSION = '2025-06-18';
-const GATEWAY_VERSION = '0.15.4';
+const GATEWAY_VERSION = '0.15.5';
 
 /**
  * JSON-RPC method dispatch. Authorization, audit recording and escalation
@@ -88,7 +88,6 @@ export class JsonRpcRouter {
               gateway: {
                 key_id: key.id,
                 key_type: key.keyType,
-                delegation_max_depth: this.deps.config.delegationMaxDepth,
               },
             },
           };
@@ -317,29 +316,6 @@ export class JsonRpcRouter {
             throw new GatewayError(ErrorCodes.METHOD_NOT_FOUND, 'This server does not expose MCP resources');
           }
           return client.readResource(uri);
-        }
-
-        case 'agents/delegate': {
-          if (!this.deps.policy.canDelegate(key)) {
-            throw accessDenied('Access Denied: key has no delegation claim.', { reason: 'DELEGATION_NOT_PERMITTED' });
-          }
-          const targetId = requiredString(params.targetId, 'targetId');
-          const mode = params.mode === 'observe_and_verify' ? 'observe_and_verify' : 'delegate';
-          const result = await this.deps.delegation.delegate(
-            key,
-            { targetId, payload: params.payload ?? {}, mode },
-            { depth: ctx.delegationDepth, parentRequestId: ctx.requestId },
-          );
-          return {
-            target_id: result.targetId,
-            status: result.status,
-            verdict: result.verdict,
-            approval_token: result.approvalToken,
-            output: result.output,
-            latency_ms: result.latencyMs,
-            depth: result.depth,
-            trace_id: result.traceId,
-          };
         }
 
         case 'escalations/request': {

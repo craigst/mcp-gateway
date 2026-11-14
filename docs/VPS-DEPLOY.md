@@ -89,6 +89,18 @@ the per-mailbox layer inside the email MCP server from the gateway's
 tools as ordinary tools. See `docs/EMAIL.md` for the feature and
 `/mcp/v1/admin/email/access`.
 
+**0.15.5 (deployed 2026-11-14).** The release that puts CodeX's 0.15.0 console
+refresh on top of the 0.15.1–0.15.4 email line, so one image carries both. The
+0.15.1–0.15.4 commits had never been pushed, so `origin/main` was still
+`ec83a38` when CodeX branched from it and numbered their release `0.15.0`; the
+merge keeps every page from both lines and takes CodeX's navigation
+(`Overview`, `Servers`, `API keys & access`, `Activity`, `Approvals`), the
+light/dark switch and the page transition. `agents/delegate` is removed as in
+0.15.0, and the Delegation page is the approvals queue. Upgrade is an image swap
+only: `data/`, `gateway.env`, `certs/` and the compose network are unchanged, so
+keys, servers, grants, watchers and mailbox access survive. Full detail:
+`docs/RELEASE-0.15.5.md`.
+
 ## WireGuard restored, fallback retired (2026-11-05)
 
 WireGuard is healthy again (handshake < 60 s; gpc `10.10.254.49` and cleo

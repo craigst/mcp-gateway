@@ -3,7 +3,18 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['node_modules/**', 'dist/**', 'ui/dist/**', 'coverage/**', 'src/ui/dist/**', '.test-data/**', '.npm-cache/**'],
+    ignores: [
+      'node_modules/**',
+      'dist/**',
+      'ui/dist/**',
+      'coverage/**',
+      'src/ui/dist/**',
+      '.test-data/**',
+      '.npm-cache/**',
+      // Vendored checkout of the standalone HERE HGV MCP server: its own repo,
+      // its own toolchain, and git-ignored, so CI never sees it.
+      'here-hgv-mcp/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -17,6 +28,8 @@ export default tseslint.config(
         clearTimeout: 'readonly',
         Buffer: 'readonly',
         URL: 'readonly',
+        fetch: 'readonly',
+        performance: 'readonly',
       },
     },
   },

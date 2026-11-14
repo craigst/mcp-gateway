@@ -87,6 +87,24 @@ export function KeyAccessTab({ apiKey: key, onChanged }: KeyAccessTabProps) {
     setBusy(null);
   };
 
+  const setToolGrant = async (grant: KeyGrantView, tool: KeyGrantToolView, allowed: boolean): Promise<void> => {
+    if (busy !== null) return;
+    setBusy(`grant:${grant.serverId}:${tool.name}`);
+    const payload = key.serverGrants.map((existing) => {
+      if (existing.serverId !== grant.serverId) return existing;
+      const field = tool.highPrivilege ? 'highPrivilegeTools' : 'tools';
+      const current = field === 'tools' && existing.tools == null
+        ? grant.tools.filter((item) => !item.highPrivilege && item.granted).map((item) => item.name)
+        : existing[field] ?? [];
+      const matches = (name: string): boolean => name === tool.name || name === `${grant.serverId}:${tool.name}`;
+      const updated = current.filter((name) => !matches(name));
+      if (allowed) updated.push(tool.name);
+      return { ...existing, [field]: updated };
+    });
+    await updateGrants(grant.serverId, grants, payload);
+    setBusy(null);
+  };
+
   const setKeyPaused = async (next: boolean): Promise<void> => {
     setBusy('key');
     setError(null);
@@ -222,6 +240,14 @@ export function KeyAccessTab({ apiKey: key, onChanged }: KeyAccessTabProps) {
                               {tool.description || 'No description'}
                             </p>
                           </div>
+                          {key.keyType !== 'master' && (
+                            <CheckboxField
+                              label="Grant tool"
+                              checked={tool.granted}
+                              disabled={busy !== null || revoked}
+                              onChange={(checked) => void setToolGrant(grant, tool, checked)}
+                            />
+                          )}
                           {tool.granted && (
                             <CheckboxField
                               label="Pause tool"
@@ -241,8 +267,7 @@ export function KeyAccessTab({ apiKey: key, onChanged }: KeyAccessTabProps) {
         ))}
 
       <p className="text-[11px] text-slate-500">
-        Pausing a server or tool leaves the grant in place and only refuses calls. Add, remove or re-scope grants from
-        the RBAC page.
+        Grant or remove individual tools above. Removing a tool from an all-tools grant converts it to an explicit list of currently known tools; future tools need a grant. Pausing keeps the grant in place. Master keys have unrestricted access.
       </p>
     </div>
   );

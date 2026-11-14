@@ -108,11 +108,6 @@ export const PLAYGROUND_METHODS: readonly PlaygroundMethodPreset[] = [
   },
   { method: 'servers/list_permitted', label: 'servers/list_permitted — zero-trust menu', params: '{}' },
   {
-    method: 'agents/delegate',
-    label: 'agents/delegate — observer delegation',
-    params: '{\n  "targetId": "observer-bot",\n  "payload": { "action": "deploy" },\n  "mode": "observe_and_verify"\n}',
-  },
-  {
     method: 'escalations/request',
     label: 'escalations/request — raise ticket',
     params:
