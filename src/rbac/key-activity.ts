@@ -23,9 +23,11 @@ import type {
   KeyActivityPage,
   KeyGrantToolView,
   KeyGrantView,
+  KeyMemoryView,
   KeySummary,
   KeyUsageStats,
   ServerGrant,
+  ServerRecord,
   ToolDescriptor,
 } from '../core/types.js';
 
@@ -110,9 +112,14 @@ export class SqliteKeyActivityService implements KeyActivityService {
   access(keyId: string): KeyAccessView {
     const record = this.keys.get(keyId);
     if (!record) throw keyNotFound(keyId);
+    const grants = record.serverGrants.map((grant) => this.buildGrantView(grant));
+    const memory = record.serverGrants
+      .map((grant) => this.buildMemoryView(grant))
+      .filter((view): view is KeyMemoryView => view !== null);
     return {
       key: toKeySummary(record),
-      grants: record.serverGrants.map((grant) => this.buildGrantView(grant)),
+      grants,
+      ...(memory.length > 0 ? { memory } : {}),
     };
   }
 
@@ -141,6 +148,63 @@ export class SqliteKeyActivityService implements KeyActivityService {
   // -------------------------------------------------------------------------
   // Access view
   // -------------------------------------------------------------------------
+
+  /**
+   * The Second Brain as this key sees it, or null when the granted server is not
+   * one. A brain server is recognised by its local grant (`BRAIN_LOCAL_GRANT=1`),
+   * which is the mechanism the brain actually authorises with — not by name.
+   *
+   * The action vocabulary and the category rules mirror brain-mcp's own
+   * `satisfies()` and category derivation; the categories listed are the explicit
+   * ones, and `allCategories`/`defaultCategories` say when the grant is implicit
+   * rather than naming them, so nothing is invented here.
+   */
+  private buildMemoryView(grant: ServerGrant): KeyMemoryView | null {
+    const server: ServerRecord | null = this.repository.getServer(grant.serverId);
+    if (!server || server.env?.BRAIN_LOCAL_GRANT !== '1') return null;
+    const actions = String(server.env.BRAIN_LOCAL_ACTIONS ?? '')
+      .split(',')
+      .map((action) => action.trim())
+      .filter((action) => action !== '');
+    const satisfies = (action: string): boolean =>
+      actions.includes(action) ||
+      actions.some((entry) => entry.startsWith(`${action}:`) || entry.startsWith(`${action}=`));
+    const categories = new Set<string>();
+    for (const action of actions) {
+      const match = /^knowledge(?::|=)(.+)$/u.exec(action);
+      if (!match) continue;
+      for (const category of match[1]!.split(',')) {
+        const name = category.trim();
+        if (name !== '' && name !== '*') categories.add(name);
+      }
+    }
+    const toolNames = this.repository
+      .listToolsByServer(server.id)
+      .filter((tool) => {
+        const granted = tool.highPrivilege
+          ? namesTool(grant.highPrivilegeTools, tool)
+          : grant.tools === undefined || grant.tools === null
+            ? true
+            : namesTool(grant.tools, tool);
+        return granted;
+      })
+      .map((tool) => tool.name);
+    return {
+      serverId: server.id,
+      serverName: server.name,
+      agent: String(server.env.BRAIN_LOCAL_AGENT ?? server.name),
+      actions,
+      categories: [...categories].sort(),
+      allCategories: actions.some((action) => /^knowledge(?::|=)\*$/u.test(action)),
+      defaultCategories: satisfies('knowledge') && !actions.some((action) => /^knowledge(?::|=)/u.test(action)),
+      canRead: satisfies('search'),
+      canWrite: satisfies('remember') || satisfies('update'),
+      canForget: satisfies('forget'),
+      canIngest: satisfies('ingest'),
+      tools: toolNames,
+      shared: true,
+    };
+  }
 
   private buildGrantView(grant: ServerGrant): KeyGrantView {
     const server = this.repository.getServer(grant.serverId);

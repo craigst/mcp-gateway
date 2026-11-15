@@ -83,7 +83,7 @@ export class HttpMcpClient implements McpClient {
     return {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: this.options.clientInfo ?? { name: 'mcp-gateway', version: '0.14.2' },
+      clientInfo: this.options.clientInfo ?? { name: 'mcp-gateway', version: '0.16.0' },
     };
   }
 

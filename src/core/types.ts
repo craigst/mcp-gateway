@@ -919,9 +919,45 @@ export interface KeyActivityPage {
   total: number;
 }
 
+/**
+ * The Second Brain (memory + document RAG) as one key sees it.
+ *
+ * Deliberately two separate facts, because they are decided in two different
+ * places and conflating them would overstate what the gateway enforces:
+ *
+ * - `tools` is what THIS key may call, from its own server grant.
+ * - `agent`/`actions`/`categories` are the brain's own grant, which lives on the
+ *   SERVER RECORD (`BRAIN_LOCAL_GRANT` env). One stdio process serves every key
+ *   granted that record, so the row is shared — hence `shared: true`.
+ */
+export interface KeyMemoryView {
+  serverId: string;
+  serverName: string;
+  /** Agent the brain authorises calls as (the record's BRAIN_LOCAL_AGENT). */
+  agent: string;
+  /** Raw grant actions from the record, in the brain's own vocabulary. */
+  actions: string[];
+  /** Explicit category assignments, e.g. ["homelab","projects"]. */
+  categories: string[];
+  /** The record grants every category (`knowledge:*`). */
+  allCategories: boolean;
+  /** The record grants the plain `knowledge` action (non-sensitive default). */
+  defaultCategories: boolean;
+  canRead: boolean;
+  canWrite: boolean;
+  canForget: boolean;
+  canIngest: boolean;
+  /** The brain tools this key may call. */
+  tools: string[];
+  /** True because the action grant is per server record, not per key. */
+  shared: true;
+}
+
 export interface KeyAccessView {
   key: KeySummary;
   grants: KeyGrantView[];
+  /** Present only for keys granted a Second Brain server. */
+  memory?: KeyMemoryView[];
 }
 
 

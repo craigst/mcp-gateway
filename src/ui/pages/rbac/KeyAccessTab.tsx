@@ -163,6 +163,54 @@ export function KeyAccessTab({ apiKey: key, onChanged }: KeyAccessTabProps) {
         </Notice>
       )}
 
+      {accessState.status === 'ready' && (accessState.data.memory?.length ?? 0) > 0 && (
+        <div className="rounded-xl border border-sky-900/50 bg-sky-950/10 p-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-100">Second Brain (memory + documents)</p>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">
+                Which memory this key can reach, and the grant the brain actually authorises with.
+              </p>
+            </div>
+            <Badge tone="info">RAG</Badge>
+          </div>
+          <div className="mt-3 space-y-2">
+            {accessState.data.memory!.map((memory) => (
+              <div
+                key={memory.serverId}
+                className="rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-2.5"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs font-medium text-slate-200">{memory.serverName}</p>
+                  <Badge tone="neutral">agent: {memory.agent}</Badge>
+                  <Badge tone={memory.canRead ? 'success' : 'neutral'}>read</Badge>
+                  <Badge tone={memory.canWrite ? 'success' : 'neutral'}>write</Badge>
+                  <Badge tone={memory.canForget ? 'warning' : 'neutral'}>forget</Badge>
+                  <Badge tone={memory.canIngest ? 'warning' : 'neutral'}>ingest</Badge>
+                </div>
+                <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+                  This key may call {memory.tools.length} memory tool{memory.tools.length === 1 ? '' : 's'}. The brain
+                  authorises as <span className="font-mono text-slate-400">{memory.agent}</span> with{' '}
+                  {memory.actions.join(', ') || 'no actions'} ·{' '}
+                  {memory.allCategories
+                    ? 'every document category'
+                    : memory.categories.length > 0
+                      ? `documents: ${memory.categories.join(', ')}`
+                      : memory.defaultCategories
+                        ? 'the default (non-sensitive) document categories'
+                        : 'no document categories'}
+                  .
+                </p>
+                <p className="mt-1 text-[10px] leading-relaxed text-amber-300">
+                  The action grant lives on the “{memory.serverName}” server record, so every key granted it shares
+                  these actions. Per-key action scoping is not enforced.
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {accessState.status === 'loading' && (
         <div role="status" aria-label="Loading key access" className="space-y-2">
           {[0, 1, 2].map((index) => (

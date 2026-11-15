@@ -208,6 +208,84 @@ describe('SqliteKeyActivityService.access', () => {
     expect(error.code).toBe(ErrorCodes.TOOL_NOT_FOUND);
     expect(error.httpStatus).toBe(404);
   });
+
+  it('reports the Second Brain grant a key actually reaches', () => {
+    repository.upsertServer(
+      makeServer({
+        id: 'srv_brain',
+        name: 'brain',
+        env: {
+          BRAIN_LOCAL_GRANT: '1',
+          BRAIN_LOCAL_AGENT: 'omb-maus',
+          BRAIN_LOCAL_ACTIONS: 'search,remember,update,knowledge=homelab,knowledge=projects',
+        },
+      }),
+    );
+    repository.upsertTools('srv_brain', [
+      makeTool('srv_brain', 'brain_search'),
+      makeTool('srv_brain', 'brain_remember'),
+      makeTool('srv_brain', 'brain_forget'),
+      makeTool('srv_brain', 'brain_whoami'),
+    ]);
+    const issued = issue({
+      serverGrants: [
+        { serverId: 'srv_brain', tools: ['srv_brain:brain_search', 'srv_brain:brain_remember'] },
+      ],
+    });
+
+    const memory = activity.access(issued.key.id).memory;
+    expect(memory).toHaveLength(1);
+    expect(memory![0]).toMatchObject({
+      serverId: 'srv_brain',
+      serverName: 'brain',
+      agent: 'omb-maus',
+      categories: ['homelab', 'projects'],
+      allCategories: false,
+      defaultCategories: false,
+      canRead: true,
+      canWrite: true,
+      canForget: false,
+      canIngest: false,
+      shared: true,
+    });
+    // Tools are the KEY's grant; actions are the RECORD's. They must not be conflated.
+    expect(memory![0]!.tools.sort()).toEqual(['brain_remember', 'brain_search']);
+    expect(memory![0]!.actions).toEqual([
+      'search',
+      'remember',
+      'update',
+      'knowledge=homelab',
+      'knowledge=projects',
+    ]);
+  });
+
+  it('omits the memory view for keys with no brain server', () => {
+    const issued = issue({ serverGrants: [{ serverId: 'srv_alpha' }] });
+    expect(activity.access(issued.key.id).memory).toBeUndefined();
+  });
+
+  it('tells an implicit category grant apart from an explicit one', () => {
+    const brainWith = (actions: string): void => {
+      repository.upsertServer(
+        makeServer({ id: 'srv_brain', name: 'brain', env: { BRAIN_LOCAL_GRANT: '1', BRAIN_LOCAL_ACTIONS: actions } }),
+      );
+    };
+    brainWith('search,knowledge');
+    const plain = issue({ serverGrants: [{ serverId: 'srv_brain' }] });
+    expect(activity.access(plain.key.id).memory![0]).toMatchObject({
+      categories: [],
+      defaultCategories: true,
+      allCategories: false,
+    });
+
+    brainWith('search,ingest,knowledge:*');
+    const all = issue({ serverGrants: [{ serverId: 'srv_brain' }] });
+    expect(activity.access(all.key.id).memory![0]).toMatchObject({
+      allCategories: true,
+      defaultCategories: false,
+      canIngest: true,
+    });
+  });
 });
 
 describe('SqliteKeyActivityService.activity', () => {
