@@ -53,19 +53,61 @@ then `unable to verify the first certificate`).
 
 ## Deploy
 
-```bash
-# on gpc (this checkout) — the tag is a variable, default 0.15.0
-npm run build && podman build -t localhost/mcp-gateway:${MCP_IMAGE_TAG:-0.15.0} .
-podman save localhost/mcp-gateway:${MCP_IMAGE_TAG:-0.15.0} | ssh root@10.10.1.4 'docker load'
+The image is built **on GitHub** and published to the public GitHub Container
+Registry. Nothing is built on a laptop any more, and us-vps never builds: it
+pulls. `ghcr.io/craigst/mcp-gateway:<version>` is therefore the same artefact for
+this VPS, a fresh host, or anyone who runs `docker pull`.
 
-# on the VPS
+```bash
+# 1. PUBLISH — bump package.json, commit, push main
+#    .github/workflows/publish.yml builds linux/amd64 + linux/arm64 and pushes:
+#      ghcr.io/craigst/mcp-gateway:<version>   :latest   :sha-<short>
+#    A v* tag that disagrees with package.json fails the run on purpose.
+
+# 2. UPDATE — the VPS follows the package on its own
+systemctl status mcp-gateway-update.timer
+systemctl start mcp-gateway-update.service    # update now instead of waiting
+journalctl -u mcp-gateway-update.service -n 50 --no-pager
+
+# 3. BOOTSTRAP a host (first time only)
 install -d -m 700 /opt/mcp-gateway/{data,certs,backups}
 chown 1000:1000 /opt/mcp-gateway/data
-scp deploy/vps/docker-compose.yml root@10.10.1.4:/opt/mcp-gateway/
+scp deploy/vps/docker-compose.yml deploy/vps/gateway.env.example \
+    deploy/vps/mcp-gateway-update.sh \
+    deploy/vps/mcp-gateway-update.service \
+    deploy/vps/mcp-gateway-update.timer root@10.10.1.4:/opt/mcp-gateway/
 # write /opt/mcp-gateway/gateway.env (0600) from the example
+install -m 755 /opt/mcp-gateway/mcp-gateway-update.sh /opt/mcp-gateway/
+install -m 644 /opt/mcp-gateway/mcp-gateway-update.service \
+               /opt/mcp-gateway/mcp-gateway-update.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now mcp-gateway-update.timer
 docker compose -f /opt/mcp-gateway/docker-compose.yml up -d
 curl -s http://127.0.0.1:8484/mcp/v1/health
 ```
+
+### What the updater does
+
+`mcp-gateway-update.timer` fires every 15 minutes. The script resolves the image
+from `docker-compose.yml` (so `MCP_IMAGE_TAG` is the only knob), `docker compose
+pull`s, and compares image **IDs**. When they match it exits having changed
+nothing — the normal case. When they differ it:
+
+1. tags the outgoing image `ghcr.io/craigst/mcp-gateway:rollback`;
+2. stops the container and copies `gateway.db` (+ `-wal`, `-shm`) into
+   `backups/gateway-pre-<version>-<stamp>.db` — stopped, so it is a consistent
+   snapshot, not a torn WAL;
+3. starts the new image, then polls `/mcp/v1/health` for up to 60 s;
+4. on failure: restores the database, restarts with `MCP_IMAGE_TAG=rollback`,
+   confirms health, and exits 1 so the failure is visible in the journal.
+
+The package is public, so **no registry credentials exist on this host**. The
+pull path needs no token and there is nothing to rotate.
+
+### Building locally (development only)
+
+`docker compose build` still builds this checkout; that is how a change is
+tested before it goes to `main`. It is no longer how a release reaches the VPS.
 
 Docker publishes bypass `ufw`; the compose file binds `127.0.0.1` and
 `10.10.1.4` only. Add a `DOCKER-USER` rule allowing `10.10.0.0/16` to 8484 as

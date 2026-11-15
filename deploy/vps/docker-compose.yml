@@ -9,14 +9,12 @@
 # extra_hosts; see docs/FULL-MIGRATION.md "WireGuard restored; fallback retired".
 services:
   gateway:
-    # Tag matches the version inside the image (0.16.0, per /mcp/v1/health and
-    # package.json). 0.16.0 is the consolidation release: CodeX's console refresh
-    # (Overview / Servers / API keys & access / Activity / Approvals, light-dark
-    # switch, agents/delegate removed) merged onto the 0.15.1-0.15.4 email line,
-    # plus YouTube/X watchers in the build, the light-theme fix, Streamable HTTP
-    # session recovery, and the Second Brain grant made visible per API key.
-    # Bump package.json before re-tagging; never reuse an old mislabelled tag.
-    image: localhost/mcp-gateway:${MCP_IMAGE_TAG:-0.16.0}
+    # Published image, pulled from the public GitHub Container Registry by
+    # mcp-gateway-update.timer. It is built on GitHub Actions and never on this
+    # host, so what runs here is exactly the image `docker pull` gives anyone.
+    # The tag is the version in package.json; a rollback is a tag change because
+    # the tag is a variable (see docs/VPS-DEPLOY.md "Rollback").
+    image: ghcr.io/craigst/mcp-gateway:${MCP_IMAGE_TAG:-0.16.0}
     container_name: mcp-gateway
     restart: unless-stopped
     env_file:

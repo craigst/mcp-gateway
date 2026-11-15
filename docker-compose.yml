@@ -3,7 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: mcp-gateway:0.13.1
+    # Published image (public GHCR). `docker compose build` still builds this
+    # checkout locally; the tag tracks package.json.
+    image: ghcr.io/craigst/mcp-gateway:${MCP_IMAGE_TAG:-0.16.0}
     container_name: mcp-gateway
     ports:
       - "${MCP_PORT:-8080}:8080"

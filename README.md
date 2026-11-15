@@ -115,7 +115,29 @@ external management clients**. Screenshots use generic demo data (no personal co
 
 ## Quick start
 
-### Docker (recommended)
+### Pull the published image (no checkout, no build)
+
+Every release is built on GitHub Actions and published to the public GitHub
+Container Registry for `linux/amd64` and `linux/arm64`:
+
+```bash
+docker pull ghcr.io/craigst/mcp-gateway:0.16.0
+
+docker run -d --name mcp-gateway \
+  -p 8080:8080 \
+  -v "$PWD/data:/data" \
+  -e MCP_MASTER_KEY="mcp_master_$(openssl rand -hex 24)" \
+  -e MCP_VAULT_SECRET="$(openssl rand -base64 48)" \
+  ghcr.io/craigst/mcp-gateway:0.16.0
+
+curl -s localhost:8080/mcp/v1/health
+```
+
+Tags: `<version>` (the value in `package.json`), `latest`, and `sha-<short>`.
+The image carries `org.opencontainers.image.version`, so the tag and the version
+the gateway reports cannot silently disagree.
+
+### Docker (build from a checkout)
 
 ```bash
 git clone https://github.com/craigst/mcp-gateway.git
@@ -561,6 +583,11 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 
 | Release | Scope | State |
 |---|---|---|
+| **v0.16.0** | **The consolidation release: CodeX's console refresh merged onto the 0.15.1–0.15.4 email + watcher line, YouTube/X watchers in the build instead of hand patches, the light-theme fix, Streamable HTTP session recovery for remote `http` sub-servers, and the Second Brain grant made visible per API key** | ✅ **current** |
+| **v0.15.7** | **Light-theme legibility fix for the appearance switch** | ✅ shipped |
+| **v0.15.6** | **YouTube and X watcher sources moved out of `/opt/mcp-gateway/patches` into the build, so the console ships a settings card for both instead of a 0.15.4-era bundle nothing served** | ✅ shipped |
+| **v0.15.5** | **Unifies the two diverged lines: the 0.15.1–0.15.4 email work (per-mailbox access control, Jev triage, reversible filing, consolidated Devices & computers console) on top of CodeX's 0.15.0 console refresh** | ✅ shipped |
+| **v0.15.0** | **Email tab access controller (bots/API keys, server switch, per-mailbox switches), enforced per mailbox inside the email MCP server from the gateway's key id** | ✅ shipped |
 | v0.1.0 | Core engine, JSON-RPC ingress, RBAC/zero-trust catalog, UI, delegation, vault + git import | ✅ shipped |
 | v0.2.0 | Private GitHub catalogs, harness discovery/import, auto-manifest detection, approval-gated Vault Warden, UI marketplace | ✅ shipped |
 | v0.3.0 | Built-in username/password Web UI login, session-authenticated console + WebSocket logs, master-key rotation, persistent podman/systemd deployment | ✅ shipped |
@@ -571,7 +598,7 @@ Read [`SECURITY.md`](./SECURITY.md) for the full threat model and disclosure pro
 | v0.8.0 | RBAC API-key console: per-key activity, rename for bot references, pause/resume whole keys, MCP servers or individual tools | ✅ shipped |
 | **v0.9.0** | **Computer use: managed `computer-use` MCP server fronting a self-hosted Computer Broker, console fleet view with live frames, global and per-computer availability with reason/auto-resume, approval-gated destructive calls** | ✅ shipped |
 | **v0.13.1** | **VM providers in the gateway Connectors console: zues (libvirt) and gpc (QEMU/KVM) provider cards, per-provider running-VM attribution, add/test/delete providers and deploy VMs from the gateway UI** | ✅ shipped |
-| **Unreleased** | **Devices & computers: the Computer Use and Connectors console pages merged into one tabbed page (Computers · Connectors · VM providers · Agent access), with one unified computers grid (host stats + connector maintenance inline) and legacy `#/computer-use` / `#/connectors` links aliased. UI only — the `computer-use` and `devicebridge` MCP servers are unchanged** | ✅ **current** |
+| **v0.14.0** | **Devices & computers: the Computer Use and Connectors console pages merged into one tabbed page (Computers · Connectors · VM providers · Agent access), with one unified computers grid (host stats + connector maintenance inline) and legacy `#/computer-use` / `#/connectors` links aliased. UI only — the `computer-use` and `devicebridge` MCP servers are unchanged** | ✅ shipped |
 | **v0.13.0** | **VM providers: register KVM/QEMU hosts (Unraid/libvirt over SSH or local QEMU/KVM), deploy Ubuntu 24.04 cloud-image agent VMs, and manage/control them through the same Computer Use fleet, live viewer, stats and agent tools** | ✅ shipped |
 | **v0.12.0** | **Physical-computer fleet management: one-line bash onboarding for a real PC, live CPU/RAM/disk stats in the console, pushed connector self-update and remote connector removal (service + identity), LAN-only enrolment; replaces the old DeviceBridge loop** | ✅ shipped |
 | **v0.11.0** | **Physical host desktops: register a real Linux PC (KDE Wayland) as a Computer — live frames, per-display views, absolute mouse/keyboard for people and agents; gateway fleet + live-desktop hand-off work unchanged** | ✅ shipped |

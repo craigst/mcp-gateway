@@ -1,0 +1,12 @@
+[Unit]
+Description=MCP gateway image updater (pull from GHCR, health-check, roll back on failure)
+Documentation=file:///opt/mcp-gateway/mcp-gateway-update.sh
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/mcp-gateway/mcp-gateway-update.sh
+Nice=10
+TimeoutStartSec=300
