@@ -115,6 +115,43 @@ restarts the container whenever it has to re-apply a patch, which happens on
 every recreate. Run `systemctl start mcp-gateway-patches.service` (or confirm the
 image needs no patch) immediately after `docker compose up -d`, or the first
 couple of minutes of the new release can answer 502 while the container bounces.
+(The timer is disabled since 0.15.6 — `systemctl is-enabled
+mcp-gateway-patches.timer` should say `disabled`. Leave it that way.)
+
+**0.16.0 (deployed 2026-11-15).** The consolidation: CodeX's console, the
+0.15.1–0.15.4 email/watch line, YouTube/X out of the hand patches, the light-theme
+fix, Streamable HTTP session recovery for the remote `http` sub-servers
+(`computer-use`, `scrypted`, `x`), and a `memory[]` block on
+`GET /admin/keys/{id}/access` so the console shows which Second Brain grant a key
+reaches. Image swap only — no schema change.
+
+The brain half is a **separate repo**: `craigst/brain-mcp` **v1.2.0**. Until
+2026-11-15 the local grant (`BRAIN_LOCAL_GRANT`) existed only as an uncommitted
+edit in `/opt/mcp-gateway/data/repos/brain`, so one `git checkout` would have
+taken the brain down for every bot. It is committed and tagged now; update the
+checkout, keep the server rows' env untouched, then restart the two brain
+sub-servers (`POST /admin/servers/srv_9b2889a22c9f4014/restart` and
+`…/srv_4f0cd38681b341b7/restart`) so the running processes load the new file.
+Verify with `brain_whoami` through a bot key: it must report `omb-maus` and
+`(local grant - AI Messenger retired)`.
+
+### Rollback (any release)
+
+```bash
+# 1. put the previous image back — the compose tag is a variable, no file edit
+MCP_IMAGE_TAG=0.15.7 docker compose -f /opt/mcp-gateway/docker-compose.yml up -d
+
+# 2. only if a data fault appears (no 0.16.0 schema change, so usually not needed)
+docker compose -f /opt/mcp-gateway/docker-compose.yml stop gateway
+cp data/gateway.db data/gateway.db.failed-$(date -u +%Y%m%dT%H%M%SZ)
+rm -f data/gateway.db-wal data/gateway.db-shm
+cp data/backups/gateway-pre-0.16.0-<stamp>.db data/gateway.db
+docker compose -f /opt/mcp-gateway/docker-compose.yml start gateway
+
+# 3. the full restore point (config + data + repos + secrets, 121 MB)
+/opt/mcp-gateway/backups/pre-0.16.0-<stamp>.tar.gz
+```
+
 
 ## WireGuard restored, fallback retired (2026-11-05)
 
