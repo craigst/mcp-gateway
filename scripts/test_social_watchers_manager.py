@@ -23,7 +23,7 @@ class ManagerTests(unittest.TestCase):
         self.starts = root / 'starts'
         self.env = {**os.environ, 'WATCHER_ROOT': str(root), 'WATCHER_LOG': str(root / 'log'),
                     'WATCHER_PYTHON': sys.executable, 'WATCHER_RESTART_DELAY_MS': '50',
-                    'STARTS': str(self.starts)}
+                    'STARTS': str(self.starts), 'WATCHER_INSTAGRAM_STATE_FILE': str(root / 'instagram-state.json')}
         self.env.pop('WATCHER_ENABLE_X', None)
         self.proc = None
 
@@ -71,6 +71,18 @@ class ManagerTests(unittest.TestCase):
         self.env['WATCHER_ENABLE_X'] = '1'
         self.start()
         self.assertIn('x', {s['source'] for s in self.status()['sources']})
+
+    def test_expired_instagram_session_is_not_restarted_until_refreshed(self):
+        state = Path(self.env['WATCHER_INSTAGRAM_STATE_FILE'])
+        state.write_text(json.dumps({'last_ok_at': '2026-01-01T00:00:00Z', 'last_error_at': '2026-01-02T00:00:00Z'}))
+        self.start()
+        instagram = next(s for s in self.status()['sources'] if s['source'] == 'instagram')
+        self.assertIsNone(instagram['pid'])
+        self.assertIn('expired', instagram['lastError'])
+        state.write_text(json.dumps({'last_ok_at': '2026-01-03T00:00:00Z', 'last_error_at': '2026-01-02T00:00:00Z'}))
+        self.call('watchers_restart')
+        time.sleep(0.2)
+        self.assertTrue(next(s for s in self.status()['sources'] if s['source'] == 'instagram')['pid'])
 
     def test_missing_worker_executable_does_not_crash_manager(self):
         self.env['WATCHER_PYTHON'] = '/nonexistent/watcher-python'

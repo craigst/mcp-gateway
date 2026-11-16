@@ -9,7 +9,7 @@
  * restart through the normal server supervisor.
  */
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
 const ROOT = process.env.WATCHER_ROOT ?? '/data/repos/remy-watchers';
@@ -31,10 +31,29 @@ function log(line) {
   }
 }
 
+function instagramSessionExpired() {
+  const file = process.env.WATCHER_INSTAGRAM_STATE_FILE ?? `${process.env.IG_CONFIG_DIR ?? '/data/secrets/instagram'}/state.json`;
+  try {
+    const state = JSON.parse(readFileSync(file, 'utf8'));
+    const error = Date.parse(state.last_error_at ?? '');
+    const ok = Date.parse(state.last_ok_at ?? '');
+    return Number.isFinite(error) && (!Number.isFinite(ok) || error >= ok);
+  } catch {
+    // Missing state is unknown, not proof of expiry; keep existing startup behavior.
+    return false;
+  }
+}
+
 function startSource(source) {
   if (shuttingDown) return;
   const previous = sources.get(source);
   if (previous?.pid) return;
+  if (source === 'instagram' && instagramSessionExpired()) {
+    sources.set(source, { source, pid: null, startedAt: null, restarts: previous?.restarts ?? 0,
+      lastExit: previous?.lastExit ?? null, lastError: 'Saved Instagram session is expired; refresh the session before restarting.', restartRequested: false });
+    log('instagram paused: saved session is expired');
+    return;
+  }
   const child = spawn(PYTHON, [SCRIPT, source], {
     cwd: ROOT,
     env: process.env,
