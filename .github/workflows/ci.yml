@@ -85,3 +85,48 @@ jobs:
       - name: Stop container
         if: always()
         run: docker rm -f mcp-gateway-ci || true
+
+  managed-brain:
+    name: managed brain integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: synthetic-ci-password
+          POSTGRES_DB: mcp_gateway_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d mcp_gateway_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      qdrant:
+        image: qdrant/qdrant:v1.20.0
+        ports: ['6333:6333']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test MCP adapter
+        run: node services/brain/mcp/test/offline.mjs
+      - name: Build managed brain image
+        run: docker build -t mcp-gateway-managed-brain:ci services/brain
+      - name: Wait for vector store
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:6333/readyz; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Test against disposable database and vector store
+        run: |
+          docker run --rm --network host --tmpfs /work:rw,size=128m \
+            -e BRAIN_DISPOSABLE_TEST=1 \
+            -e BRAIN_API_KEY=synthetic-brain-key \
+            -e BRAIN_PG_HOST=127.0.0.1 -e BRAIN_PG_USER=postgres \
+            -e BRAIN_PG_DB=mcp_gateway_test -e BRAIN_PG_PASSWORD=synthetic-ci-password \
+            -e QDRANT_HOST=127.0.0.1 -e DOCS_COLLECTION=mcp_gateway_test_docs \
+            -e MEM0_COLLECTION=mcp_gateway_test_memories -e MEM0_EMBED_DIMS=768 \
+            -e QDRANT_TIMEOUT=10 -e MEM0_TELEMETRY=false \
+            --entrypoint python mcp-gateway-managed-brain:ci -m unittest discover -s tests -q

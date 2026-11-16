@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-const { apiMock } = vi.hoisted(() => ({ apiMock: { listServers: vi.fn(), rpc: vi.fn() } }));
+const { apiMock } = vi.hoisted(() => ({ apiMock: { listServers: vi.fn(), rpc: vi.fn(), getManagedKnowledge: vi.fn(), uploadKnowledgeDocument: vi.fn() } }));
 vi.mock('../../src/ui/lib/api.js', async (original) => ({ ...(await original<typeof import('../../src/ui/lib/api.js')>()), api: apiMock }));
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { KnowledgePage } from '../../src/ui/pages/Knowledge.js';
@@ -8,6 +8,7 @@ import { KnowledgePage } from '../../src/ui/pages/Knowledge.js';
 beforeEach(() => {
   apiMock.listServers.mockResolvedValue([{ id: 'brain1', name: 'brain', status: 'running' }, { id: 'brain2', name: 'brain-full', status: 'running' }, { id: 'other', name: 'email', status: 'running' }]);
   apiMock.rpc.mockResolvedValue({ content: [{ type: 'text', text: 'A saved memory' }] });
+  apiMock.getManagedKnowledge.mockResolvedValue({ configured: false, categories: [] });
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -31,5 +32,17 @@ describe('Knowledge', () => {
     render(<KnowledgePage />);
     expect(await screen.findByText('No brain server found')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Search' })).toBeNull();
+  });
+  it('uploads a document to a category supplied by the managed service', async () => {
+    apiMock.getManagedKnowledge.mockResolvedValue({ configured: true, categories: [{ name: 'homelab', sensitive: false }] });
+    apiMock.uploadKnowledgeDocument.mockResolvedValue({ document_id: 12 });
+    render(<KnowledgePage />);
+    await screen.findByRole('option', { name: 'homelab' });
+    const file = new File(['document'], 'notes.txt', { type: 'text/plain' });
+    fireEvent.change(screen.getByLabelText('Document'), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'homelab' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Upload document' }));
+    await waitFor(() => expect(apiMock.uploadKnowledgeDocument).toHaveBeenCalledWith(file, 'homelab'));
+    expect(await screen.findByText('The document was uploaded and indexed.')).toBeTruthy();
   });
 });

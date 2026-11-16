@@ -735,6 +735,15 @@ export class ApiClient {
 
   // -- JSON-RPC ingress -----------------------------------------------------
 
+  async getManagedKnowledge(): Promise<{ configured: boolean; categories: Array<{ name: string; sensitive: boolean }>; maxUploadBytes?: number }> {
+    return this.request('/mcp/v1/admin/knowledge');
+  }
+
+  async uploadKnowledgeDocument(file: File, category: string): Promise<{ document_id?: number; category?: string; repaired?: boolean; skipped?: boolean }> {
+    const params = new URLSearchParams({ filename: file.name, category });
+    return this.request(`/mcp/v1/admin/knowledge/upload?${params}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file }, 10 * 60_000);
+  }
+
   /** Send a single JSON-RPC request and return its `result`. */
   async rpc<T>(method: string, params?: unknown): Promise<T> {
     const detailed = await this.rpcDetailed<T>(method, params);

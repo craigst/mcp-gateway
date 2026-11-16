@@ -1,0 +1,76 @@
+# A managed brain beside the gateway. The database and vector store have no
+# published ports. Set BRAIN_HOME to a new, private directory for a staged copy.
+name: mcp-gateway-brain
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      POSTGRES_USER: brain
+      POSTGRES_DB: brain
+      POSTGRES_PASSWORD: ${BRAIN_PG_PASSWORD:?Set a unique brain database password}
+    volumes:
+      - ${BRAIN_HOME:?Set BRAIN_HOME}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brain -d brain -q"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks: [backend]
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    restart: unless-stopped
+    mem_limit: 1536m
+    volumes:
+      - ${BRAIN_HOME:?Set BRAIN_HOME}/qdrant:/qdrant/storage
+    networks: [backend]
+  tika:
+    image: apache/tika:latest-full
+    restart: unless-stopped
+    mem_limit: 1g
+    networks: [backend]
+  brain:
+    build: .
+    image: mcp-gateway-brain:managed
+    restart: unless-stopped
+    mem_limit: 2g
+    environment:
+      BRAIN_API_KEY: ${BRAIN_API_KEY:?Set a unique brain API key}
+      MEM0_TELEMETRY: "false"
+      BRAIN_PG_HOST: postgres
+      BRAIN_PG_USER: brain
+      BRAIN_PG_DB: brain
+      BRAIN_PG_PASSWORD: ${BRAIN_PG_PASSWORD:?Set a unique brain database password}
+      QDRANT_HOST: qdrant
+      OLLAMA_URL: ${BRAIN_OLLAMA_URL:?Set the URL of the embedding and language model service}
+      TIKA_URL: http://tika:9998
+      DOCUMENT_ROOTS: /secondbrain:/archive
+      INBOX_DIR: /secondbrain/inbox
+      ORIGINALS_DIR: /secondbrain/originals
+      DERIVED_DIR: /secondbrain/derived
+      BRAIN_READ_ONLY: ${BRAIN_READ_ONLY:-1}
+      BRAIN_CATEGORIES: ${BRAIN_CATEGORIES:-homelab:0,projects:0,email:1,financial:1,property:1,identity:1,vehicle:1,personal:1,sessions:1}
+      MEM0_EMBED_MODEL: ${BRAIN_EMBED_MODEL:-nomic-embed-text:latest}
+      MEM0_EMBED_DIMS: ${BRAIN_EMBED_DIMS:-768}
+    volumes:
+      - ${BRAIN_HOME:?Set BRAIN_HOME}/data:/data
+      - ${BRAIN_HOME:?Set BRAIN_HOME}/secondbrain:/secondbrain
+      - ${BRAIN_HOME:?Set BRAIN_HOME}/archive:/archive:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      tika:
+        condition: service_started
+    networks:
+      backend: {}
+      gateway:
+        aliases: [mcp-gateway-brain]
+networks:
+  backend:
+    internal: true
+  gateway:
+    external: true
+    name: ${MCP_GATEWAY_NETWORK:-mcp-gateway_default}

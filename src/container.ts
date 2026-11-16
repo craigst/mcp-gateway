@@ -69,6 +69,7 @@ import { JevClient } from './email/jev.js';
 import { EmailApi } from './email/api.js';
 import { EmailAccessService, type EmailAccessBot } from './email/access.js';
 import { InstagramApi } from './social/instagram-api.js';
+import { KnowledgeApi } from './admin/knowledge-api.js';
 
 export interface GatewayServices {
   keys: KeyService;
@@ -457,6 +458,11 @@ export function createContainer(options: ContainerOptions = {}): GatewayContaine
     watchersApi,
     emailApi,
     socialApi,
+    knowledgeApi: new KnowledgeApi({
+      url: process.env.MCP_KNOWLEDGE_URL ?? null,
+      token: () => (vault.isEnabled() ? vault.getSecret('BUILTIN_BRAIN_API_KEY') : null) ?? process.env.MCP_KNOWLEDGE_API_KEY ?? null,
+      authenticate,
+    }),
     logger,
   });
   const server = new GatewayHttpServer({

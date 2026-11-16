@@ -10,6 +10,7 @@ import { JsonViewer } from '../components/JsonViewer.js';
 /** A single place to find and search the existing brain servers. */
 export function KnowledgePage({ onOpenServer }: { onOpenServer?: (id: string) => void }) {
   const servers = useAsyncData(() => api.listServers(), []);
+  const managed = useAsyncData(() => api.getManagedKnowledge(), []);
   const brains = servers.status === 'ready' ? servers.data.filter((server) => /^brain(?:[-_].*)?$/i.test(server.name)) : [];
   const [serverId, setServerId] = useState('');
   const [query, setQuery] = useState('');
@@ -17,6 +18,12 @@ export function KnowledgePage({ onOpenServer }: { onOpenServer?: (id: string) =>
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<unknown>(null);
   const [error, setError] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [fileInputVersion, setFileInputVersion] = useState(0);
+  const [category, setCategory] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const textContent = typeof result === 'object' && result !== null && 'content' in result && Array.isArray(result.content)
     ? result.content.filter((item: unknown): item is { type: string; text: string } => typeof item === 'object' && item !== null && 'type' in item && item.type === 'text' && 'text' in item && typeof item.text === 'string').map((item) => item.text).join('\n\n')
     : '';
@@ -33,9 +40,37 @@ export function KnowledgePage({ onOpenServer }: { onOpenServer?: (id: string) =>
     finally { setBusy(false); }
   };
 
+  const upload = async () => {
+    if (!file || !category || uploading || managed.status !== 'ready' || !managed.data.configured) return;
+    if (managed.data.maxUploadBytes && file.size > managed.data.maxUploadBytes) { setUploadError('The file is larger than the upload limit.'); return; }
+    setUploading(true); setUploadError(null); setUploadMessage(null);
+    try {
+      const outcome = await api.uploadKnowledgeDocument(file, category);
+      setUploadMessage(outcome.repaired ? 'The interrupted document index was repaired.' : outcome.skipped ? 'This document is already indexed in that category.' : 'The document was uploaded and indexed.');
+      setFile(null);
+      setFileInputVersion((value) => value + 1);
+    } catch (cause) { setUploadError(formatApiError(cause)); }
+    finally { setUploading(false); }
+  };
+
   return <div className="space-y-5">
     <div><h2 className="text-base font-semibold text-slate-100">Knowledge</h2>
       <p className="mt-1 text-xs text-slate-400">Search connected brain servers and manage their tools in one place. Results depend on the selected server and its access policy.</p></div>
+    <Card title="Add a document" subtitle="Upload a document to the managed knowledge service and choose who can access it by category.">
+      {managed.status === 'loading' && <p className="text-xs text-slate-400">Checking the knowledge service…</p>}
+      {managed.status === 'error' && <ErrorState message={managed.error} onRetry={managed.reload} />}
+      {managed.status === 'ready' && !managed.data.configured && <Notice title="Managed knowledge is not configured">Search remains available through your existing brain servers. Uploads appear here when the managed service is connected.</Notice>}
+      {managed.status === 'ready' && managed.data.configured && <div className="space-y-3">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Document"><div className="rounded-lg border border-dashed border-slate-700 p-3" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (!uploading) { setFile(event.dataTransfer.files[0] ?? null); setUploadMessage(null); setUploadError(null); } }}><p className="mb-2 text-xs text-slate-400">Drop a file here or choose one.</p><input key={fileInputVersion} aria-label="Document" type="file" disabled={uploading} onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadMessage(null); setUploadError(null); }} className="block w-full text-xs text-slate-300" />{file && <p className="mt-2 text-xs text-slate-200">Selected: {file.name}</p>}</div></Field>
+          <Field label="Category"><Select value={category} disabled={uploading} onChange={(event) => setCategory(event.target.value)}><option value="">Choose a category…</option>{managed.data.categories.map((item) => <option key={item.name} value={item.name}>{item.name}{item.sensitive ? ' · restricted' : ''}</option>)}</Select></Field>
+        </div>
+        <p className="text-xs text-slate-400">Agents can search only categories granted to them. Indexing can take several minutes.</p>
+        {uploadError && <Notice tone="error" title="Upload failed">{uploadError}</Notice>}
+        {uploadMessage && <Notice tone="success">{uploadMessage}</Notice>}
+        <PrimaryButton onClick={() => void upload()} disabled={!file || !category || uploading}>{uploading ? 'Uploading and indexing…' : 'Upload document'}</PrimaryButton>
+      </div>}
+    </Card>
     {servers.status === 'error' && <ErrorState message={servers.error} onRetry={servers.reload} />}
     {servers.status === 'loading' && <p className="text-xs text-slate-400">Loading knowledge servers…</p>}
     {servers.status === 'ready' && brains.length === 0 && <Notice tone="info" title="No brain server found">Add a brain server to search its memories and documents here.</Notice>}
