@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { GatewayError, ErrorCodes } from '../core/errors.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { GatewayConfig } from '../core/config.js';
@@ -175,6 +176,7 @@ export class DefaultSupervisor implements Supervisor {
       if (requiredSecrets.length > 0 && this.options.vault) {
         Object.assign(env, this.options.vault.resolveSecrets(requiredSecrets));
       }
+      applySocialProxyOverride(record.name, this.options.config.dataDir, env);
       const client = new StdioMcpClient({
         serverId: record.id,
         command: record.command,
@@ -346,6 +348,15 @@ export class DefaultSupervisor implements Supervisor {
  * optional `export ` prefix and single/double quotes supported). Values are
  * returned only to the spawned child process and are never logged.
  */
+/** The Instagram settings page is authoritative for the two Instagram processes. */
+export function applySocialProxyOverride(name: string, dataDir: string, env: Record<string, string>): void {
+  if (name !== 'instagram' && name !== 'social-watchers') return;
+  const path = join(dataDir, 'secrets', 'instagram.env');
+  if (!existsSync(path)) return;
+  const settings = readEnvFile(path);
+  if (Object.prototype.hasOwnProperty.call(settings, 'IG_PROXY')) env.IG_PROXY = settings.IG_PROXY ?? '';
+}
+
 export function readEnvFile(path: string): Record<string, string> {
   let raw: string;
   try {

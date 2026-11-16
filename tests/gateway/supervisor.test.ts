@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { openDatabase } from '../../src/core/db.js';
 import { SqliteCatalogRepository } from '../../src/catalog/repository.js';
-import { DefaultSupervisor } from '../../src/gateway/supervisor.js';
+import { applySocialProxyOverride, DefaultSupervisor } from '../../src/gateway/supervisor.js';
 import { createLogger } from '../../src/core/logger.js';
 import { newId, nowIso } from '../../src/core/ids.js';
 import type { GatewayConfig } from '../../src/core/config.js';
@@ -79,6 +79,20 @@ describe('DefaultSupervisor', () => {
     await supervisor.shutdown();
     db.close();
     rmSync(config.dataDir, { recursive: true, force: true });
+  });
+
+  it('uses the latest Instagram proxy setting for its connector and watcher', () => {
+    const secrets = join(config.dataDir, 'secrets');
+    mkdirSync(secrets, { recursive: true });
+    const env = { IG_PROXY: 'socks5h://old.example:1080' };
+    writeFileSync(join(secrets, 'instagram.env'), 'IG_PROXY=socks5h://new.example:1080\n', { mode: 0o600 });
+    applySocialProxyOverride('instagram', config.dataDir, env);
+    expect(env.IG_PROXY).toBe('socks5h://new.example:1080');
+    writeFileSync(join(secrets, 'instagram.env'), 'IG_PROXY=socks5h://later.example:1080\n');
+    applySocialProxyOverride('social-watchers', config.dataDir, env);
+    expect(env.IG_PROXY).toBe('socks5h://later.example:1080');
+    applySocialProxyOverride('unrelated', config.dataDir, env);
+    expect(env.IG_PROXY).toBe('socks5h://later.example:1080');
   });
 
   it('rejects unknown servers', async () => {
