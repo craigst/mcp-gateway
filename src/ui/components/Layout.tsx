@@ -81,7 +81,12 @@ export interface LayoutProps {
 export function Layout({ current, onNavigate, user, onSignOut, signingOut = false, children }: LayoutProps) {
   const [connection, setConnection] = useState<ConnectionState>('checking');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    try { return localStorage.getItem('gateway-theme') === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
+    try {
+      const saved = localStorage.getItem('gateway-theme');
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch { /* Use the system preference when storage is unavailable. */ }
+    return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: light)').matches
+      ? 'light' : 'dark';
   });
 
   useEffect(() => {

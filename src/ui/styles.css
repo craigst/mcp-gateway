@@ -159,7 +159,13 @@ html.light .gateway-shell { --ov-bg: #fafaff; --ov-panel: #fff; --ov-soft: #f0ee
 .overview-empty { padding:1rem .25rem; color:var(--ov-muted); font-size:.8rem; }
 .overview-shortcuts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.85rem; margin-top:.85rem; }
 .overview-shortcut { min-height:8rem; }
-.overview-chip-row { display:flex; flex-wrap:wrap; gap:.4rem; }
+.overview-chip-row { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:1rem; }
+.overview-shortcut .overview-chip-row .overview-chip { display:inline-flex; align-items:center; gap:.4rem; margin-top:0; }
+.social-icon { width:1.15rem; height:1.15rem; flex:none; }
+.social-icon-whatsapp { color:#16a34a; }
+.social-icon-instagram { color:#d9468f; }
+.social-icon-youtube { color:#ef4444; }
+.social-icon-x { color:var(--ov-accent); }
 .overview-shortcut .overview-chip { margin-top:1rem; }
 @media (max-width: 900px) { .overview-stats { grid-template-columns:repeat(2,minmax(0,1fr)); } .overview-shortcuts { grid-template-columns:1fr; } }
 @media (max-width: 650px) { .overview-grid { grid-template-columns:1fr; } .overview-heading h2 { font-size:1.35rem; } .overview-activity time { white-space:normal; text-align:right; } }

@@ -4,7 +4,9 @@ import { activityAction, activityClient, activityServer } from '../lib/activity.
 import { formatBytes, formatDuration, formatNumber, formatPercent, formatTimestamp } from '../lib/format.js';
 import { Badge, badgeToneForStatus } from '../components/Badge.js';
 import { ErrorState, LoadingState } from '../components/States.js';
+import { SocialIcon } from '../components/SocialIcon.js';
 import type { PageKey } from '../components/Layout.js';
+import type { WatcherSource } from '../../core/types.js';
 
 export interface DashboardPageProps {
   onNavigate?: (page: PageKey, options?: { catalogTab?: 'installed' | 'discover' | 'sources' | 'import' }) => void;
@@ -23,7 +25,7 @@ export function DashboardPage({ onNavigate, onOpenServer }: DashboardPageProps) 
   const data = metrics.status === 'ready' ? metrics.data : null;
   const brain = serverList.find((server) => server.name.toLowerCase() === 'brain');
 
-  const openWatcher = (source?: 'whatsapp' | 'instagram') => {
+  const openWatcher = (source?: WatcherSource) => {
     onNavigate?.('watchers');
     if (source && typeof window !== 'undefined') window.location.hash = `#/watchers?source=${source}`;
   };
@@ -76,7 +78,7 @@ export function DashboardPage({ onNavigate, onOpenServer }: DashboardPageProps) 
       </div>
       <div className="overview-shortcuts">
         <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">▤</span> Knowledge</h3><button type="button" onClick={() => onNavigate?.('knowledge')}>Manage →</button></div><p>{brain ? 'Search memories and documents from your connected brain servers.' : 'Connect a brain server to search memories and documents.'}</p><button className="overview-chip" type="button" onClick={() => onNavigate?.('knowledge')}>Open knowledge →</button></section>
-        <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">ϟ</span> Social watchers</h3><button type="button" onClick={() => openWatcher()}>Manage →</button></div><p>Choose what reaches your bot from social channels.</p><div className="overview-chip-row"><button className="overview-chip" type="button" onClick={() => openWatcher('whatsapp')}>WhatsApp →</button><button className="overview-chip" type="button" onClick={() => openWatcher('instagram')}>Instagram →</button></div></section>
+        <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">ϟ</span> Social watchers</h3><button type="button" onClick={() => openWatcher()}>Manage →</button></div><p>Choose what reaches your bot from social channels.</p><div className="overview-chip-row">{(['whatsapp', 'instagram', 'youtube', 'x'] as const).map((source) => <button className="overview-chip" type="button" key={source} onClick={() => openWatcher(source)}><SocialIcon source={source} />{({ whatsapp: 'WhatsApp', instagram: 'Instagram', youtube: 'YouTube', x: 'X' })[source]} →</button>)}</div></section>
         <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">▣</span> Devices &amp; computers</h3><button type="button" onClick={() => onNavigate?.('devices')}>View devices →</button></div><p>Manage computers, connectors and agent access.</p><button className="overview-chip" type="button" onClick={() => onNavigate?.('devices')}>Open devices →</button></section>
       </div>
       <details className="overview-panel overview-performance">
