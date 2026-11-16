@@ -5,6 +5,7 @@ const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     getHealth: vi.fn(),
     getMetrics: vi.fn(),
+    listComputerUseComputers: vi.fn(),
     listKeys: vi.fn(),
     listServers: vi.fn(),
     listDelegations: vi.fn(),
@@ -83,6 +84,8 @@ const serverRecord: ServerRecord = {
 beforeEach(() => {
   apiMock.getHealth.mockResolvedValue({ status: 'ok', version: '0.1.0', uptimeMs: 1000 });
   apiMock.getMetrics.mockResolvedValue(metricsSnapshot());
+  apiMock.listComputerUseComputers.mockResolvedValue({ broker: { reachable: true }, computers: [] });
+  apiMock.queryAudit.mockResolvedValue({ entries: [], total: 0 });
   apiMock.listKeys.mockResolvedValue([keySummary]);
   apiMock.listServers.mockResolvedValue([serverRecord]);
   apiMock.rpc.mockResolvedValue({ tools: [], total: 0 });
@@ -102,17 +105,29 @@ afterEach(() => {
 });
 
 describe('DashboardPage', () => {
-  it('renders stat tiles from the mocked metrics endpoint', async () => {
-    render(<DashboardPage />);
+  it('renders real summary data and navigates to the matching pages', async () => {
+    const onNavigate = vi.fn();
+    const onOpenServer = vi.fn();
+    render(<DashboardPage onNavigate={onNavigate} onOpenServer={onOpenServer} />);
 
-    expect(await screen.findByText('Requests / min')).toBeTruthy();
-    expect(await screen.findByText('42.5')).toBeTruthy();
-    expect(await screen.findByText('2.5%')).toBeTruthy();
-    expect(await screen.findByText('50.0 MB')).toBeTruthy();
-    expect(apiMock.getMetrics).toHaveBeenCalledTimes(1);
-    // Server status list is populated from the admin API.
+    expect(await screen.findByText('1 000')).toBeTruthy();
     expect(await screen.findByText('gateway-echo')).toBeTruthy();
+    expect(screen.getByText('in the last 5 minutes')).toBeTruthy();
+    expect(screen.getByText('No recent activity.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'gateway-echo' }));
+    expect(onOpenServer).toHaveBeenCalledWith('echo-v1');
+    fireEvent.click(screen.getByRole('button', { name: /add server/i }));
+    expect(onNavigate).toHaveBeenCalledWith('catalog', { catalogTab: 'import' });
+    fireEvent.click(screen.getByRole('button', { name: /view activity/i }));
+    expect(onNavigate).toHaveBeenCalledWith('audit');
   });
+
+  it('reports an unavailable broker rather than inventing a device count', async () => {
+    apiMock.listComputerUseComputers.mockResolvedValue({ broker: { reachable: false }, computers: [] });
+    render(<DashboardPage />);
+    expect(await screen.findByText('Broker unavailable')).toBeTruthy();
+  });
+
 });
 
 describe('RbacPage', () => {
@@ -153,6 +168,7 @@ describe('Layout', () => {
     );
 
     expect(screen.getByText('page content')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /more/i }));
     for (const label of ['Overview', 'Email', 'Servers', 'Devices & computers', 'Configurations', 'Secrets', 'API keys & access', 'Vault', 'Activity', 'Approvals', 'Playground', 'Settings']) {
       expect(screen.getAllByText(label).length).toBeGreaterThan(0);
     }

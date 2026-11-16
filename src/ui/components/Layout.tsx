@@ -54,6 +54,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
   },
 ];
 
+const PRIMARY_PAGES: readonly PageKey[] = ['dashboard', 'catalog', 'rbac', 'configurations', 'devices', 'audit', 'settings'];
+
 type ConnectionState = 'checking' | 'online' | 'offline';
 
 function userInitials(username: string): string {
@@ -75,6 +77,8 @@ export interface LayoutProps {
 /** Console shell: sidebar navigation, gateway health, signed-in operator. */
 export function Layout({ current, onNavigate, user, onSignOut, signingOut = false, children }: LayoutProps) {
   const [connection, setConnection] = useState<ConnectionState>('checking');
+  const [moreOpen, setMoreOpen] = useState(() => !PRIMARY_PAGES.includes(current));
+  useEffect(() => { if (!PRIMARY_PAGES.includes(current) && current !== 'server') setMoreOpen(true); }, [current]);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { return localStorage.getItem('gateway-theme') === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
   });
@@ -118,10 +122,10 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
       onClick={() => onNavigate(item.key)}
       aria-current={item.key === current ? 'page' : undefined}
       className={cx(
-        'flex items-center gap-2 rounded-lg text-left text-sm font-medium transition-colors',
+        'gateway-nav-item flex items-center gap-2 rounded-lg text-left text-sm font-medium transition-colors',
         compact ? 'shrink-0 px-3 py-1.5' : 'w-full px-3 py-2',
         item.key === current
-          ? 'bg-slate-800 text-sky-300'
+          ? 'bg-indigo-500/25 text-indigo-300'
           : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200',
       )}
     >
@@ -133,7 +137,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
   );
 
   return (
-    <div className="flex min-h-screen bg-slate-950 text-slate-100">
+    <div className="gateway-shell flex min-h-screen bg-slate-950 text-slate-100">
       {/*
        * The sidebar is pinned to the viewport. Without `sticky top-0 h-dvh` it
        * is a stretched flex item: it grows to the full document height, so a
@@ -150,12 +154,14 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
             MCP
           </span>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-slate-100">Gateway Console</p>
-            <p className="text-[11px] text-slate-500">zero-trust control plane</p>
+            <p className="truncate text-sm font-semibold text-slate-100">MCP Gateway</p>
+            <p className="text-[11px] text-slate-500">Connected, in one place</p>
           </div>
         </div>
         <nav aria-label="Primary" className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-          {NAV_ITEMS.map((item) => navButton(item, false))}
+          {NAV_ITEMS.filter((item) => PRIMARY_PAGES.includes(item.key)).sort((a, b) => PRIMARY_PAGES.indexOf(a.key) - PRIMARY_PAGES.indexOf(b.key)).map((item) => navButton(item, false))}
+          <button type="button" className="more-toggle" aria-expanded={moreOpen} onClick={() => setMoreOpen(!moreOpen)}><span aria-hidden="true">⋯</span> More <span className="more-chevron">{moreOpen ? '−' : '+'}</span></button>
+          {moreOpen && <div className="more-pages">{NAV_ITEMS.filter((item) => !PRIMARY_PAGES.includes(item.key)).map((item) => navButton(item, false))}</div>}
         </nav>
         <div className="shrink-0 space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
           <p>v0.16.0 · MCP 2025-06-18</p>
@@ -176,7 +182,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
               type="button"
               onClick={onSignOut}
               disabled={signingOut}
-              className="mt-2 w-full rounded-md border border-slate-700 px-2 py-1 text-[11px] font-semibold text-slate-300 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              className="gateway-header-action mt-2 w-full rounded-md border border-slate-700 px-2 py-1 text-[11px] font-semibold text-slate-300 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {signingOut ? 'Signing out…' : 'Sign out'}
             </button>
@@ -188,11 +194,11 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
         <header className="sticky top-0 z-20 border-b border-slate-800 bg-slate-950/85 backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
             <div className="min-w-0">
-              <h1 className="text-lg font-semibold text-slate-100">{active?.label ?? 'Dashboard'}</h1>
-              <p className="hidden text-xs text-slate-400 sm:block">{active?.description ?? ''}</p>
+              <h1 className="text-lg font-semibold text-slate-100">{current === 'dashboard' ? 'MCP Gateway' : active?.label ?? 'Dashboard'}</h1>
+              <p className="hidden text-xs text-slate-400 sm:block">{current === 'dashboard' ? 'Your workspace' : active?.description ?? ''}</p>
             </div>
             <div className="flex items-center gap-2">
-              <button type="button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800">{theme === 'dark' ? '☀ Light' : '☾ Dark'}</button>
+              <button type="button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} className="gateway-header-action rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800">{theme === 'dark' ? '☀ Light' : '☾ Dark'}</button>
               <span
                 className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-slate-300"
                 title="Gateway health probe (/mcp/v1/health)"
@@ -221,7 +227,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
                 type="button"
                 onClick={onSignOut}
                 disabled={signingOut}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                className="gateway-header-action rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {signingOut ? 'Signing out…' : 'Sign out'}
               </button>
