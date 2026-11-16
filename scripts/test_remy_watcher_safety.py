@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -67,6 +68,34 @@ class SafetyTests(unittest.TestCase):
         event = watchers._x_event({'id': 'x1', 'author': 'commenter', 'created_at': '2026-01-02'}, 'reply', watched_account='target')
         self.assertTrue(watchers.event_allowed(event, {'enabled': True, 'mode': 'selected', 'selected': ['x:target']}))
         self.assertFalse(watchers.event_allowed(event, {'enabled': True, 'mode': 'selected', 'selected': ['x:someoneelse']}))
+
+    def test_x_deduplicates_a_post_that_is_also_a_mention(self):
+        row = {'id': 'p1', 'author': 'person', 'created_at': '2026-01-02', 'text': '@me hello'}
+        client = SimpleNamespace(user_posts=lambda *a, **kw: {'rows': [row.copy()]},
+                                 replies_of=lambda *a, **kw: {'rows': []},
+                                 mentions=lambda *a, **kw: {'rows': [row.copy()]})
+        config = SimpleNamespace(CHANNELS=['person'], MENTION_HANDLES=['me'])
+        formats = SimpleNamespace(rows=lambda payload: payload['rows'], mentions_handle=lambda *a: True)
+        with patch.object(watchers, '_x_modules', return_value=(client, config, formats, None)):
+            events = watchers.read_x_activity()['events']
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['kind'], 'mention')
+
+    def test_x_first_scan_keeps_alerts_but_does_not_like_backlog(self):
+        event = watchers._x_event({'id': 'p1', 'author': 'person', 'created_at': '2026-01-02'}, 'mention')
+        self.store.set_cursor('x', '2026-01-01\told')
+        with patch.object(watchers, 'read_x_activity', return_value={'events': [event], 'posts': []}), patch.object(watchers, 'autolike_x', return_value={}) as likes:
+            watchers.run_x_once(self.store, self.delivery, {'enabled': True, 'mode': 'all'}, suppress_initial_likes=True)
+            self.assertTrue(likes.call_args.args[1])
+            self.assertEqual(self.delivery.sent, ['x:mention:p1'])
+
+    def test_x_waits_for_a_successful_scan_before_automatic_likes(self):
+        state = {'complete': False}
+        self.store.set_cursor('x', '2026-01-01\told')
+        with patch.object(watchers, 'read_x_activity', side_effect=[{'events': [], 'posts': [], 'read_ok': False}, {'events': [], 'posts': [], 'read_ok': True}, {'events': [], 'posts': [], 'read_ok': True}]), patch.object(watchers, 'autolike_x', return_value={}) as likes:
+            for _ in range(3):
+                watchers.run_x_once(self.store, self.delivery, {'enabled': True, 'mode': 'all'}, startup_state=state)
+            self.assertEqual([call.args[1] for call in likes.call_args_list], [True, True, False])
 
     def test_youtube_new_video_respects_disabled_and_selected_modes(self):
         video = {'video_id': 'v1', 'published_at': '2026-01-02', 'channel': 'wanted', 'channel_id': 'channel1', 'kind': 'video', 'title': 'Example'}

@@ -101,8 +101,8 @@ function status() {
 }
 
 const tools = [
-  { name: 'watchers_status', description: 'Status of the WhatsApp, Instagram and YouTube watcher workers, including restarts and last exit.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'watchers_restart', description: 'Restart the WhatsApp, Instagram and YouTube watcher workers.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'watchers_status', description: `Status of the managed ${SOURCES.join(', ')} workers, including restarts and last exit.`, inputSchema: { type: 'object', properties: {} } },
+  { name: 'watchers_restart', description: `Restart the managed ${SOURCES.join(', ')} workers.`, inputSchema: { type: 'object', properties: {} } },
 ];
 
 function write(payload) {

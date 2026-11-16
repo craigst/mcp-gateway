@@ -2092,6 +2092,7 @@ def read_x_activity(
     targets = channels or list(x_config.CHANNELS or [])
     events: list[dict[str, Any]] = []
     posts: list[dict[str, Any]] = []
+    read_ok = True
 
     def fresh(event: dict[str, Any]) -> bool:
         return after is None or (event["timestamp"], event["event_id"]) > after
@@ -2101,6 +2102,7 @@ def read_x_activity(
             payload = x_client.user_posts(handle, limit, include_replies=True,
                                          include_reposts=False)
         except Exception as exc:  # noqa: BLE001
+            read_ok = False
             LOG.warning("source=x account=%s read_failed=%s", handle, type(exc).__name__)
             continue
         rows = x_formats.rows(payload)
@@ -2141,10 +2143,20 @@ def read_x_activity(
             if fresh(event):
                 events.append(event)
     except Exception as exc:  # noqa: BLE001
+        read_ok = False
         LOG.warning("source=x mentions_read_failed=%s", type(exc).__name__)
 
-    events.sort(key=lambda event: (event["timestamp"], event["event_id"]))
-    return {"events": events, "posts": posts}
+    # The same post can appear both in an account timeline and in mentions.
+    # Keep the most informative kind so Remy gets one event per post.
+    priority = {"post": 0, "quote": 1, "reply": 2, "mention": 3}
+    unique = {}
+    for event in events:
+        key = str(event.get("post_id") or event["event_id"])
+        prior = unique.get(key)
+        if prior is None or priority.get(event.get("kind"), 0) > priority.get(prior.get("kind"), 0):
+            unique[key] = event
+    events = sorted(unique.values(), key=lambda event: (event["timestamp"], event["event_id"]))
+    return {"events": events, "posts": posts, "read_ok": read_ok}
 
 
 def _x_event(row: dict[str, Any], kind: str,
@@ -2263,6 +2275,8 @@ def run_x_once(
     store: StateStore,
     delivery: WebhookDelivery,
     settings: Optional[dict[str, Any]] = None,
+    suppress_initial_likes: bool = False,
+    startup_state: Optional[dict[str, bool]] = None,
 ) -> int:
     """Queue what Remy should draft, and like what the settings allow."""
     raw = store.cursor("x")
@@ -2281,13 +2295,18 @@ def run_x_once(
 
     count = process_events(store, "x", allowed, delivery, False, effective)
 
-    likes = autolike_x(events, baseline, x_settings(effective), activity.get("posts"))
+    # A newly started worker may have an old cursor. Preserve draft alerts for
+    # that gap, but do not suddenly like a backlog of old posts on startup.
+    initial = suppress_initial_likes or (startup_state is not None and not startup_state.get("complete", False))
+    likes = autolike_x(events, baseline or initial, x_settings(effective), activity.get("posts"))
     LOG.info("source=x autolike likes=%s failed=%s reasons=%s",
              likes.get("likes"), likes.get("failed"),
              "; ".join(likes.get("reasons") or []) or "none")
 
     if newest is not None:
         store.set_cursor("x", _cursor_value(*newest))
+    if startup_state is not None and activity.get("read_ok") is True:
+        startup_state["complete"] = True
     return count
 
 
@@ -2748,6 +2767,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         last_contact_sync = 0.0
         last_read = 0.0
         last_automation = 0.0
+        x_startup_state = {"complete": False}
         tick = 15
         while True:
             try:
@@ -2809,7 +2829,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 elif args.source == "youtube":
                     count = run_youtube_once(store, delivery, settings=settings_cache)
                 else:
-                    count = run_x_once(store, delivery, settings=settings_cache)
+                    count = run_x_once(store, delivery, settings=settings_cache, startup_state=x_startup_state)
                 LOG.info("source=%s queued=%d", args.source, count)
             except Exception as exc:  # do not spin on auth/challenge/throttle failures
                 LOG.error("source=%s read_failed=%s", args.source, type(exc).__name__)
