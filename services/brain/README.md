@@ -43,3 +43,12 @@ available for rollback. The adapter identity is configured per server process;
 it is not an automatically isolated per-gateway-key identity. A rollback after
 new writes must preserve those writes and reconcile them before changing back;
 simply switching endpoints back would lose access to new data.
+
+For a marked staging target, `migration/sync_incremental.py` reports source-only
+vectors and can copy them with `--apply`; it never overwrites or deletes an
+existing point. It refuses to apply diverged memory collections. Document
+comparison checks IDs only because the staging repair may legitimately add or
+change catalogue metadata. Run reconciliation and audit afterwards. Repeated
+incremental syncs reduce drift but do not replace a final coordinated snapshot:
+concurrent updates, deletions and changes to PostgreSQL or files still require
+independent checks.
