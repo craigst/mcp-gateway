@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, formatApiError } from '../../lib/api.js';
 import { Badge } from '../../components/Badge.js';
+import { DeviceBridgeStatus } from './DeviceBridgeStatus.js';
 import { Card } from '../../components/Card.js';
 import { ConfirmDialog } from '../../components/ConfirmDialog.js';
 import { Notice } from '../../components/States.js';
@@ -68,6 +69,7 @@ export interface DevicesPageProps {
   /** Deep-link target (`#/devices?tab=…`); defaults to Computers. */
   initialTab?: DevicesTab;
   onTabChange?: (tab: DevicesTab) => void;
+  onOpenServer?: (id: string) => void;
 }
 
 /**
@@ -84,7 +86,7 @@ export interface DevicesPageProps {
  * - **Agent access** — the managed `computer-use` MCP server, its tools and
  *   recent audit activity.
  */
-export function DevicesPage({ initialTab = DEFAULT_DEVICES_TAB, onTabChange }: DevicesPageProps) {
+export function DevicesPage({ initialTab = DEFAULT_DEVICES_TAB, onTabChange, onOpenServer }: DevicesPageProps) {
   const toast = useToast();
 
   const overview = useLiveData(() => api.getComputerUseOverview(), { intervalMs: OVERVIEW_POLL_MS });
@@ -510,6 +512,7 @@ export function DevicesPage({ initialTab = DEFAULT_DEVICES_TAB, onTabChange }: D
         <Card title="Connector status" subtitle="See reported connector names and states alongside your computers." actions={<SecondaryButton onClick={() => setTab('connectors')} className="px-2 py-1 text-xs">Manage connectors</SecondaryButton>}>
           {connectors.data === null ? <p className="text-xs text-slate-400">{connectors.error ? 'Connector status unavailable.' : 'Loading connector status…'}</p> : !connectors.data.broker.reachable ? <p className="text-xs text-amber-300">The broker is unavailable; connector status cannot be confirmed.</p> : devices.length === 0 ? <p className="text-xs text-slate-400">No connectors reported.</p> : <ul className="flex flex-wrap gap-2">{devices.map((device) => <li key={device.id} className="flex items-center gap-2 rounded-lg border border-slate-800 px-3 py-2 text-xs text-slate-200"><span>{device.name}</span><Badge tone={deviceStateTone(device.state)}>{device.state}</Badge></li>)}</ul>}
         </Card>
+        <DeviceBridgeStatus onOpenServer={onOpenServer} />
         <AvailabilityCard
           overview={overview.data}
           loading={overview.loading}
