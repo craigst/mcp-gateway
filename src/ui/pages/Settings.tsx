@@ -5,6 +5,7 @@ import { useAsyncData } from '../lib/hooks.js';
 import { formatBytes, formatNumber, formatTimestamp } from '../lib/format.js';
 import { triggerBrowserDownload } from '../lib/download.js';
 import { Card } from '../components/Card.js';
+import { Tabs } from '../components/Tabs.js';
 import { Badge } from '../components/Badge.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { ErrorState, Notice } from '../components/States.js';
@@ -21,7 +22,6 @@ import {
 import { useToast } from '../components/Toasts.js';
 import { CredentialsSection } from './settings/CredentialsSection.js';
 import { CreateBackupDialog, RestoreBackupDialog } from './settings/BackupDialogs.js';
-import { ApiKeyDialog } from './settings/ApiKeyDialog.js';
 import type { PageKey } from '../components/Layout.js';
 import type { BackupMetadata, RestoreResult } from '../../core/types.js';
 
@@ -36,6 +36,7 @@ export interface SettingsPageProps {
 /** Settings: account, system info, quick API keys and encrypted backups. */
 export function SettingsPage({ username, onNavigate, onReturnToLogin }: SettingsPageProps) {
   const toast = useToast();
+  const [section, setSection] = useState<'account' | 'system' | 'providers' | 'backups'>('account');
   const settings = useAsyncData(() => api.getSettings(), []);
   const backups = useAsyncData(() => api.listBackups(), []);
 
@@ -47,7 +48,6 @@ export function SettingsPage({ username, onNavigate, onReturnToLogin }: Settings
 
   const [createOpen, setCreateOpen] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
-  const [apiKeyKind, setApiKeyKind] = useState<'master' | 'agent' | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BackupMetadata | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -197,7 +197,9 @@ export function SettingsPage({ username, onNavigate, onReturnToLogin }: Settings
         </Notice>
       )}
 
-      <Card title="Account" subtitle={`${formatNumber(account?.sessionCount ?? 0)} active session(s)`}>
+      <Tabs items={[{ key: 'account', label: 'Account' }, { key: 'system', label: 'System' }, { key: 'providers', label: 'Credential providers' }, { key: 'backups', label: 'Backups' }]} active={section} onChange={setSection} label="Account and system settings" />
+
+      <div role="tabpanel" id="tabpanel-account" aria-labelledby="tab-account" hidden={section !== 'account'}><Card title="Account" subtitle={`${formatNumber(account?.sessionCount ?? 0)} active session(s)`}>
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="space-y-2">
             <p className="text-xs text-slate-400">
@@ -246,19 +248,15 @@ export function SettingsPage({ username, onNavigate, onReturnToLogin }: Settings
               The console uses your account session. AI agents and external tools authenticate with API keys.
             </p>
             <div className="flex flex-wrap gap-2">
-              <SecondaryButton onClick={() => setApiKeyKind('master')} className="px-3 py-1.5 text-xs">
-                Create master key
+              <SecondaryButton onClick={() => onNavigate?.('rbac')} className="px-3 py-1.5 text-xs">
+                Manage API keys and access →
               </SecondaryButton>
-              <SecondaryButton onClick={() => setApiKeyKind('agent')} className="px-3 py-1.5 text-xs">
-                Create agent key
-              </SecondaryButton>
-              <GhostButton onClick={() => onNavigate?.('rbac')}>Manage scopes in RBAC →</GhostButton>
             </div>
           </div>
         </div>
-      </Card>
+      </Card></div>
 
-      <Card
+      <div role="tabpanel" id="tabpanel-system" aria-labelledby="tab-system" hidden={section !== 'system'}><Card
         title="System"
         subtitle="Read-only runtime configuration (environment / container managed)"
         actions={<GhostButton onClick={settings.reload}>Refresh</GhostButton>}
@@ -275,11 +273,11 @@ export function SettingsPage({ username, onNavigate, onReturnToLogin }: Settings
             ))}
           </dl>
         )}
-      </Card>
+      </Card></div>
 
-      <CredentialsSection onNavigateSecrets={() => onNavigate?.('secrets')} />
+      <div role="tabpanel" id="tabpanel-providers" aria-labelledby="tab-providers" hidden={section !== 'providers'}><CredentialsSection onNavigateSecrets={() => onNavigate?.('secrets')} /></div>
 
-      <Card
+      <div role="tabpanel" id="tabpanel-backups" aria-labelledby="tab-backups" hidden={section !== 'backups'}><Card
         title="Backups"
         subtitle="AES-256-GCM encrypted, scrypt key derived from your account password"
         actions={
@@ -378,7 +376,7 @@ export function SettingsPage({ username, onNavigate, onReturnToLogin }: Settings
               </div>
             ))}
         </div>
-      </Card>
+      </Card></div>
 
       {createOpen && (
         <CreateBackupDialog
@@ -393,7 +391,6 @@ export function SettingsPage({ username, onNavigate, onReturnToLogin }: Settings
           onReturnToLogin={onReturnToLogin}
         />
       )}
-      {apiKeyKind !== null && <ApiKeyDialog kind={apiKeyKind} onClose={() => setApiKeyKind(null)} />}
 
       <ConfirmDialog
         open={deleteTarget !== null}

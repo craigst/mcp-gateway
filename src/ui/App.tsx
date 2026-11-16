@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from './lib/api.js';
 import type { LoginResponse, SessionUser } from './lib/api.js';
 import { Layout } from './components/Layout.js';
+import { SectionNav } from './components/SectionNav.js';
 import type { PageKey } from './components/Layout.js';
 import { pageHash, parseHash } from './lib/routes.js';
 import { ToastProvider } from './components/Toasts.js';
@@ -9,6 +10,8 @@ import { LoginPage } from './pages/Login.js';
 import { DashboardPage } from './pages/Dashboard.js';
 import { EmailPage } from './pages/Email.js';
 import { CatalogPage } from './pages/Catalog.js';
+import { KnowledgePage } from './pages/Knowledge.js';
+import { WatchersPage } from './pages/Watchers.js';
 import { ConfigurationsPage } from './pages/Configurations.js';
 import type { CatalogTab } from './pages/Catalog.js';
 import { DevicesPage } from './pages/devices/DevicesPage.js';
@@ -49,6 +52,14 @@ interface RenderContext {
 }
 
 function renderPage(page: PageKey, context: RenderContext) {
+  const settingsPages: PageKey[] = ['settings', 'configurations', 'secrets', 'vault', 'playground'];
+  const activityPages: PageKey[] = ['audit', 'delegation'];
+  const section = settingsPages.includes(page) ? 'settings' : activityPages.includes(page) ? 'activity' : null;
+  const content = renderPageContent(page, context);
+  return section ? <div className="space-y-5"><SectionNav current={page} section={section} onNavigate={context.onNavigate} />{content}</div> : content;
+}
+
+function renderPageContent(page: PageKey, context: RenderContext) {
   switch (page) {
     case 'email':
       return <EmailPage />;
@@ -69,6 +80,10 @@ function renderPage(page: PageKey, context: RenderContext) {
           onBack={() => context.onNavigate('catalog')}
         />
       );
+    case 'knowledge':
+      return <KnowledgePage onOpenServer={context.onOpenServer} />;
+    case 'watchers':
+      return <WatchersPage />;
     case 'configurations':
       return <ConfigurationsPage onNavigate={context.onNavigate} />;
     case 'devices':

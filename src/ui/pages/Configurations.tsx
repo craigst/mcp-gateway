@@ -12,8 +12,6 @@ import { DangerButton, GhostButton, PrimaryButton, SecondaryButton } from '../co
 import { useToast } from '../components/Toasts.js';
 import { ConfigProfileDialog } from '../pages/configurations/ConfigProfileDialog.js';
 import { ApplyProfileDialog } from '../pages/configurations/ApplyProfileDialog.js';
-import { WatcherCard } from '../pages/configurations/WatcherCard.js';
-import { InstagramSessionCard } from '../pages/configurations/InstagramSessionCard.js';
 import { countCredentialRefs, countEncrypted, countVaultRefs } from '../pages/configurations/shared.js';
 import type { PageKey } from '../components/Layout.js';
 import type { ConfigProfileSummary, ServerRecord } from '../../core/types.js';
@@ -76,48 +74,8 @@ export function ConfigurationsPage({ onNavigate }: ConfigurationsPageProps) {
     }
   };
 
-  const scrollToWatcher = (source: 'whatsapp' | 'instagram' | 'youtube' | 'x'): void => {
-    document.getElementById(`watcher-${source}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-base font-semibold text-slate-100">Push to Remy</h2>
-          <p className="mt-0.5 max-w-3xl text-xs leading-relaxed text-slate-400">
-            Choose which messages reach Remy. Replies always stay as drafts for your confirmation — auto-reply is
-            disabled.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <SecondaryButton onClick={() => scrollToWatcher('whatsapp')} className="px-2 py-1 text-xs">
-            WhatsApp settings
-          </SecondaryButton>
-          <SecondaryButton onClick={() => scrollToWatcher('instagram')} className="px-2 py-1 text-xs">
-            Instagram settings
-          </SecondaryButton>
-          <SecondaryButton onClick={() => scrollToWatcher('youtube')} className="px-2 py-1 text-xs">
-            YouTube settings
-          </SecondaryButton>
-          <SecondaryButton onClick={() => scrollToWatcher('x')} className="px-2 py-1 text-xs">
-            X settings
-          </SecondaryButton>
-        </div>
-      </div>
-      <div id="watcher-whatsapp" className="scroll-mt-4">
-        <WatcherCard source="whatsapp" />
-      </div>
-      <div id="watcher-instagram" className="scroll-mt-4 space-y-4">
-        <WatcherCard source="instagram" />
-        <InstagramSessionCard />
-      </div>
-      <div id="watcher-youtube" className="scroll-mt-4">
-        <WatcherCard source="youtube" />
-      </div>
-      <div id="watcher-x" className="scroll-mt-4">
-        <WatcherCard source="x" />
-      </div>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-slate-100">Configuration profiles</h2>

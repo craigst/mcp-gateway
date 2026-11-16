@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../../lib/api.js';
+import { activityAction } from '../../lib/activity.js';
 import { useAsyncData } from '../../lib/hooks.js';
 import { Badge, badgeToneForStatus } from '../../components/Badge.js';
 import { StatTile } from '../../components/StatTile.js';
@@ -199,7 +200,8 @@ export function KeyActivityTab({ keyId }: KeyActivityTabProps) {
                   header: 'Method / tool',
                   render: (entry) => (
                     <div className="text-[11px] text-slate-400">
-                      <p className="font-mono text-slate-300">{entry.method}</p>
+                      <p className="text-slate-200">{activityAction(entry)}</p>
+                      <p className="font-mono text-slate-500">{entry.method}</p>
                       <p className="font-mono text-slate-500">{entry.toolId ?? '—'}</p>
                     </div>
                   ),
@@ -208,7 +210,7 @@ export function KeyActivityTab({ keyId }: KeyActivityTabProps) {
                   key: 'server',
                   header: 'Server',
                   render: (entry) => (
-                    <span className="font-mono text-[11px] text-slate-400">{entry.serverId ?? '—'}</span>
+                    <span className="text-[11px] text-slate-400">{entry.serverId ? stats?.serverUsage.find((server) => server.serverId === entry.serverId)?.name ?? `Unknown server (${entry.serverId})` : '—'}</span>
                   ),
                 },
                 {

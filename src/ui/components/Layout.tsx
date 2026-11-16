@@ -16,6 +16,8 @@ export interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { key: 'dashboard', label: 'Overview', icon: '◔', description: 'Your gateway at a glance.' },
+  { key: 'knowledge', label: 'Knowledge', icon: '▤', description: 'Search memories and documents from connected brain servers.' },
+  { key: 'watchers', label: 'Watchers', icon: 'ϟ', description: 'Choose a social channel and manage its watcher settings.' },
   { key: 'email', label: 'Email', icon: '✉', description: 'Read, search, compose and manage every connected mailbox from one account-aware client.' },
   {
     key: 'catalog',
@@ -54,7 +56,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
   },
 ];
 
-const PRIMARY_PAGES: readonly PageKey[] = ['dashboard', 'catalog', 'rbac', 'configurations', 'devices', 'audit', 'settings'];
+const PRIMARY_PAGES: readonly PageKey[] = ['dashboard', 'catalog', 'rbac', 'knowledge', 'watchers', 'devices', 'email', 'audit', 'settings'];
+const SETTINGS_PAGES: readonly PageKey[] = ['settings', 'configurations', 'secrets', 'vault', 'playground'];
 
 type ConnectionState = 'checking' | 'online' | 'offline';
 
@@ -77,8 +80,6 @@ export interface LayoutProps {
 /** Console shell: sidebar navigation, gateway health, signed-in operator. */
 export function Layout({ current, onNavigate, user, onSignOut, signingOut = false, children }: LayoutProps) {
   const [connection, setConnection] = useState<ConnectionState>('checking');
-  const [moreOpen, setMoreOpen] = useState(() => !PRIMARY_PAGES.includes(current));
-  useEffect(() => { if (!PRIMARY_PAGES.includes(current) && current !== 'server') setMoreOpen(true); }, [current]);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { return localStorage.getItem('gateway-theme') === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
   });
@@ -120,7 +121,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
       key={item.key}
       type="button"
       onClick={() => onNavigate(item.key)}
-      aria-current={item.key === current ? 'page' : undefined}
+      aria-current={item.key === current || (item.key === 'settings' && SETTINGS_PAGES.includes(current)) || (item.key === 'audit' && current === 'delegation') ? 'page' : undefined}
       className={cx(
         'gateway-nav-item flex items-center gap-2 rounded-lg text-left text-sm font-medium transition-colors',
         compact ? 'shrink-0 px-3 py-1.5' : 'w-full px-3 py-2',
@@ -160,8 +161,6 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
         </div>
         <nav aria-label="Primary" className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
           {NAV_ITEMS.filter((item) => PRIMARY_PAGES.includes(item.key)).sort((a, b) => PRIMARY_PAGES.indexOf(a.key) - PRIMARY_PAGES.indexOf(b.key)).map((item) => navButton(item, false))}
-          <button type="button" className="more-toggle" aria-expanded={moreOpen} onClick={() => setMoreOpen(!moreOpen)}><span aria-hidden="true">⋯</span> More <span className="more-chevron">{moreOpen ? '−' : '+'}</span></button>
-          {moreOpen && <div className="more-pages">{NAV_ITEMS.filter((item) => !PRIMARY_PAGES.includes(item.key)).map((item) => navButton(item, false))}</div>}
         </nav>
         <div className="shrink-0 space-y-2 border-t border-slate-800 px-4 py-3 text-[11px] text-slate-500">
           <p>v0.16.0 · MCP 2025-06-18</p>
@@ -234,7 +233,7 @@ export function Layout({ current, onNavigate, user, onSignOut, signingOut = fals
             </div>
           </div>
           <nav aria-label="Primary mobile" className="flex gap-1 overflow-x-auto px-3 pb-2 md:hidden">
-            {NAV_ITEMS.map((item) => navButton(item, true))}
+            {NAV_ITEMS.filter((item) => PRIMARY_PAGES.includes(item.key)).sort((a, b) => PRIMARY_PAGES.indexOf(a.key) - PRIMARY_PAGES.indexOf(b.key)).map((item) => navButton(item, true))}
           </nav>
         </header>
 
