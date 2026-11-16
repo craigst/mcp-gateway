@@ -27,6 +27,25 @@ LOCK_FILE="${LOCK_FILE:-/run/mcp-gateway-update.lock}"
 log() { printf '%s updater: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*"; exit 1; }
 
+# Refuse to copy or replace SQLite files while any visible host process has
+# them open. Run as root so lsof can inspect the processes in all containers.
+database_is_idle() {
+  local result status
+  local -a files=()
+  local file
+  for file in "$COMPOSE_DIR/data/gateway.db" "$COMPOSE_DIR/data/gateway.db-wal" "$COMPOSE_DIR/data/gateway.db-shm"; do
+    [ ! -e "$file" ] || files+=("$file")
+  done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  [ "$(id -u)" -eq 0 ] || { log "ERROR: root is required to inspect database users"; return 1; }
+  command -v lsof >/dev/null || { log "ERROR: lsof is required to verify database users"; return 1; }
+  result="$(lsof -t -- "${files[@]}" 2>&1)" && status=0 || status=$?
+  if [ "$status" -ne 1 ] || [ -n "$result" ]; then
+    log "ERROR: database files are open or cannot be inspected; refusing database operation"
+    return 1
+  fi
+}
+
 [ -d "$COMPOSE_DIR" ] || die "no $COMPOSE_DIR"
 cd "$COMPOSE_DIR"
 
@@ -104,6 +123,7 @@ recover_on_exit() {
     exit 1
   fi
   if [ "$snapshot_ready" -eq 1 ]; then
+    database_is_idle || { log "ERROR: database left untouched; gateway left stopped"; exit 1; }
     cp -a "$backup" "$COMPOSE_DIR/data/gateway.db" || {
       log "ERROR: database restore failed; gateway left stopped"
       exit 1
@@ -114,10 +134,16 @@ recover_on_exit() {
         exit 1
       }
     else
-      rm -f "$COMPOSE_DIR/data/gateway.db-wal"
+      rm -f "$COMPOSE_DIR/data/gateway.db-wal" || {
+        log "ERROR: stale WAL removal failed; gateway left stopped"
+        exit 1
+      }
     fi
     # SQLite can rebuild the shared-memory index from the restored WAL.
-    rm -f "$COMPOSE_DIR/data/gateway.db-shm"
+    rm -f "$COMPOSE_DIR/data/gateway.db-shm" || {
+      log "ERROR: shared-memory index removal failed; gateway left stopped"
+      exit 1
+    }
   fi
   if ! MCP_IMAGE_TAG=rollback "${COMPOSE[@]}" up -d gateway >/dev/null; then
     log "ERROR: previous image could not be started; manual intervention required"
@@ -138,6 +164,10 @@ trap 'exit 1' HUP INT TERM
 
 log "stopping $CONTAINER for a clean SQLite snapshot"
 "${COMPOSE[@]}" stop gateway >/dev/null
+running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" \
+  || die "unable to verify gateway is stopped before snapshot"
+[ "$running" = false ] || die "gateway is still running; refusing to snapshot a live database"
+database_is_idle || die "cannot safely snapshot database"
 
 if [ -f "$COMPOSE_DIR/data/gateway.db" ]; then
   cp -a "$COMPOSE_DIR/data/gateway.db" "$backup"

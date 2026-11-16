@@ -94,12 +94,20 @@ pull`s, and compares image **IDs**. When they match it exits having changed
 nothing — the normal case. When they differ it:
 
 1. tags the outgoing image `ghcr.io/craigst/mcp-gateway:rollback`;
-2. stops the container and copies `gateway.db` (+ `-wal`, `-shm`) into
-   `backups/gateway-pre-<version>-<stamp>.db` — stopped, so it is a consistent
-   snapshot, not a torn WAL;
+2. stops the container, checks its state and uses `lsof` to check for open
+   database files, then copies `gateway.db` and any WAL into
+   `backups/gateway-pre-<version>-<stamp>.db`;
 3. starts the new image, then polls `/mcp/v1/health` for up to 60 s;
 4. on failure: restores the database, restarts with `MCP_IMAGE_TAG=rollback`,
-   confirms health, and exits 1 so the failure is visible in the journal.
+   confirms health, and exits 1 so the failure is visible in the journal. The
+   failed image ID is recorded to prevent timer retries until investigated.
+
+Run the updater as root on the Docker host with `lsof` installed. It refuses a
+snapshot or restore if files are open or their users cannot be checked. Ensure
+no other service can start using the database during the update; an open-file
+check is a point-in-time observation, not a lock against new users. If recovery
+cannot safely restore or restart, the gateway may remain stopped and requires
+operator intervention.
 
 The package is public, so **no registry credentials exist on this host**. The
 pull path needs no token and there is nothing to rotate.

@@ -26,6 +26,7 @@ if [[ "$1" == compose ]]; then
     config) echo ghcr.io/craigst/mcp-gateway:0.16.0 ;;
     pull) : ;;
     stop)
+      if [[ "${CASE_FALSE_INITIAL_STOP:-0}" == 1 && "$(cat "$CASE_DIR/state")" == old ]]; then exit 0; fi
       if [[ "${CASE_FAIL_ROLLBACK_STOP:-0}" == 1 && "$(cat "$CASE_DIR/state")" == new ]]; then exit 1; fi
       if [[ "${CASE_FALSE_STOP:-0}" == 1 && "$(cat "$CASE_DIR/state")" == new ]]; then exit 0; fi
       echo stopped > "$CASE_DIR/state" ;;
@@ -34,6 +35,7 @@ if [[ "$1" == compose ]]; then
         echo rollback > "$CASE_DIR/state"
       else
         echo new > "$CASE_DIR/state"
+        touch "$CASE_DIR/started-new"
         echo changed > "$CASE_DIR/data/gateway.db"
         echo changed-wal > "$CASE_DIR/data/gateway.db-wal"
         [[ "${CASE_FAIL_UP:-0}" == 0 ]] || exit 1
@@ -59,6 +61,19 @@ exec /usr/bin/cp "$@"
 '''
 
 
+RM = r'''#!/usr/bin/env bash
+if [[ "${CASE_FAIL_SHM_REMOVE:-0}" == 1 && "$*" == *gateway.db-shm* ]]; then exit 1; fi
+exec /usr/bin/rm "$@"
+'''
+
+LSOF = r'''#!/usr/bin/env bash
+if [[ "${CASE_EXTERNAL_HOLDER:-0}" == 1 && -f "$CASE_DIR/started-new" ]]; then
+  echo 99999
+  exit 0
+fi
+exec /usr/bin/lsof "$@"
+'''
+
 class UpdaterTest(unittest.TestCase):
     def run_case(self, **options):
         temp = tempfile.TemporaryDirectory()
@@ -69,7 +84,7 @@ class UpdaterTest(unittest.TestCase):
         (root / 'data/gateway.db').write_text('original database\n')
         (root / 'data/gateway.db-wal').write_text('original wal\n')
         (root / 'state').write_text('old')
-        for name, content in [('docker', DOCKER), ('curl', CURL), ('cp', CP)]:
+        for name, content in [('docker', DOCKER), ('curl', CURL), ('cp', CP), ('lsof', LSOF), ('rm', RM), ('id', '#!/bin/sh\necho 0\n')]:
             file = root / 'bin' / name
             file.write_text(content)
             file.chmod(0o755)
@@ -79,6 +94,11 @@ class UpdaterTest(unittest.TestCase):
         result = subprocess.run(['bash', str(SCRIPT)], env=env, text=True,
                                 capture_output=True, timeout=10)
         return root, result
+
+    def test_initial_stop_must_be_verified_before_snapshot(self):
+        root, result = self.run_case(CASE_FALSE_INITIAL_STOP="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(list((root / "backups").glob("*.db")))
 
     def test_success_keeps_new_database_and_backup(self):
         root, result = self.run_case(CASE_HEALTHY='1')
@@ -116,6 +136,19 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual((root / 'data/gateway.db').read_text(), 'changed\n')
         self.assertEqual((root / 'data/gateway.db-wal').read_text(), 'changed-wal\n')
         self.assertEqual((root / 'backups/failed-image-id').read_text().strip(), 'new-image')
+
+    def test_failed_shm_removal_leaves_gateway_stopped(self):
+        root, result = self.run_case(CASE_FAIL_SHM_REMOVE='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((root / 'state').read_text().strip(), 'stopped')
+        self.assertIn('shared-memory index removal failed', result.stdout)
+
+    def test_external_process_prevents_restore(self):
+        root, result = self.run_case(CASE_EXTERNAL_HOLDER='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((root / 'state').read_text().strip(), 'stopped')
+        self.assertEqual((root / 'data/gateway.db').read_text(), 'changed\n')
+        self.assertEqual((root / 'data/gateway.db-wal').read_text(), 'changed-wal\n')
 
     def test_running_state_must_be_verified_before_restore(self):
         root, result = self.run_case(CASE_FALSE_STOP='1')
