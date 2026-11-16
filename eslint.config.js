@@ -43,4 +43,17 @@ export default tseslint.config(
       'no-empty': ['error', { allowEmptyCatch: true }],
     },
   },
+  {
+    // The compatible brain adapter is a standalone CommonJS stdio process.
+    files: ['services/brain/mcp/**/*.js'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: { require: 'readonly', module: 'readonly', process: 'readonly', Buffer: 'readonly', console: 'readonly', URL: 'readonly', fetch: 'readonly', AbortController: 'readonly', setTimeout: 'readonly', clearTimeout: 'readonly' },
+    },
+    rules: { '@typescript-eslint/no-require-imports': 'off', 'preserve-caught-error': 'off', 'no-useless-assignment': 'off' },
+  },
+  {
+    files: ['services/brain/mcp/test/**/*.mjs'],
+    rules: { 'no-useless-assignment': 'off' },
+  },
 );

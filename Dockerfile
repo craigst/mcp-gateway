@@ -30,6 +30,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/ui/dist ./ui/dist
+COPY services/brain/mcp ./brain-mcp
 
 RUN mkdir -p /data && chown -R node:node /app /data
 USER node

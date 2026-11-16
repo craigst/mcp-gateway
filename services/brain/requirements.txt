@@ -1,0 +1,17 @@
+# Pinned deliberately: mem0's Memory API moved between 1.x and 2.x, and the call
+# shapes in app.py mirror what mem0ai 2.2.1 accepts.
+#
+# `ollama` is what mem0's OllamaLLM/OllamaEmbedding import (mem0 declares it in
+# its `llms` extra). Installing it directly rather than `mem0ai[llms]` avoids
+# dragging in litellm, groq, vertexai and google-generativeai for one provider.
+# `qdrant-client` is a CORE mem0 dependency, so the Qdrant vector store needs
+# nothing extra.
+mem0ai==2.2.1
+ollama>=0.3.0
+qdrant-client>=1.12.0
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.28
+psycopg[binary]>=3.2
+python-multipart>=0.0.9
