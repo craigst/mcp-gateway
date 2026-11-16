@@ -63,14 +63,20 @@ def _parse_proxy(proxy_url: str):
 def make_opener(proxy_url: str | Callable[[], str], *, context: ssl.SSLContext | None = None) -> urllib.request.OpenerDirector:
     provider = proxy_url if callable(proxy_url) else lambda: proxy_url
     _parse_proxy(provider())  # fail before starting a worker when configuration is invalid
+    reported_connection = False
 
     class SocksHTTPSConnection(http.client.HTTPSConnection):
         def connect(self) -> None:
             def via_proxy(address, timeout=socket_default_timeout, source_address=None):
+                nonlocal reported_connection
                 host, port, user, password = _parse_proxy(provider())
-                return socks.create_connection(address, timeout=timeout, source_address=source_address,
+                connection = socks.create_connection(address, timeout=timeout, source_address=source_address,
                     proxy_type=socks.SOCKS5, proxy_addr=host, proxy_port=port,
                     proxy_rdns=True, proxy_username=user, proxy_password=password)
+                if not reported_connection:
+                    reported_connection = True
+                    sys.stderr.write("social proxy connection established\n")
+                return connection
             self._create_connection = via_proxy
             super().connect()
 
