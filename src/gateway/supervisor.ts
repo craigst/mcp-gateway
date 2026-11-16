@@ -54,6 +54,7 @@ export interface SupervisorOptions {
 export class DefaultSupervisor implements Supervisor {
   private readonly managed = new Map<string, ManagedServer>();
   private readonly starting = new Map<string, Promise<ServerRecord>>();
+  private readonly stopping = new Map<string, Promise<void>>();
   private readonly logListeners = new Set<(line: SubServerLogLine & { serverId: string }) => void>();
   private readonly logger: Logger;
 
@@ -62,6 +63,11 @@ export class DefaultSupervisor implements Supervisor {
   }
 
   async start(serverId: string): Promise<ServerRecord> {
+    const stopping = this.stopping.get(serverId);
+    if (stopping) {
+      await stopping;
+      return this.start(serverId);
+    }
     const inflight = this.starting.get(serverId);
     if (inflight) return inflight;
 
@@ -255,6 +261,21 @@ export class DefaultSupervisor implements Supervisor {
   }
 
   async stop(serverId: string): Promise<void> {
+    const inflight = this.stopping.get(serverId);
+    if (inflight) return inflight;
+    const promise = this.doStop(serverId).finally(() => this.stopping.delete(serverId));
+    this.stopping.set(serverId, promise);
+    return promise;
+  }
+
+  private async doStop(serverId: string): Promise<void> {
+    // A request may be starting this server while an operator stops it. Wait
+    // until that start settles before closing its client; starts arriving while
+    // this stop is in progress wait for it rather than spawning a second client.
+    const starting = this.starting.get(serverId);
+    if (starting) {
+      try { await starting; } catch { /* a failed start still needs cleanup */ }
+    }
     const managed = this.managed.get(serverId);
     const record = managed?.record ?? this.options.repository.getServer(serverId);
     if (!record) throw new GatewayError(ErrorCodes.INVALID_PARAMS, `Unknown server '${serverId}'`);
