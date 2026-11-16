@@ -21,6 +21,7 @@ BACKUP_DIR="${BACKUP_DIR:-$COMPOSE_DIR/backups}"
 HEALTH_TRIES="${HEALTH_TRIES:-30}"
 HEALTH_SLEEP="${HEALTH_SLEEP:-2}"
 COMPOSE=(docker compose -f "$COMPOSE_DIR/docker-compose.yml")
+LOCK_FILE="${LOCK_FILE:-/run/mcp-gateway-update.lock}"
 
 log() { printf '%s updater: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -28,7 +29,7 @@ die() { log "ERROR: $*"; exit 1; }
 [ -d "$COMPOSE_DIR" ] || die "no $COMPOSE_DIR"
 cd "$COMPOSE_DIR"
 
-exec 9>/run/mcp-gateway-update.lock
+exec 9>"$LOCK_FILE"
 flock -n 9 || { log "another update is already running; skipping"; exit 0; }
 
 # Resolve the image compose will actually use, honouring MCP_IMAGE_TAG and .env,
@@ -69,23 +70,69 @@ mkdir -p "$BACKUP_DIR"
 
 # Keep the outgoing image under a stable tag so a rollback is a tag change, not
 # a file edit.
-if [ -n "$current_id" ]; then
-  docker tag "$current_id" "$REPO:rollback" || log "WARNING: could not tag the previous image"
-fi
+[ -n "$current_id" ] || die "cannot identify the running image; refusing to stop the gateway"
+docker tag "$current_id" "$REPO:rollback" || die "could not tag the previous image"
+
+backup="$BACKUP_DIR/gateway-pre-${TAG_VERSION}-${stamp}.db"
+snapshot_ready=0
+rollback_needed=1
+
+# Once a stop is attempted, recover on *any* error, including failed backup or
+# compose commands. Until a complete snapshot exists, leave the database as-is.
+recover_on_exit() {
+  local status=$?
+  trap - EXIT
+  [ "$rollback_needed" -eq 1 ] || return "$status"
+  set +e
+  log "ERROR: update interrupted (status $status); attempting rollback"
+  "${COMPOSE[@]}" stop gateway >/dev/null 2>&1
+  if [ "$snapshot_ready" -eq 1 ]; then
+    cp -a "$backup" "$COMPOSE_DIR/data/gateway.db" || {
+      log "ERROR: database restore failed; gateway left stopped"
+      exit 1
+    }
+    if [ -f "${backup}-wal" ]; then
+      cp -a "${backup}-wal" "$COMPOSE_DIR/data/gateway.db-wal" || {
+        log "ERROR: WAL restore failed; gateway left stopped"
+        exit 1
+      }
+    else
+      rm -f "$COMPOSE_DIR/data/gateway.db-wal"
+    fi
+    # SQLite can rebuild the shared-memory index from the restored WAL.
+    rm -f "$COMPOSE_DIR/data/gateway.db-shm"
+  fi
+  if ! MCP_IMAGE_TAG=rollback "${COMPOSE[@]}" up -d gateway >/dev/null; then
+    log "ERROR: previous image could not be started; manual intervention required"
+    exit 1
+  fi
+  for i in $(seq 1 "$HEALTH_TRIES"); do
+    if curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
+      log "previous image is healthy after rollback"
+      exit 1
+    fi
+    sleep "$HEALTH_SLEEP"
+  done
+  log "ERROR: previous image did not become healthy; manual intervention required"
+  exit 1
+}
+trap recover_on_exit EXIT
+trap 'exit 1' HUP INT TERM
 
 log "stopping $CONTAINER for a clean SQLite snapshot"
 "${COMPOSE[@]}" stop gateway >/dev/null
 
-backup="$BACKUP_DIR/gateway-pre-${TAG_VERSION}-${stamp}.db"
 if [ -f "$COMPOSE_DIR/data/gateway.db" ]; then
   cp -a "$COMPOSE_DIR/data/gateway.db" "$backup"
   # WAL/shm are copied alongside only while the container is stopped, which is
   # what makes this a consistent snapshot rather than a torn one.
-  cp -a "$COMPOSE_DIR/data/gateway.db-wal" "${backup}-wal" 2>/dev/null || true
-  cp -a "$COMPOSE_DIR/data/gateway.db-shm" "${backup}-shm" 2>/dev/null || true
+  if [ -f "$COMPOSE_DIR/data/gateway.db-wal" ]; then
+    cp -a "$COMPOSE_DIR/data/gateway.db-wal" "${backup}-wal"
+  fi
+  snapshot_ready=1
   log "backup: $backup"
 else
-  log "WARNING: no gateway.db found; continuing without a database backup"
+  die "no gateway.db found; refusing to update without a database backup"
 fi
 
 log "starting $IMAGE"
@@ -101,28 +148,11 @@ if [ "$healthy" -eq 1 ]; then
   reported="$(curl -fsS --max-time 3 "$HEALTH_URL" 2>/dev/null | tr -d '\n' || true)"
   log "healthy after ${i} checks; update to $IMAGE complete"
   log "health: $reported"
+  rollback_needed=0
   exit 0
 fi
 
 log "ERROR: $IMAGE did not become healthy; rolling back"
 docker logs --tail 40 "$CONTAINER" 2>&1 | sed 's/^/  | /' || true
-"${COMPOSE[@]}" stop gateway >/dev/null || true
+exit 1
 
-if [ -f "$backup" ]; then
-  cp -a "$backup" "$COMPOSE_DIR/data/gateway.db"
-  rm -f "$COMPOSE_DIR/data/gateway.db-wal" "$COMPOSE_DIR/data/gateway.db-shm"
-  log "restored $backup"
-fi
-
-MCP_IMAGE_TAG=rollback "${COMPOSE[@]}" up -d gateway >/dev/null \
-  || die "rollback could not start the previous image"
-
-for i in $(seq 1 "$HEALTH_TRIES"); do
-  if curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
-    log "rolled back and healthy on the previous image; investigate $IMAGE"
-    exit 1
-  fi
-  sleep "$HEALTH_SLEEP"
-done
-
-die "rollback also failed — manual intervention required"
