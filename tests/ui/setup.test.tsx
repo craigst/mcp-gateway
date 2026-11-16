@@ -8,6 +8,9 @@ const { apiMock } = vi.hoisted(() => ({
     getHealth: vi.fn(),
     getMetrics: vi.fn(),
     listServers: vi.fn(),
+    listKeys: vi.fn(),
+    listComputerUseComputers: vi.fn(),
+    queryAudit: vi.fn(),
     listServerUpdates: vi.fn(),
     listCatalogSources: vi.fn(),
     setupAccount: vi.fn(),
@@ -72,6 +75,9 @@ beforeEach(() => {
   apiMock.getHealth.mockResolvedValue({ status: 'ok', version: '0.6.0', uptimeMs: 1000 });
   apiMock.getMetrics.mockResolvedValue(metricsSnapshot());
   apiMock.listServers.mockResolvedValue([]);
+  apiMock.listKeys.mockResolvedValue([]);
+  apiMock.listComputerUseComputers.mockResolvedValue({ broker: { reachable: true }, computers: [] });
+  apiMock.queryAudit.mockResolvedValue({ entries: [], total: 0 });
   apiMock.listServerUpdates.mockResolvedValue([]);
   apiMock.listCatalogSources.mockResolvedValue([]);
   apiMock.setupAccount.mockResolvedValue({
@@ -119,7 +125,7 @@ describe('First-run setup wizard', () => {
     expect(await screen.findByText("You're all set")).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Open dashboard' }));
 
-    expect(await screen.findByText('Requests / min')).toBeTruthy();
+    expect(await screen.findByText('Gateway overview')).toBeTruthy();
     expect(screen.getAllByText('operator').length).toBeGreaterThan(0);
   });
 

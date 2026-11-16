@@ -10,6 +10,9 @@ const { apiMock } = vi.hoisted(() => ({
     getHealth: vi.fn(),
     getMetrics: vi.fn(),
     listServers: vi.fn(),
+    listKeys: vi.fn(),
+    listComputerUseComputers: vi.fn(),
+    queryAudit: vi.fn(),
   },
 }));
 
@@ -44,6 +47,9 @@ beforeEach(() => {
   apiMock.getHealth.mockResolvedValue({ status: 'ok', version: '0.3.0', uptimeMs: 1000 });
   apiMock.getMetrics.mockResolvedValue(metricsSnapshot());
   apiMock.listServers.mockResolvedValue([]);
+  apiMock.listKeys.mockResolvedValue([]);
+  apiMock.listComputerUseComputers.mockResolvedValue({ broker: { reachable: true }, computers: [] });
+  apiMock.queryAudit.mockResolvedValue({ entries: [], total: 0 });
   apiMock.logout.mockResolvedValue({ ok: true });
   apiMock.onUnauthorized.mockReturnValue(() => {});
   apiMock.login.mockResolvedValue({ user: { username: 'operator' }, expiresAt: '2026-10-30T00:00:00.000Z' });
@@ -86,7 +92,7 @@ describe('App session gating', () => {
     apiMock.getSession.mockResolvedValue({ authenticated: true, user: { username: 'operator' } });
     render(<App />);
 
-    expect(await screen.findByText('Requests / min')).toBeTruthy();
+    expect(await screen.findByText('Gateway overview')).toBeTruthy();
     expect(screen.getAllByText('operator').length).toBeGreaterThan(0);
     expect(screen.getAllByRole('button', { name: 'Sign out' }).length).toBeGreaterThan(0);
     expect(screen.queryByPlaceholderText('••••••••')).toBeNull();
@@ -101,7 +107,7 @@ describe('App session gating', () => {
     await signInThroughForm('operator', 'correct-horse');
 
     await waitFor(() => expect(apiMock.login).toHaveBeenCalledWith('operator', 'correct-horse'));
-    expect(await screen.findByText('Requests / min')).toBeTruthy();
+    expect(await screen.findByText('Gateway overview')).toBeTruthy();
     expect(screen.getAllByText('operator').length).toBeGreaterThan(0);
     expect(apiMock.onUnauthorized).toHaveBeenCalledTimes(1);
   });
@@ -115,7 +121,7 @@ describe('App session gating', () => {
     await signInThroughForm('operator', 'wrong-password');
 
     expect(await screen.findByText('Invalid username or password.')).toBeTruthy();
-    expect(screen.queryByText('Requests / min')).toBeNull();
+    expect(screen.queryByText('Gateway overview')).toBeNull();
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
   });
 
@@ -123,25 +129,25 @@ describe('App session gating', () => {
     apiMock.getSession.mockResolvedValue({ authenticated: true, user: { username: 'operator' } });
     render(<App />);
 
-    await screen.findByText('Requests / min');
+    await screen.findByText('Gateway overview');
     fireEvent.click(screen.getAllByRole('button', { name: 'Sign out' })[0] as HTMLElement);
 
     await waitFor(() => expect(apiMock.logout).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole('button', { name: 'Sign in' })).toBeTruthy();
-    expect(screen.queryByText('Requests / min')).toBeNull();
+    expect(screen.queryByText('Gateway overview')).toBeNull();
   });
 
   it('returns to login when a later request reports 401 (session expiry)', async () => {
     apiMock.getSession.mockResolvedValue({ authenticated: true, user: { username: 'operator' } });
     render(<App />);
 
-    await screen.findByText('Requests / min');
+    await screen.findByText('Gateway overview');
     const handler = apiMock.onUnauthorized.mock.calls[0]?.[0] as ((error: unknown) => void) | undefined;
     expect(typeof handler).toBe('function');
 
     act(() => handler?.(unauthorized()));
 
     expect(await screen.findByRole('button', { name: 'Sign in' })).toBeTruthy();
-    expect(screen.queryByText('Requests / min')).toBeNull();
+    expect(screen.queryByText('Gateway overview')).toBeNull();
   });
 });

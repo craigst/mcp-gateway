@@ -1,241 +1,89 @@
 import { api } from '../lib/api.js';
 import { useAsyncData } from '../lib/hooks.js';
 import { formatBytes, formatDuration, formatNumber, formatPercent, formatTimestamp } from '../lib/format.js';
-import { Card } from '../components/Card.js';
-import { StatTile } from '../components/StatTile.js';
 import { Badge, badgeToneForStatus } from '../components/Badge.js';
-import { Table } from '../components/Table.js';
-import { EmptyState } from '../components/EmptyState.js';
 import { ErrorState, LoadingState } from '../components/States.js';
-import { buttonSecondary } from '../components/Form.js';
 import type { PageKey } from '../components/Layout.js';
-import type { MetricsSnapshot } from '../../core/ports.js';
-import type { ServerRecord } from '../../core/types.js';
 
 export interface DashboardPageProps {
-  onNavigate?: (page: PageKey) => void;
+  onNavigate?: (page: PageKey, options?: { catalogTab?: 'installed' | 'discover' | 'sources' | 'import' }) => void;
+  onOpenServer?: (id: string) => void;
 }
 
-interface RequestBar {
-  label: string;
-  value: number;
-  className: string;
-}
-
-/** Overview: live telemetry tiles, request mix, latency percentiles, sub-server status. */
-export function DashboardPage({ onNavigate }: DashboardPageProps) {
+/** A compact overview of real gateway data. More detail stays on the relevant pages. */
+export function DashboardPage({ onNavigate, onOpenServer }: DashboardPageProps) {
   const metrics = useAsyncData(() => api.getMetrics(), []);
   const servers = useAsyncData(() => api.listServers(), []);
+  const keys = useAsyncData(() => api.listKeys(), []);
+  const computers = useAsyncData(() => api.listComputerUseComputers(), []);
+  const audit = useAsyncData(() => api.queryAudit({ limit: 5 }), []);
+  const serverList = servers.status === 'ready' ? servers.data : [];
+  const data = metrics.status === 'ready' ? metrics.data : null;
+  const brain = serverList.find((server) => server.name.toLowerCase() === 'brain');
 
-  const data: MetricsSnapshot | null = metrics.status === 'ready' ? metrics.data : null;
-  const serverList: ServerRecord[] = servers.status === 'ready' ? servers.data : [];
-  const runningCount = serverList.filter((server) => server.status === 'running').length;
-
-  const refresh = (): void => {
-    metrics.reload();
-    servers.reload();
+  const refresh = () => {
+    metrics.reload(); servers.reload(); keys.reload(); computers.reload(); audit.reload();
   };
-
-  const totalRequests = data?.requests.total ?? 0;
-  const requestBars: RequestBar[] = data
-    ? [
-        { label: 'ok', value: data.requests.ok, className: 'bg-emerald-500' },
-        { label: 'denied', value: data.requests.denied, className: 'bg-amber-500' },
-        { label: 'error', value: data.requests.error, className: 'bg-rose-500' },
-      ]
-    : [];
-
-  const latencyBars = data
-    ? [
-        { label: 'p50', value: data.latencyMs.p50 },
-        { label: 'p95', value: data.latencyMs.p95 },
-        { label: 'p99', value: data.latencyMs.p99 },
-      ]
-    : [];
-  const maxLatency = Math.max(1, ...latencyBars.map((bar) => bar.value));
+  const cards = [
+    { icon: '▱', title: 'Servers', value: servers.status === 'ready' ? String(serverList.length) : '—', detail: servers.status === 'error' ? 'Unavailable' : 'registered', page: 'catalog' as const },
+    { icon: '▣', title: 'Computers', value: computers.status === 'ready' && computers.data.broker.reachable ? String(computers.data.computers.length) : '—', detail: computers.status === 'error' || (computers.status === 'ready' && !computers.data.broker.reachable) ? 'Broker unavailable' : 'reported by broker', page: 'devices' as const },
+    { icon: '◇', title: 'Agent keys', value: keys.status === 'ready' ? String(keys.data.filter((key) => key.keyType === 'agent' && !key.revokedAt).length) : '—', detail: keys.status === 'error' ? 'Unavailable' : 'not revoked', page: 'rbac' as const },
+    { icon: '▥', title: 'Requests', value: data ? formatNumber(data.requests.total) : '—', detail: 'in the last 5 minutes', page: 'audit' as const },
+  ];
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs text-slate-400">
-          Your gateway at a glance
-          {data ? ` · updated ${formatTimestamp(new Date())}` : ''}
-        </p>
-        <button type="button" onClick={refresh} className={buttonSecondary}>
-          Refresh
-        </button>
+    <div className="overview-shell">
+      <div className="overview-heading">
+        <div><h2>Gateway overview</h2><p>Everything connected, in one place.</p></div>
+        <div className="overview-actions">
+          <button type="button" className="overview-subtle" onClick={refresh}>Refresh</button>
+          <button type="button" className="overview-primary" onClick={() => onNavigate?.('catalog', { catalogTab: 'import' })}>+ Add server</button>
+        </div>
       </div>
-
       {metrics.status === 'error' && <ErrorState message={metrics.error} onRetry={metrics.reload} />}
-
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatTile
-          label="Requests / min"
-          value={data ? formatNumber(data.requestsPerMinute, 1) : '—'}
-          hint={data ? `${formatNumber(data.requests.total)} total requests` : 'Awaiting metrics'}
-          tone="info"
-        />
-        <StatTile
-          label="Error rate"
-          value={data ? formatPercent(data.errorRate) : '—'}
-          hint={data ? `${formatNumber(data.requests.error)} errors · ${formatNumber(data.requests.denied)} denials` : undefined}
-          tone={data ? (data.errorRate > 0.05 ? 'danger' : data.errorRate > 0.01 ? 'warning' : 'success') : 'default'}
-        />
-        <StatTile
-          label="P50 latency"
-          value={data ? formatDuration(data.latencyMs.p50) : '—'}
-          hint={data ? `p95 ${formatDuration(data.latencyMs.p95)} · p99 ${formatDuration(data.latencyMs.p99)}` : undefined}
-        />
-        <StatTile
-          label="Sub-servers"
-          value={data ? `${data.servers.running} / ${data.servers.total}` : '—'}
-          hint="running / registered"
-          tone={data && data.servers.running > 0 ? 'success' : 'warning'}
-        />
-        <StatTile label="Uptime" value={data ? formatDuration(data.uptimeMs) : '—'} />
-        <StatTile
-          label="CPU"
-          value={data ? `${data.process.cpuPercent.toFixed(1)}%` : '—'}
-          hint="gateway process"
-        />
-        <StatTile
-          label="Memory (RSS)"
-          value={data ? formatBytes(data.process.rssBytes) : '—'}
-          hint={data ? `heap ${formatBytes(data.process.heapUsedBytes)}` : undefined}
-        />
+      <div className="overview-stats">
+        {cards.map((card) => (
+          <button className="overview-stat" key={card.title} type="button" onClick={() => onNavigate?.(card.page)}>
+            <span className="overview-stat-icon" aria-hidden="true">{card.icon}</span>
+            <span><span className="overview-stat-label">{card.title}</span><strong>{card.value}</strong><small>{card.detail}</small></span>
+          </button>
+        ))}
       </div>
-
-      <Card
-        title="Servers"
-        subtitle={`${runningCount} running · ${serverList.length} registered`}
-        actions={
-          onNavigate !== undefined ? (
-            <button type="button" onClick={() => onNavigate('catalog')} className={buttonSecondary}>
-              Manage servers
-            </button>
-          ) : undefined
-        }
-        padded={false}
-      >
-        {servers.status === 'loading' && <LoadingState label="Loading servers…" />}
-        {servers.status === 'error' && (
-          <div className="p-4">
-            <ErrorState message={servers.error} onRetry={servers.reload} />
-          </div>
-        )}
-        {servers.status === 'ready' &&
-          (serverList.length === 0 ? (
-            <EmptyState
-              title="No sub-servers registered"
-              description="Register a stdio command or import a repository from the Catalog view."
-              action={
-                onNavigate !== undefined ? (
-                  <button type="button" onClick={() => onNavigate('catalog')} className={buttonSecondary}>
-                    Open catalog
-                  </button>
-                ) : undefined
-              }
-            />
-          ) : (
-            <Table<ServerRecord>
-              rows={serverList}
-              getRowKey={(server) => server.id}
-              columns={[
-                {
-                  key: 'name',
-                  header: 'Server',
-                  render: (server) => (
-                    <div>
-                      <p className="font-medium text-slate-200">{server.name}</p>
-                      <p className="font-mono text-[11px] text-slate-500">{server.id}</p>
-                    </div>
-                  ),
-                },
-                {
-                  key: 'runtime',
-                  header: 'Runtime',
-                  render: (server) => (
-                    <span className="text-xs text-slate-400">
-                      {server.runtime} · {server.transport}
-                    </span>
-                  ),
-                },
-                {
-                  key: 'status',
-                  header: 'Status',
-                  render: (server) => <Badge tone={badgeToneForStatus(server.status)}>{server.status}</Badge>,
-                },
-                {
-                  key: 'pid',
-                  header: 'PID',
-                  render: (server) => <span className="font-mono text-xs text-slate-400">{server.pid ?? '—'}</span>,
-                },
-                {
-                  key: 'updated',
-                  header: 'Updated',
-                  render: (server) => (
-                    <span className="text-xs text-slate-500">{formatTimestamp(server.updatedAt)}</span>
-                  ),
-                },
-              ]}
-            />
+      <div className="overview-grid">
+        <section className="overview-panel">
+          <div className="overview-panel-header"><h3><span aria-hidden="true">▱</span> Servers</h3><button type="button" onClick={() => onNavigate?.('catalog')}>View all servers →</button></div>
+          {servers.status === 'loading' && <LoadingState label="Loading servers…" />}
+          {servers.status === 'error' && <ErrorState message={servers.error} onRetry={servers.reload} />}
+          {servers.status === 'ready' && (serverList.length === 0 ? <p className="overview-empty">No servers registered yet.</p> : (
+            <div className="overview-table-wrap"><table className="overview-table"><thead><tr><th>Server</th><th>Status</th><th>Runtime</th></tr></thead><tbody>
+              {serverList.slice(0, 5).map((server) => <tr key={server.id}><td><button type="button" className="overview-row-link" onClick={() => onOpenServer?.(server.id)}>{server.name}</button></td><td><Badge tone={badgeToneForStatus(server.status)}>{server.status}</Badge></td><td>{server.runtime} · {server.transport}</td></tr>)}
+            </tbody></table></div>
           ))}
-      </Card>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card
-          title="Request mix"
-          subtitle={data ? `${formatNumber(totalRequests)} JSON-RPC requests processed` : 'Awaiting metrics'}
-        >
-          {metrics.status === 'loading' && <LoadingState label="Loading metrics…" />}
-          {metrics.status === 'error' && <ErrorState message={metrics.error} onRetry={metrics.reload} />}
-          {data && (
-            <div className="space-y-3">
-              {requestBars.map((bar) => {
-                const percent = totalRequests > 0 ? (bar.value / totalRequests) * 100 : 0;
-                return (
-                  <div key={bar.label}>
-                    <div className="mb-1 flex items-center justify-between text-xs">
-                      <span className="font-medium text-slate-300">{bar.label}</span>
-                      <span className="tabular-nums text-slate-400">
-                        {formatNumber(bar.value)} · {percent.toFixed(1)}%
-                      </span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-                      <div className={`h-full rounded-full ${bar.className}`} style={{ width: `${percent}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Card>
-
-        <Card title="Latency percentiles" subtitle="Gateway + sub-server round trip">
-          {data ? (
-            <div className="space-y-3">
-              {latencyBars.map((bar) => (
-                <div key={bar.label}>
-                  <div className="mb-1 flex items-center justify-between text-xs">
-                    <span className="font-medium text-slate-300">{bar.label}</span>
-                    <span className="tabular-nums text-slate-400">{formatDuration(bar.value)}</span>
-                  </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-                    <div
-                      className="h-full rounded-full bg-sky-500"
-                      style={{ width: `${(bar.value / maxLatency) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <LoadingState label="Loading latency…" />
-          )}
-        </Card>
+        </section>
+        <section className="overview-panel">
+          <div className="overview-panel-header"><h3><span aria-hidden="true">⌁</span> Recent activity</h3><button type="button" onClick={() => onNavigate?.('audit')}>View activity →</button></div>
+          {audit.status === 'loading' && <LoadingState label="Loading activity…" />}
+          {audit.status === 'error' && <ErrorState message={audit.error} onRetry={audit.reload} />}
+          {audit.status === 'ready' && (audit.data.entries.length === 0 ? <p className="overview-empty">No recent activity.</p> : <ul className="overview-activity">{audit.data.entries.map((entry) => <li key={entry.id}><span className="overview-activity-dot" aria-hidden="true">{entry.status === 'ok' ? '●' : '◦'}</span><span className="overview-activity-text">{entry.toolId || entry.method}<small>{entry.status}</small></span><time>{formatTimestamp(entry.ts)}</time></li>)}</ul>)}
+        </section>
       </div>
-
-
+      <div className="overview-shortcuts">
+        <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">▤</span> Knowledge</h3><button type="button" onClick={() => brain && onOpenServer ? onOpenServer(brain.id) : onNavigate?.('catalog')}>View server →</button></div><p>{brain ? 'Manage the connected brain server and its tools.' : 'Explore servers to connect a knowledge source.'}</p><button className="overview-chip" type="button" onClick={() => brain && onOpenServer ? onOpenServer(brain.id) : onNavigate?.('catalog')}>{brain ? brain.name : 'Explore servers'} →</button></section>
+        <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">ϟ</span> Social watchers</h3><button type="button" onClick={() => onNavigate?.('configurations')}>Manage →</button></div><p>Choose what reaches your bot from social channels.</p><div className="overview-chip-row"><button className="overview-chip" type="button" onClick={() => onNavigate?.('configurations')}>WhatsApp →</button><button className="overview-chip" type="button" onClick={() => onNavigate?.('configurations')}>Instagram →</button></div></section>
+        <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">▣</span> Devices &amp; computers</h3><button type="button" onClick={() => onNavigate?.('devices')}>View devices →</button></div><p>Manage computers, connectors and agent access.</p><button className="overview-chip" type="button" onClick={() => onNavigate?.('devices')}>Open devices →</button></section>
+      </div>
+      <details className="overview-panel overview-performance">
+        <summary>Performance details</summary>
+        {data ? <div className="overview-performance-grid">
+          <span>Requests / min <strong>{formatNumber(data.requestsPerMinute, 1)}</strong></span>
+          <span>Error rate <strong>{formatPercent(data.errorRate)}</strong></span>
+          <span>Latency p50 / p95 / p99 <strong>{formatDuration(data.latencyMs.p50)} / {formatDuration(data.latencyMs.p95)} / {formatDuration(data.latencyMs.p99)}</strong></span>
+          <span>Uptime <strong>{formatDuration(data.uptimeMs)}</strong></span>
+          <span>CPU <strong>{data.process.cpuPercent.toFixed(1)}%</strong></span>
+          <span>Memory <strong>{formatBytes(data.process.rssBytes)}</strong></span>
+          <span>Request mix <strong>{data.requests.ok} ok · {data.requests.denied} denied · {data.requests.error} errors</strong></span>
+        </div> : <p className="overview-empty">Metrics are unavailable.</p>}
+      </details>
     </div>
   );
 }

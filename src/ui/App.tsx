@@ -95,7 +95,7 @@ function renderPage(page: PageKey, context: RenderContext) {
       return <PlaygroundPage />;
     case 'dashboard':
     default:
-      return <DashboardPage onNavigate={context.onNavigate} />;
+      return <DashboardPage onNavigate={context.onNavigate} onOpenServer={context.onOpenServer} />;
   }
 }
 
