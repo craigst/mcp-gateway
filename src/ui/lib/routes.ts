@@ -16,6 +16,8 @@ export type PageKey =
   | 'catalog'
   | 'devices'
   | 'server'
+  | 'knowledge'
+  | 'watchers'
   | 'configurations'
   | 'secrets'
   | 'settings'
@@ -32,6 +34,8 @@ export const PAGE_KEYS: readonly string[] = [
   'email',
   'catalog',
   'devices',
+  'knowledge',
+  'watchers',
   'configurations',
   'secrets',
   'rbac',

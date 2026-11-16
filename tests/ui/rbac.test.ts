@@ -71,6 +71,7 @@ describe('summarizeGrants', () => {
   it('renders a compact one-line description', () => {
     expect(describeGrants([])).toBe('No grants');
     expect(describeGrants([{ serverId: 'echo-v1', tools: ['echo'] }])).toContain('echo-v1 (1 tool)');
+    expect(describeGrants([{ serverId: 'echo-v1', tools: ['echo'] }], new Map([['echo-v1', 'Echo server']]))).toContain('Echo server (1 tool)');
   });
 });
 

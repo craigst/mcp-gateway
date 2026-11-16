@@ -1,5 +1,6 @@
 import { api } from '../lib/api.js';
 import { useAsyncData } from '../lib/hooks.js';
+import { activityAction, activityClient, activityServer } from '../lib/activity.js';
 import { formatBytes, formatDuration, formatNumber, formatPercent, formatTimestamp } from '../lib/format.js';
 import { Badge, badgeToneForStatus } from '../components/Badge.js';
 import { ErrorState, LoadingState } from '../components/States.js';
@@ -16,10 +17,16 @@ export function DashboardPage({ onNavigate, onOpenServer }: DashboardPageProps) 
   const servers = useAsyncData(() => api.listServers(), []);
   const keys = useAsyncData(() => api.listKeys(), []);
   const computers = useAsyncData(() => api.listComputerUseComputers(), []);
-  const audit = useAsyncData(() => api.queryAudit({ limit: 5 }), []);
+  const audit = useAsyncData(() => api.queryAudit({ limit: 50 }), []);
   const serverList = servers.status === 'ready' ? servers.data : [];
+  const usefulActivity = audit.status === 'ready' ? audit.data.entries.filter((entry) => entry.method === 'tools/call' || entry.status !== 'ok').slice(0, 5) : [];
   const data = metrics.status === 'ready' ? metrics.data : null;
   const brain = serverList.find((server) => server.name.toLowerCase() === 'brain');
+
+  const openWatcher = (source?: 'whatsapp' | 'instagram') => {
+    onNavigate?.('watchers');
+    if (source && typeof window !== 'undefined') window.location.hash = `#/watchers?source=${source}`;
+  };
 
   const refresh = () => {
     metrics.reload(); servers.reload(); keys.reload(); computers.reload(); audit.reload();
@@ -64,12 +71,12 @@ export function DashboardPage({ onNavigate, onOpenServer }: DashboardPageProps) 
           <div className="overview-panel-header"><h3><span aria-hidden="true">⌁</span> Recent activity</h3><button type="button" onClick={() => onNavigate?.('audit')}>View activity →</button></div>
           {audit.status === 'loading' && <LoadingState label="Loading activity…" />}
           {audit.status === 'error' && <ErrorState message={audit.error} onRetry={audit.reload} />}
-          {audit.status === 'ready' && (audit.data.entries.length === 0 ? <p className="overview-empty">No recent activity.</p> : <ul className="overview-activity">{audit.data.entries.map((entry) => <li key={entry.id}><span className="overview-activity-dot" aria-hidden="true">{entry.status === 'ok' ? '●' : '◦'}</span><span className="overview-activity-text">{entry.toolId || entry.method}<small>{entry.status}</small></span><time>{formatTimestamp(entry.ts)}</time></li>)}</ul>)}
+          {audit.status === 'ready' && (audit.data.entries.length === 0 ? <p className="overview-empty">No recent activity.</p> : usefulActivity.length === 0 ? <p className="overview-empty">No recent tool calls or problems. View activity for connection and discovery events.</p> : <ul className="overview-activity">{usefulActivity.map((entry) => <li key={entry.id}><span className={entry.status === 'ok' ? 'overview-activity-dot' : 'overview-activity-dot is-problem'} aria-hidden="true">{entry.status === 'ok' ? '●' : '◦'}</span><span className="overview-activity-text">{activityClient(entry, keys.status === 'ready' ? keys.data : [])}: {activityAction(entry)}{activityServer(entry, serverList) ? ` · ${activityServer(entry, serverList)}` : ''}<small>{entry.status}</small></span><time>{formatTimestamp(entry.ts)}</time></li>)}</ul>)}
         </section>
       </div>
       <div className="overview-shortcuts">
-        <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">▤</span> Knowledge</h3><button type="button" onClick={() => brain && onOpenServer ? onOpenServer(brain.id) : onNavigate?.('catalog')}>View server →</button></div><p>{brain ? 'Manage the connected brain server and its tools.' : 'Explore servers to connect a knowledge source.'}</p><button className="overview-chip" type="button" onClick={() => brain && onOpenServer ? onOpenServer(brain.id) : onNavigate?.('catalog')}>{brain ? brain.name : 'Explore servers'} →</button></section>
-        <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">ϟ</span> Social watchers</h3><button type="button" onClick={() => onNavigate?.('configurations')}>Manage →</button></div><p>Choose what reaches your bot from social channels.</p><div className="overview-chip-row"><button className="overview-chip" type="button" onClick={() => onNavigate?.('configurations')}>WhatsApp →</button><button className="overview-chip" type="button" onClick={() => onNavigate?.('configurations')}>Instagram →</button></div></section>
+        <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">▤</span> Knowledge</h3><button type="button" onClick={() => onNavigate?.('knowledge')}>Manage →</button></div><p>{brain ? 'Search memories and documents from your connected brain servers.' : 'Connect a brain server to search memories and documents.'}</p><button className="overview-chip" type="button" onClick={() => onNavigate?.('knowledge')}>Open knowledge →</button></section>
+        <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">ϟ</span> Social watchers</h3><button type="button" onClick={() => openWatcher()}>Manage →</button></div><p>Choose what reaches your bot from social channels.</p><div className="overview-chip-row"><button className="overview-chip" type="button" onClick={() => openWatcher('whatsapp')}>WhatsApp →</button><button className="overview-chip" type="button" onClick={() => openWatcher('instagram')}>Instagram →</button></div></section>
         <section className="overview-panel overview-shortcut"><div className="overview-panel-header"><h3><span aria-hidden="true">▣</span> Devices &amp; computers</h3><button type="button" onClick={() => onNavigate?.('devices')}>View devices →</button></div><p>Manage computers, connectors and agent access.</p><button className="overview-chip" type="button" onClick={() => onNavigate?.('devices')}>Open devices →</button></section>
       </div>
       <details className="overview-panel overview-performance">

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, formatApiError } from '../../lib/api.js';
 import { Badge } from '../../components/Badge.js';
+import { Card } from '../../components/Card.js';
 import { ConfirmDialog } from '../../components/ConfirmDialog.js';
 import { Notice } from '../../components/States.js';
 import { CheckboxField, PrimaryButton, SecondaryButton } from '../../components/Form.js';
@@ -23,6 +24,7 @@ import { AddHostComputerDialog } from '../connectors/AddHostComputerDialog.js';
 import { TerminalDialog } from '../connectors/TerminalDialog.js';
 import { VmProvidersSection } from '../connectors/VmProvidersSection.js';
 import {
+  deviceStateTone,
   enrollmentExpiryLabel,
   enrollmentKindLabel,
   pairingBlockedReason,
@@ -477,8 +479,8 @@ export function DevicesPage({ initialTab = DEFAULT_DEVICES_TAB, onTabChange }: D
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Badge tone={globalPaused ? 'warning' : 'success'}>
-            {globalPaused ? 'agents paused' : 'agents enabled'}
+          <Badge tone={globalAvailability === null ? 'neutral' : globalPaused ? 'warning' : 'success'}>
+            {globalAvailability === null ? 'agent availability unknown' : globalPaused ? 'agents paused' : 'agents enabled'}
           </Badge>
           {computers.length > 0 && (
             <Badge tone={onlineCount > 0 ? 'info' : 'neutral'}>{onlineCount} online</Badge>
@@ -505,6 +507,9 @@ export function DevicesPage({ initialTab = DEFAULT_DEVICES_TAB, onTabChange }: D
       <Tabs items={tabItems} active={tab} onChange={setTab} label="Devices & computers sections" />
 
       <TabPanel id="computers" active={tab === 'computers'} className="space-y-5">
+        <Card title="Connector status" subtitle="See reported connector names and states alongside your computers." actions={<SecondaryButton onClick={() => setTab('connectors')} className="px-2 py-1 text-xs">Manage connectors</SecondaryButton>}>
+          {connectors.data === null ? <p className="text-xs text-slate-400">{connectors.error ? 'Connector status unavailable.' : 'Loading connector status…'}</p> : !connectors.data.broker.reachable ? <p className="text-xs text-amber-300">The broker is unavailable; connector status cannot be confirmed.</p> : devices.length === 0 ? <p className="text-xs text-slate-400">No connectors reported.</p> : <ul className="flex flex-wrap gap-2">{devices.map((device) => <li key={device.id} className="flex items-center gap-2 rounded-lg border border-slate-800 px-3 py-2 text-xs text-slate-200"><span>{device.name}</span><Badge tone={deviceStateTone(device.state)}>{device.state}</Badge></li>)}</ul>}
+        </Card>
         <AvailabilityCard
           overview={overview.data}
           loading={overview.loading}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, formatApiError } from '../lib/api.js';
 import type { MasterKeyRegeneration } from '../lib/api.js';
+import { clientLabel } from '../lib/activity.js';
 import { useAsyncData } from '../lib/hooks.js';
 import {
   buildScopeMatrix,
@@ -149,6 +150,7 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
   const [quickBusyId, setQuickBusyId] = useState<string | null>(null);
 
   const serverList: ServerRecord[] = servers.status === 'ready' ? servers.data : [];
+  const serverNames = new Map(serverList.map((server) => [server.id, server.name]));
   const keyList: KeySummary[] = keys.status === 'ready' ? keys.data : [];
   const masterKeys = keyList.filter((key) => key.keyType === 'master');
   const activeMasterKeys = masterKeys.filter((key) => keyStatus(key) === 'active').length;
@@ -367,8 +369,8 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
       </Card>
 
       <Card
-        title="API keys"
-        subtitle={`${keys.status === 'ready' ? keys.data.length : '…'} issued · scoped per server and tool`}
+        title="API keys & access"
+        subtitle={`${keys.status === 'ready' ? keys.data.length : '…'} issued · name each key for the bot or client that uses it`}
         actions={
           <>
             <SecondaryButton onClick={keys.reload} className="px-2 py-1 text-xs">
@@ -405,7 +407,7 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
               columns={[
                 {
                   key: 'name',
-                  header: 'Key',
+                  header: 'Bot or client name',
                   render: (key) => (
                     <div className="min-w-0">
                       <button
@@ -414,9 +416,9 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
                         className="text-left font-medium text-slate-200 underline-offset-2 transition-colors hover:text-sky-300 hover:underline"
                         title={`Open detail for ${key.name}`}
                       >
-                        {key.name}
+                        {clientLabel(key.name)}
                       </button>
-                      <p className="font-mono text-[11px] text-slate-500">{key.id}</p>
+                      <p className="text-[11px] text-slate-500">{key.keyType === 'agent' ? 'Agent key' : 'Master key'}</p>
                     </div>
                   ),
                 },
@@ -434,8 +436,8 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
                   key: 'grants',
                   header: 'Grants',
                   render: (key) => (
-                    <span className="block max-w-[18rem] text-xs text-slate-400" title={describeGrants(key.serverGrants)}>
-                      {describeGrants(key.serverGrants)}
+                    <span className="block max-w-[18rem] text-xs text-slate-400" title={describeGrants(key.serverGrants, serverNames)}>
+                      {describeGrants(key.serverGrants, serverNames)}
                     </span>
                   ),
                 },
@@ -515,7 +517,7 @@ export function RbacPage({ initialKeyId = null, onKeyOpenChange }: RbacPageProps
       >
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="Name" error={errors.name}>
+            <Field label="Bot or client name" error={errors.name}>
               <TextInput
                 value={form.name}
                 onChange={(event) => setForm((previous) => ({ ...previous, name: event.target.value }))}

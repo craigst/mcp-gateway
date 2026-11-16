@@ -28,7 +28,7 @@ export function summarizeGrants(grants?: readonly ServerGrant[] | null): GrantSu
 }
 
 /** One-line description used by the key table. */
-export function describeGrants(grants?: readonly ServerGrant[] | null): string {
+export function describeGrants(grants?: readonly ServerGrant[] | null, serverNames: ReadonlyMap<string, string> = new Map()): string {
   const summaries = summarizeGrants(grants);
   if (summaries.length === 0) return 'No grants';
   return summaries
@@ -39,7 +39,7 @@ export function describeGrants(grants?: readonly ServerGrant[] | null): string {
           : `${summary.toolCount} tool${summary.toolCount === 1 ? '' : 's'}`;
       const highPrivilege =
         summary.highPrivilegeTools.length > 0 ? ` + ${summary.highPrivilegeTools.length} high-priv` : '';
-      return `${summary.serverId} (${tools}${highPrivilege})`;
+      return `${serverNames.get(summary.serverId) ?? summary.serverId} (${tools}${highPrivilege})`;
     })
     .join(' · ');
 }

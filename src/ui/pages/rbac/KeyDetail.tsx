@@ -135,7 +135,7 @@ export function KeyDetail({ keyRecord: key, onClose, onChanged }: KeyDetailProps
             <div className="min-w-0 flex-1">
               {editingName ? (
                 <div className="flex flex-wrap items-end gap-2">
-                  <Field label="Key name" className="min-w-[12rem]">
+                  <Field label="Bot or client name" hint="Use the name of the bot or service holding this key. Renaming does not change the key or permissions." className="min-w-[12rem]">
                     <TextInput
                       value={nameDraft}
                       onChange={(event) => setNameDraft(event.target.value)}
@@ -177,6 +177,8 @@ export function KeyDetail({ keyRecord: key, onClose, onChanged }: KeyDetailProps
                   </GhostButton>
                 </div>
               )}
+              <p className="mt-1 text-[11px] text-slate-500">Name this key for the bot or client that uses it. This label does not verify the current connection.</p>
+              <details className="mt-1 text-[11px] text-slate-500"><summary>Technical details</summary><span className="font-mono">Key ID: {key.id}</span></details>
               <div className="mt-2 grid gap-3 text-[11px] text-slate-400 sm:grid-cols-2 xl:grid-cols-4">
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Created</p>

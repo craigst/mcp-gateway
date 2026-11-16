@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../lib/api.js';
+import { activityAction, activityClient, activityServer } from '../lib/activity.js';
 import { useAsyncData } from '../lib/hooks.js';
 import { formatDuration, formatNumber, formatTimestamp } from '../lib/format.js';
 import { Card } from '../components/Card.js';
@@ -286,15 +287,13 @@ export function AuditPage({ onOpenServer }: AuditPageProps) {
                 },
                 {
                   key: 'method',
-                  header: 'Method',
-                  render: (entry) => <span className="font-mono text-xs text-slate-200">{entry.method}</span>,
+                  header: 'Action',
+                  render: (entry) => <div className="text-xs text-slate-200">{activityAction(entry)}<p className="font-mono text-[10px] text-slate-500">{entry.method}</p></div>,
                 },
                 {
                   key: 'key',
-                  header: 'Key',
-                  render: (entry) => (
-                    <span className="font-mono text-[11px] text-slate-400">{entry.keyId ?? '—'}</span>
-                  ),
+                  header: 'Client / key name',
+                  render: (entry) => <span className="text-xs text-slate-200">{activityClient(entry, keyList)}</span>,
                 },
                 {
                   key: 'server',
@@ -304,7 +303,7 @@ export function AuditPage({ onOpenServer }: AuditPageProps) {
                       {entry.serverId === null ? (
                         <p>—</p>
                       ) : onOpenServer === undefined ? (
-                        <p>{entry.serverId}</p>
+                        <p>{activityServer(entry, serverList)}</p>
                       ) : (
                         <button
                           type="button"
@@ -315,7 +314,7 @@ export function AuditPage({ onOpenServer }: AuditPageProps) {
                           className="underline-offset-2 transition-colors hover:text-sky-300 hover:underline"
                           title="Open this server's inspector"
                         >
-                          {entry.serverId}
+                          {activityServer(entry, serverList)}
                         </button>
                       )}
                       <p className="font-mono text-slate-500">{entry.toolId ?? ''}</p>
@@ -340,6 +339,10 @@ export function AuditPage({ onOpenServer }: AuditPageProps) {
               renderExpanded={(entry) => (
                 <div className="grid gap-3 lg:grid-cols-2">
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px]">
+                    <dt className="text-slate-500">Key ID</dt>
+                    <dd className="font-mono text-slate-300">{entry.keyId ?? '—'}</dd>
+                    <dt className="text-slate-500">Server ID</dt>
+                    <dd className="font-mono text-slate-300">{entry.serverId ?? '—'}</dd>
                     <dt className="text-slate-500">Entry id</dt>
                     <dd className="font-mono text-slate-300">{entry.id}</dd>
                     <dt className="text-slate-500">Request id</dt>

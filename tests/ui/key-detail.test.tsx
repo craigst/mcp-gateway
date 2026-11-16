@@ -213,7 +213,7 @@ describe('Key detail drawer', () => {
     await openDetail();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Rename key' }));
-    fireEvent.change(screen.getByLabelText('Key name'), { target: { value: 'renamed-agent' } });
+    fireEvent.change(screen.getByLabelText(/Bot or client name/), { target: { value: 'renamed-agent' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() =>

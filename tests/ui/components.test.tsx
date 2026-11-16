@@ -122,6 +122,17 @@ describe('DashboardPage', () => {
     expect(onNavigate).toHaveBeenCalledWith('audit');
   });
 
+  it('shows named clients and meaningful tool activity instead of discovery chatter', async () => {
+    apiMock.listKeys.mockResolvedValue([{ ...keySummary, id: 'key_01', name: 'omb-remy' }]);
+    apiMock.queryAudit.mockResolvedValue({ entries: [
+      { id: 1, keyId: 'key_01', serverId: 'echo-v1', method: 'tools/list', toolId: null, status: 'ok', ts: '2026-11-16T12:00:00Z' },
+      { id: 2, keyId: 'key_01', serverId: 'echo-v1', method: 'tools/call', toolId: 'echo', status: 'ok', ts: '2026-11-16T12:00:01Z' },
+    ], total: 2 });
+    render(<DashboardPage />);
+    expect(await screen.findByText(/Remy · omb-remy: Used echo · gateway-echo/)).toBeTruthy();
+    expect(screen.queryByText(/Listed available tools/)).toBeNull();
+  });
+
   it('reports an unavailable broker rather than inventing a device count', async () => {
     apiMock.listComputerUseComputers.mockResolvedValue({ broker: { reachable: false }, computers: [] });
     render(<DashboardPage />);
@@ -168,8 +179,7 @@ describe('Layout', () => {
     );
 
     expect(screen.getByText('page content')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /more/i }));
-    for (const label of ['Overview', 'Email', 'Servers', 'Devices & computers', 'Configurations', 'Secrets', 'API keys & access', 'Vault', 'Activity', 'Approvals', 'Playground', 'Settings']) {
+    for (const label of ['Overview', 'Email', 'Servers', 'Devices & computers', 'Watchers', 'API keys & access', 'Activity', 'Settings']) {
       expect(screen.getAllByText(label).length).toBeGreaterThan(0);
     }
     expect(await screen.findByText('Gateway online')).toBeTruthy();

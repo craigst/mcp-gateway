@@ -222,8 +222,9 @@ describe('Settings page', () => {
   it('renders account, system information and the backup list', async () => {
     renderSettings();
 
-    expect(await screen.findByText('System')).toBeTruthy();
-    expect(screen.getByText('Backups')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: 'System' }));
+    expect(await screen.findByRole('heading', { name: 'System' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Backups' })).toBeTruthy();
     expect(screen.getByText('0.6.0')).toBeTruthy();
     expect(screen.getByText('0.0.0.0:8080')).toBeTruthy();
     expect(screen.getByText('/var/lib/mcp-gateway/gateway.db')).toBeTruthy();
@@ -239,6 +240,7 @@ describe('Settings page', () => {
 
   it('creates an encrypted backup and downloads it automatically', async () => {
     renderSettings();
+    fireEvent.click(screen.getByRole('tab', { name: 'Backups' }));
     await screen.findByText('gateway-2026-10-29.mcpbak');
 
     fireEvent.click(screen.getByRole('button', { name: 'Create backup' }));
@@ -260,6 +262,7 @@ describe('Settings page', () => {
 
   it('downloads and deletes existing backups', async () => {
     renderSettings();
+    fireEvent.click(screen.getByRole('tab', { name: 'Backups' }));
     await screen.findByText('gateway-2026-10-29.mcpbak');
 
     fireEvent.click(screen.getByRole('button', { name: 'Download' }));
@@ -275,6 +278,7 @@ describe('Settings page', () => {
 
   it('restores a backup, reinstalls missing servers and returns to login', async () => {
     const { onReturnToLogin } = renderSettings();
+    fireEvent.click(screen.getByRole('tab', { name: 'Backups' }));
     await screen.findByText('gateway-2026-10-29.mcpbak');
 
     fireEvent.click(screen.getByRole('button', { name: 'Restore backup' }));
@@ -311,7 +315,7 @@ describe('Settings page', () => {
 
   it('changes the password and returns to login', async () => {
     const { onReturnToLogin } = renderSettings();
-    await screen.findByText('System');
+    await screen.findByRole('tab', { name: 'System' });
 
     fireEvent.change(screen.getByLabelText('Current password'), { target: { value: 'old-password' } });
     fireEvent.change(screen.getByLabelText(/^New password/), { target: { value: 'new-password-123' } });
@@ -328,6 +332,7 @@ describe('Settings page', () => {
 
   it('renders credential providers and changes the default provider', async () => {
     const { onNavigate } = renderSettings();
+    fireEvent.click(screen.getByRole('tab', { name: 'Credential providers' }));
 
     expect(await screen.findByText('Credentials')).toBeTruthy();
     expect(screen.getByText('Vaultwarden', { selector: 'p' })).toBeTruthy();
@@ -344,6 +349,7 @@ describe('Settings page', () => {
 
   it('configures a provider from its descriptor fields and tests it', async () => {
     renderSettings();
+    fireEvent.click(screen.getByRole('tab', { name: 'Credential providers' }));
     await screen.findByText('Credentials');
 
     const card = screen.getByText('1Password', { selector: 'p' }).closest('article') as HTMLElement;
@@ -370,17 +376,11 @@ describe('Settings page', () => {
     await waitFor(() => expect(apiMock.testCredentialProvider).toHaveBeenCalledWith('vaultwarden'));
   });
 
-  it('creates a master API key from the settings quick action', async () => {
-    renderSettings();
-    await screen.findByText('System');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Create master key' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Create master API key' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create key' }));
-
-    await waitFor(() => expect(apiMock.createKey).toHaveBeenCalledTimes(1));
-    expect(apiMock.createKey.mock.calls[0]?.[0]).toMatchObject({ keyType: 'master' });
-    expect(await screen.findByText('mcp_master_SETTINGSKEY0123')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Copy key' })).toBeTruthy();
+  it('opens the single API key management page from settings', async () => {
+    const { onNavigate } = renderSettings();
+    await screen.findByRole('tab', { name: 'System' });
+    fireEvent.click(screen.getByRole('button', { name: 'Manage API keys and access →' }));
+    expect(onNavigate).toHaveBeenCalledWith('rbac');
+    expect(apiMock.createKey).not.toHaveBeenCalled();
   });
 });
