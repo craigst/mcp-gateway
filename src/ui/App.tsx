@@ -87,7 +87,7 @@ function renderPageContent(page: PageKey, context: RenderContext) {
     case 'configurations':
       return <ConfigurationsPage onNavigate={context.onNavigate} />;
     case 'devices':
-      return <DevicesPage initialTab={context.devicesTab} onTabChange={context.onDevicesTabChange} />;
+      return <DevicesPage initialTab={context.devicesTab} onTabChange={context.onDevicesTabChange} onOpenServer={context.onOpenServer} />;
     case 'secrets':
       return <SecretsPage onNavigate={context.onNavigate} />;
     case 'rbac':
