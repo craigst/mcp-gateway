@@ -22,7 +22,8 @@
     "lint": "eslint .",
     "test:unit": "vitest run tests/rbac tests/catalog tests/vault tests/git_engine tests/delegation tests/gateway",
     "test:integration": "vitest run tests/integration tests/e2e",
-    "test:ui": "vitest run tests/ui"
+    "test:ui": "vitest run tests/ui",
+    "test:social": "python3 -m unittest discover -s scripts -p 'test_*watcher*.py' && python3 -m unittest discover -s scripts -p 'test_remy_email.py'"
   },
   "dependencies": {
     "imapflow": "^2.10.2",

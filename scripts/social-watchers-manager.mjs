@@ -16,6 +16,8 @@ const ROOT = process.env.WATCHER_ROOT ?? '/data/repos/remy-watchers';
 const SCRIPT = `${ROOT}/remy_watchers.py`;
 const PYTHON = process.env.WATCHER_PYTHON ?? '/data/repos/instagram-mcp/.venv/bin/python';
 const LOG = process.env.WATCHER_LOG ?? `${ROOT}/watchers.log`;
+const configuredDelay = Number(process.env.WATCHER_RESTART_DELAY_MS ?? '15000');
+const RESTART_DELAY_MS = Number.isFinite(configuredDelay) ? Math.max(0, configuredDelay) : 15000;
 mkdirSync(ROOT, { recursive: true });
 
 const sources = new Map();
@@ -31,6 +33,8 @@ function log(line) {
 
 function startSource(source) {
   if (shuttingDown) return;
+  const previous = sources.get(source);
+  if (previous?.pid) return;
   const child = spawn(PYTHON, [SCRIPT, source], {
     cwd: ROOT,
     env: process.env,
@@ -43,6 +47,7 @@ function startSource(source) {
     restarts: (sources.get(source)?.restarts ?? 0) + (sources.has(source) ? 1 : 0),
     lastExit: null,
     lastError: null,
+    restartRequested: false,
   };
   sources.set(source, state);
   const pump = (stream, level) => {
@@ -55,21 +60,34 @@ function startSource(source) {
   };
   pump(child.stdout, 'stdout');
   pump(child.stderr, 'stderr');
-  child.on('exit', (code, signal) => {
+  let finished = false;
+  const finish = (code, signal, error) => {
+    if (finished || sources.get(source) !== state) return;
+    finished = true;
     state.pid = null;
     state.lastExit = { code, signal, at: new Date().toISOString() };
+    if (error) state.lastError = `worker failed to start: ${error.code ?? error.name}`;
     log(`${source} exited code=${code} signal=${signal}`);
     if (!shuttingDown && code !== 2) {
-      const timer = setTimeout(() => startSource(source), 15000);
+      const timer = setTimeout(() => startSource(source), state.restartRequested ? 0 : RESTART_DELAY_MS);
       timer.unref();
     } else if (code === 2) {
       state.lastError = 'exit 2: Instagram challenge/login required; restart with watchers_restart after re-authentication';
       log(`${source} paused: exit 2 (challenge/login required)`);
     }
-  });
+  };
+  child.on('error', (error) => finish(null, null, error));
+  child.on('exit', (code, signal) => finish(code, signal, null));
 }
 
-for (const source of ['whatsapp', 'instagram']) startSource(source);
+// Every source the worker code can run. YouTube is here because its settings
+// surface has existed since 0.15.6 and the operator had already switched the
+// Shorts toggle ON — with no worker, those settings were decoration.
+// X was not previously started by the manager. Starting it can poll paid APIs
+// and apply the saved auto-like settings, so it must be deliberately enabled.
+const SOURCES = ['whatsapp', 'instagram', 'youtube', ...(/^(1|true|yes)$/i.test(process.env.WATCHER_ENABLE_X ?? '') ? ['x'] : [])];
+
+for (const source of SOURCES) startSource(source);
 
 function status() {
   return {
@@ -83,8 +101,8 @@ function status() {
 }
 
 const tools = [
-  { name: 'watchers_status', description: 'Status of the WhatsApp and Instagram watcher workers, including restarts and last exit.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'watchers_restart', description: 'Restart the WhatsApp and Instagram watcher workers.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'watchers_status', description: 'Status of the WhatsApp, Instagram and YouTube watcher workers, including restarts and last exit.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'watchers_restart', description: 'Restart the WhatsApp, Instagram and YouTube watcher workers.', inputSchema: { type: 'object', properties: {} } },
 ];
 
 function write(payload) {
@@ -96,12 +114,14 @@ function text(value) {
 }
 
 function restart() {
-  for (const source of ['whatsapp', 'instagram']) {
+  for (const source of SOURCES) {
     const state = sources.get(source);
     if (state?.pid) {
+      state.restartRequested = true;
       try { process.kill(state.pid); } catch { /* already gone */ }
+    } else {
+      startSource(source);
     }
-    startSource(source);
   }
   return status();
 }
@@ -121,6 +141,10 @@ input.on('line', (line) => {
   if (request.method === 'tools/call') {
     const name = request.params?.name;
     try {
+      if (name !== 'watchers_restart' && name !== 'watchers_status') {
+        write({ jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Unknown tool' } });
+        return;
+      }
       const value = name === 'watchers_restart' ? restart() : status();
       write({ jsonrpc: '2.0', id: request.id, result: text(value) });
     } catch (error) {

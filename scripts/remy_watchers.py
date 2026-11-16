@@ -255,18 +255,18 @@ class StateStore:
         return True
 
     def pending(
-        self, source: Optional[str] = None, limit: int = 50
+        self, source: Optional[str] = None, limit: int = 50, offset: int = 0
     ) -> list[tuple[str, str, dict[str, Any], int]]:
         clauses = ["status = 'pending'", "next_attempt_at <= ?"]
         params: list[Any] = [time.time()]
         if source:
             clauses.append("source = ?")
             params.append(source)
-        params.append(limit)
+        params.extend([limit, offset])
         rows = self.conn.execute(
             "SELECT event_id, source, payload, attempts FROM outbox WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY created_at LIMIT ?",
+            + " ORDER BY created_at, rowid LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [(r[0], r[1], json.loads(r[2]), int(r[3])) for r in rows]
@@ -402,6 +402,34 @@ def event_allowed(event, settings: Optional[dict[str, Any]]) -> bool:
             keys.update({sender, f"ig:{sender.lstrip('@')}"})
         if chat_id:
             keys.update({chat_id, f"thread:{chat_id}", f"ig-thread:{chat_id}"})
+        # A queued WhatsApp payload contains the original ID and number rather
+        # than the WhatsAppEvent object used on initial intake.
+        if event.get("source") == "whatsapp":
+            raw = str(event.get("sender_raw") or "")
+            number = str(event.get("sender_number") or "")
+            if raw:
+                keys.update({raw, f"lid:{raw}"})
+            if number:
+                keys.add(number)
+            if chat_id:
+                keys.add(f"group:{chat_id}")
+        if event.get("source") == "youtube":
+            if username:
+                keys.add(f"yt:{username}")
+            if sender_id:
+                keys.add(f"yt:{sender_id}")
+            shared = event.get("shared")
+            video = shared.get("video") if isinstance(shared, dict) else None
+            video = video if isinstance(video, dict) else {}
+            for value in (video.get("channel"), video.get("channel_id"), video.get("channel_ref")):
+                if value:
+                    key = str(value).lstrip("@")
+                    keys.update({key, f"yt:{key}"})
+        if event.get("source") == "x":
+            for value in (username, sender_id, event.get("watched_account")):
+                if value:
+                    key = str(value).lstrip("@")
+                    keys.update({key, f"x:{key}"})
     else:
         if getattr(event, "sender_number", None):
             keys.add(str(event.sender_number))
@@ -604,6 +632,21 @@ def build_instagram_contact_catalog(server: Any) -> list[dict[str, Any]]:
                 "phone": None,
                 "kind": "group",
             }
+    return sorted(rows.values(), key=lambda row: row["name"].casefold())[:2000]
+
+
+def build_channel_catalog(source: str, channels: Iterable[Any]) -> list[dict[str, Any]]:
+    """Publish the actual configured channels, not invented provider accounts."""
+    if source not in ("youtube", "x"):
+        raise ValueError("channel catalog is supported for youtube and x")
+    prefix = "yt" if source == "youtube" else "x"
+    rows = {}
+    for channel in channels:
+        handle = str(channel).strip().lstrip("@")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", handle):
+            continue
+        key = f"{prefix}:{handle}"
+        rows[key] = {"key": key, "name": f"@{handle}", "phone": None, "kind": "person"}
     return sorted(rows.values(), key=lambda row: row["name"].casefold())[:2000]
 
 
@@ -869,42 +912,231 @@ def _mark_seen(store: StateStore, kind: str, target: str) -> None:
     store.meta_set(f"ig:seen:{kind}:{target}", "1")
 
 
-def _auto_like_comment(store: StateStore, server: Any, comment_id: str, *, writes: bool) -> bool:
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _parse_iso(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _post_taken_at(post: Any) -> Optional[float]:
+    if not isinstance(post, dict):
+        return None
+    return _parse_iso(post.get("taken_at"))
+
+
+def _post_already_liked(post: Any) -> bool:
+    """True only when the feed actually reports our like.
+
+    ``ig_user_posts`` carries ``liked`` when the connector is new enough; an
+    older connector leaves it out, so a missing/None value means "unknown" and
+    the caller should still try (a repeat like is harmless).
+    """
+    if not isinstance(post, dict):
+        return False
+    return post.get("liked") is True
+
+
+def _recent_account_posts(
+    server: Any,
+    account: str,
+    *,
+    amount: Optional[int] = None,
+    max_age_days: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    """One account's recent posts, newest first.
+
+    There are two traps here, and both made auto-like silently do nothing:
+
+    * **A small ``amount`` is not a cheap page.** Instagram's ranked
+      ``feed/user`` endpoint answers HTTP 200 with an EMPTY ``items`` list when
+      the count is small for some accounts (verified 2026-11-10: ``livecleo``
+      returned 0 posts at ``count=3`` and 4 posts at ``count=4``). A three-post
+      poll therefore saw nothing on every pass, with no error to log.
+    * **Profile order is not chronological.** Pinned posts sit at the top, so a
+      three-item window on ``livecleo`` was three posts from 2023/2024 and never
+      the reel posted that morning.
+
+    So: ask for a page big enough to be served, then sort by ``taken_at`` and
+    drop anything older than ``REMY_INSTAGRAM_POST_MAX_AGE_DAYS`` (default 7).
+    An old post is never a "new post", and liking a pinned 2023 reel is exactly
+    the bot signal this watcher exists to avoid.
+    """
+    if amount is None:
+        amount = _env_int("REMY_INSTAGRAM_POSTS_AMOUNT", 12)
+    amount = max(4, amount)
+    if max_age_days is None:
+        max_age_days = _env_int("REMY_INSTAGRAM_POST_MAX_AGE_DAYS", 7)
+    result = _quiet_instagram_call(server.ig_user_posts, account, amount=amount)
+    posts = [
+        post
+        for post in (result.get("posts") or [])
+        if isinstance(post, dict) and str(post.get("code") or "")
+    ]
+    if not posts:
+        # Silence here is what hid the bug for days: an empty poll is a
+        # monitoring failure, not "no new posts".
+        LOG.warning(
+            "instagram posts poll returned 0 posts account=%s amount=%d "
+            "(ranked feed throttled or count too small for Instagram to serve)",
+            account,
+            amount,
+        )
+        return []
+    if len(posts) < 4:
+        # A page that short can be nothing but pinned posts, and every pinned
+        # post is older than the age window — so a new post would be invisible
+        # even though the page was not empty. Say so instead of going quiet.
+        LOG.warning(
+            "instagram posts page short account=%s returned=%d requested=%d "
+            "(pinned posts can fill a short page and hide a new post)",
+            account,
+            len(posts),
+            amount,
+        )
+    cutoff = time.time() - max_age_days * 86400 if max_age_days > 0 else None
+
+    def _old(post: Any) -> bool:
+        # Only a timestamp we actually HAVE can make a post old. A missing one
+        # is unknown age, not evidence of age — excluding those would be the
+        # same silent blindness this function exists to end.
+        taken = _post_taken_at(post)
+        return cutoff is not None and taken is not None and taken < cutoff
+
+    recent = [post for post in posts if not _old(post)]
+    recent.sort(key=lambda post: _post_taken_at(post) or 0.0, reverse=True)
+    return recent
+
+
+class LikeGate:
+    """One like per automation pass, with a persisted gap and a hard stop.
+
+    Instagram treats a burst of likes as bot behaviour, and the first write it
+    dislikes comes back as ``LoginRequired`` — which then breaks reads too. So:
+      * at most ``REMY_INSTAGRAM_MAX_LIKES_PER_PASS`` likes per pass (default 1),
+      * at least ``REMY_INSTAGRAM_LIKE_MIN_GAP_SECONDS`` between likes across
+        passes (default 300),
+      * no writes at all while the connector's state says the session is expired,
+      * the first LoginRequired/ChallengeRequired halts every remaining like.
+    """
+
+    AUTH_ERRORS = {"LoginRequired", "ChallengeRequired", "PleaseWaitFewMinutes", "SessionError"}
+
+    def __init__(self, store: StateStore, server: Any) -> None:
+        self.store = store
+        self.server = server
+        self.max_per_pass = max(0, _env_int("REMY_INSTAGRAM_MAX_LIKES_PER_PASS", 1))
+        self.min_gap_s = max(0, _env_int("REMY_INSTAGRAM_LIKE_MIN_GAP_SECONDS", 300))
+        self.used = 0
+        self.halted: Optional[str] = None
+        self.skip_reason: Optional[str] = None
+        self._last_at = _parse_iso(store.meta_get("ig:auto:like:last_at"))
+
+    def remaining(self) -> int:
+        return max(0, self.max_per_pass - self.used)
+
+    def halt(self, reason: str) -> None:
+        if self.halted is None:
+            self.halted = reason
+            LOG.warning("instagram auto-like halted: %s", reason)
+
+    def _session_expired(self) -> bool:
+        try:
+            state = self.server.session.read_state()
+        except Exception:  # noqa: BLE001
+            return False
+        ok_at = _parse_iso(state.get("last_ok_at"))
+        error_at = _parse_iso(state.get("last_error_at"))
+        return error_at is not None and (ok_at is None or error_at >= ok_at)
+
+    def allow(self, kind: str) -> bool:
+        if self.halted is not None:
+            return False
+        if self.used >= self.max_per_pass:
+            self.skip_reason = self.skip_reason or "pass_limit"
+            return False
+        if self._session_expired():
+            self.halt("session_expired")
+            return False
+        if self._last_at is not None and (time.time() - self._last_at) < self.min_gap_s:
+            self.skip_reason = self.skip_reason or "gap"
+            return False
+        return True
+
+    def record(self, kind: str, target: str) -> None:
+        self.used += 1
+        self._last_at = time.time()
+        self.store.meta_set("ig:auto:like:last_at", now_iso())
+        LOG.info(
+            "instagram auto-like %s target=%s (pass %d/%d)",
+            kind, log_event_id(target), self.used, self.max_per_pass,
+        )
+
+    def note_error(self, exc: BaseException) -> None:
+        if type(exc).__name__ in self.AUTH_ERRORS:
+            self.halt(type(exc).__name__)
+
+
+def _auto_like_comment(
+    store: StateStore, server: Any, comment_id: str, *, writes: bool, gate: LikeGate
+) -> bool:
     if not comment_id or _seen(store, "comment", comment_id):
         return False
     if not writes:
-        _mark_seen(store, "comment", comment_id)
+        return False
+    if not gate.allow("comment"):
+        # Leave it unseen: a later pass can like it within the budget/gap.
         return False
     try:
         result = _quiet_instagram_call(server.ig_like_comment, comment_id)
         liked = bool(result.get("liked"))
         _mark_seen(store, "comment", comment_id)
         if liked:
-            LOG.info("instagram auto-like comment_hash=%s", log_event_id(comment_id))
+            gate.record("comment", comment_id)
         return liked
     except Exception as exc:  # noqa: BLE001
         LOG.warning("instagram auto-like comment failed: %s", type(exc).__name__)
-        _mark_seen(store, "comment", comment_id)
+        gate.note_error(exc)
+        if gate.halted is None:
+            _mark_seen(store, "comment", comment_id)
         return False
 
 
-def _auto_like_post(store: StateStore, server: Any, code: str, *, writes: bool) -> bool:
+def _auto_like_post(
+    store: StateStore, server: Any, code: str, *, writes: bool, gate: LikeGate
+) -> bool:
     if not code or _seen(store, "post", code):
         return False
     if not writes:
-        _mark_seen(store, "post", code)
+        return False
+    if not gate.allow("post"):
         return False
     try:
         result = _quiet_instagram_call(server.ig_like_post, code)
         liked = bool(result.get("liked"))
         _mark_seen(store, "post", code)
         if liked:
-            LOG.info("instagram auto-like post_hash=%s", log_event_id(code))
+            gate.record("post", code)
         return liked
     except Exception as exc:  # noqa: BLE001
         LOG.warning("instagram auto-like post failed: %s", type(exc).__name__)
-        _mark_seen(store, "post", code)
+        gate.note_error(exc)
+        if gate.halted is None:
+            _mark_seen(store, "post", code)
         return False
+
 
 
 def _poll_account_posts(
@@ -914,24 +1146,32 @@ def _poll_account_posts(
     *,
     state: str,
     writes: bool,
-    amount: int = 3,
+    gate: LikeGate,
+    amount: Optional[int] = None,
 ) -> None:
     if state == "off":
         return
     try:
-        result = _quiet_instagram_call(server.ig_user_posts, account, amount=amount)
+        posts = _recent_account_posts(server, account, amount=amount)
     except Exception as exc:  # noqa: BLE001
         LOG.warning("instagram posts poll failed: %s", type(exc).__name__)
         return
-    posts = result.get("posts") or []
-    for post in posts[:amount]:
+    if state == "baseline":
+        for post in posts:
+            _mark_seen(store, "post", str(post["code"]))
+        return
+    # Oldest first, so a burst of uploads drains in the order they were posted
+    # and nothing starves behind the one-like-per-pass gate.
+    for post in sorted(posts, key=lambda item: _post_taken_at(item) or 0.0):
         code = str(post.get("code") or "")
-        if not code:
+        if not code or _seen(store, "post", code):
             continue
-        if state == "baseline":
+        if _post_already_liked(post):
+            # Liked by hand (or an earlier pass) — record it without spending a
+            # LikeGate slot on a write that would change nothing.
             _mark_seen(store, "post", code)
-        else:
-            _auto_like_post(store, server, code, writes=writes)
+            continue
+        _auto_like_post(store, server, code, writes=writes, gate=gate)
 
 
 def _activity_comment_events(
@@ -940,6 +1180,7 @@ def _activity_comment_events(
     *,
     enabled: bool,
     writes: bool,
+    gate: LikeGate,
 ) -> list[dict[str, Any]]:
     state = _auto_action_state(store, "mentions", enabled)
     try:
@@ -967,7 +1208,7 @@ def _activity_comment_events(
             if comment_id:
                 _mark_seen(store, "comment", comment_id)
         elif state == "active" and comment_id:
-            _auto_like_comment(store, server, comment_id, writes=writes)
+            _auto_like_comment(store, server, comment_id, writes=writes, gate=gate)
         token = comment_id or f"{at}:{media_pk}:{sender}"
         events.append(
             {
@@ -1004,6 +1245,7 @@ def _cleo_comment_events(
     enabled: bool,
     writes: bool,
     my_username: str,
+    gate: LikeGate,
 ) -> list[dict[str, Any]]:
     state = _auto_action_state(store, "cleoPostComments", enabled)
     if state == "off":
@@ -1014,11 +1256,11 @@ def _cleo_comment_events(
     events: list[dict[str, Any]] = []
     for account in cleo_accounts[:5]:
         try:
-            posts_result = _quiet_instagram_call(server.ig_user_posts, account, amount=2)
+            posts = _recent_account_posts(server, account)[:2]
         except Exception as exc:  # noqa: BLE001
             LOG.warning("instagram cleo posts poll failed: %s", type(exc).__name__)
             continue
-        for post in (posts_result.get("posts") or [])[:2]:
+        for post in posts:
             code = str(post.get("code") or "")
             post_pk = str(post.get("pk") or "")
             if not code:
@@ -1041,7 +1283,7 @@ def _cleo_comment_events(
                 if state == "baseline":
                     _mark_seen(store, "comment", comment_pk)
                     continue
-                _auto_like_comment(store, server, comment_pk, writes=writes)
+                _auto_like_comment(store, server, comment_pk, writes=writes, gate=gate)
                 events.append(
                     {
                         "source": "instagram",
@@ -1077,6 +1319,7 @@ def _selected_account_post_likes(
     *,
     enabled: bool,
     writes: bool,
+    gate: LikeGate,
 ) -> None:
     state = _auto_action_state(store, "selectedAccounts", enabled)
     if state == "off":
@@ -1087,7 +1330,80 @@ def _selected_account_post_likes(
         if key.startswith("ig:"):
             usernames.append(key[3:])
     for username in usernames[:10]:
-        _poll_account_posts(store, server, username, state=state, writes=writes, amount=3)
+        _poll_account_posts(store, server, username, state=state, writes=writes, gate=gate)
+
+
+
+
+def _auto_like_cleo_stories(
+    store: StateStore,
+    server: Any,
+    accounts: list[str],
+    *,
+    enabled: bool,
+    writes: bool,
+    gate: LikeGate,
+) -> int:
+    """Like at most one unseen story, paced by the LikeGate.
+
+    Stories expire, so they go first, but a burst of story likes is exactly the
+    pattern Instagram answers with LoginRequired — so the gate allows one write
+    per pass and this stops at the first auth error.
+    """
+    if not enabled:
+        return 0
+    if os.environ.get("REMY_INSTAGRAM_LIKE_STORIES", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+        return 0
+    if not writes or gate.halted is not None or gate.remaining() <= 0:
+        if gate.halted is None and writes:
+            gate.skip_reason = gate.skip_reason or "pass_limit"
+        return 0
+    try:
+        client = _quiet_instagram_call(server._client)
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("instagram story client failed: %s", type(exc).__name__)
+        gate.note_error(exc)
+        return 0
+    try:
+        raw = store.meta_get("ig:auto:stories:liked")
+        liked = set(json.loads(raw)) if raw else set()
+    except (ValueError, TypeError):
+        liked = set()
+    count = 0
+    stop = False
+    for account in accounts[:5]:
+        if stop or gate.halted is not None or gate.remaining() <= 0:
+            break
+        try:
+            user_id = _quiet_instagram_call(client.user_id_from_username, account)
+            stories = _quiet_instagram_call(client.user_stories, user_id)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("instagram stories poll failed account=%s error=%s", account, type(exc).__name__)
+            gate.note_error(exc)
+            if gate.halted is not None:
+                break
+            continue
+        for story in stories or []:
+            pk = str(getattr(story, "pk", "") or "")
+            if not pk or pk in liked:
+                continue
+            if not gate.allow("story"):
+                stop = True
+                break
+            try:
+                # Humanise the single write: reads are cheap, likes are not.
+                time.sleep(random.uniform(2.0, 6.0))
+                _quiet_instagram_call(client.story_like, pk)
+                liked.add(pk)
+                count += 1
+                gate.record("story", pk)
+                store.meta_set("ig:auto:stories:liked", json.dumps(sorted(liked)))
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("instagram story_like failed account=%s error=%s", account, type(exc).__name__)
+                gate.note_error(exc)
+                stop = True
+            break  # one story per account; the gate caps the pass anyway
+    return count
 
 
 def run_instagram_automation_once(
@@ -1100,6 +1416,10 @@ def run_instagram_automation_once(
 
     Replies, comments and mentions are never posted here: matching items become
     draft webhook events for Remy, exactly like DMs.
+
+    Auto-likes are deliberately slow: one like per pass, a persisted minimum gap
+    between passes, and an immediate stop on the first auth error. Batch liking
+    is what invalidates the saved session.
     """
     if settings.get("enabled") is not True:
         return 0
@@ -1111,10 +1431,26 @@ def run_instagram_automation_once(
         return 0
     writes = bool(status.get("writes_enabled")) if isinstance(status, dict) else False
     my_username = str(status.get("username") or "") if isinstance(status, dict) else ""
+    if not writes:
+        reason = "no status"
+        if isinstance(status, dict):
+            reason = str(status.get("error") or status.get("message") or "writes_enabled missing")
+        LOG.warning("instagram writes disabled this pass: %s", reason)
+
+    gate = LikeGate(store, server)
+    # Stories first (they expire); the gate still allows only one write per pass.
+    _auto_like_cleo_stories(
+        store,
+        server,
+        auto.get("cleoAccounts", []),
+        enabled=auto.get("cleoStories", True),
+        writes=writes,
+        gate=gate,
+    )
 
     cleo_state = _auto_action_state(store, "cleoPosts", auto["cleoPosts"])
     for account in auto.get("cleoAccounts", [])[:5]:
-        _poll_account_posts(store, server, account, state=cleo_state, writes=writes, amount=3)
+        _poll_account_posts(store, server, account, state=cleo_state, writes=writes, gate=gate)
 
     _selected_account_post_likes(
         store,
@@ -1122,10 +1458,11 @@ def run_instagram_automation_once(
         settings,
         enabled=auto["selectedAccounts"],
         writes=writes,
+        gate=gate,
     )
 
     events: list[dict[str, Any]] = []
-    events.extend(_activity_comment_events(store, server, enabled=auto["mentions"], writes=writes))
+    events.extend(_activity_comment_events(store, server, enabled=auto["mentions"], writes=writes, gate=gate))
     events.extend(
         _cleo_comment_events(
             store,
@@ -1134,7 +1471,13 @@ def run_instagram_automation_once(
             enabled=auto["cleoPostComments"],
             writes=writes,
             my_username=my_username,
+            gate=gate,
         )
+    )
+
+    LOG.info(
+        "instagram auto-like pass used=%d/%d halted=%s skipped=%s",
+        gate.used, gate.max_per_pass, gate.halted, gate.skip_reason,
     )
 
     raw = store.cursor("instagram-activity")
@@ -1147,7 +1490,7 @@ def run_instagram_automation_once(
         and (after is None or (str(event["timestamp"]), str(event["message_id"])) > after)
     ]
     initialize_only = raw is None
-    count = process_events(store, "instagram-activity", new_events, delivery, initialize_only)
+    count = process_events(store, "instagram-activity", new_events, delivery, initialize_only, effective)
     if raw is None and not new_events:
         store.set_cursor("instagram-activity", _cursor_value(now_iso(), "init"))
     return count
@@ -1170,6 +1513,7 @@ def process_events(
     events: Iterable[dict[str, Any]],
     delivery: WebhookDelivery,
     initialize_only: bool = False,
+    settings: Optional[dict[str, Any]] = None,
 ) -> int:
     count = 0
     newest: Optional[tuple[str, str]] = None
@@ -1185,11 +1529,27 @@ def process_events(
     if newest:
         store.set_cursor(source, _cursor_value(*newest))
     if not initialize_only:
-        for event_id, _source, payload, attempts in store.pending(source=source):
-            if delivery.send(event_id, payload):
-                store.mark_sent(event_id)
-            else:
-                store.mark_retry(event_id, attempts + 1)
+        offset = 0
+        attempted = 0
+        while attempted < 50:
+            batch = store.pending(source=source, limit=50, offset=offset)
+            if not batch:
+                break
+            for event_id, _source, payload, attempts in batch:
+                # Rejected entries remain pending. Scan past them so they do
+                # not starve eligible events later in the outbox.
+                if settings is not None and not event_allowed(payload, settings):
+                    offset += 1
+                    continue
+                if delivery.send(event_id, payload):
+                    store.mark_sent(event_id)
+                else:
+                    store.mark_retry(event_id, attempts + 1)
+                attempted += 1
+                if attempted == 50:
+                    break
+            if len(batch) < 50:
+                break
     return count
 
 
@@ -1210,7 +1570,7 @@ def run_whatsapp_once(
     newest = max(((event.timestamp, event.message_id) for event in events), default=None)
     effective = settings or DEFAULT_WATCHER_SETTINGS
     allowed = [event.payload() for event in events if event_allowed(event, effective)]
-    count = process_events(store, "whatsapp", allowed, delivery)
+    count = process_events(store, "whatsapp", allowed, delivery, settings=effective)
     # Advance past filtered events too, otherwise the next poll re-reads them.
     if newest is not None:
         store.set_cursor("whatsapp", _cursor_value(*newest))
@@ -1228,7 +1588,7 @@ def run_instagram_once(
     effective = settings or DEFAULT_WATCHER_SETTINGS
     allowed = [event for event in events if event_allowed(event, effective)]
     initialize_only = raw is None and os.environ.get("REMY_REPLAY_EXISTING") != "1"
-    count = process_events(store, "instagram", allowed, delivery, initialize_only)
+    count = process_events(store, "instagram", allowed, delivery, initialize_only, effective)
     # Advance past filtered events too, otherwise the next poll re-reads them.
     if newest is not None:
         store.set_cursor("instagram", _cursor_value(*newest))
@@ -1335,7 +1695,7 @@ def read_youtube_activity(
             video_id = video.get("id")
             if not video_id:
                 continue
-            meta = yt_formats.video_row(video)
+            meta = {**yt_formats.video_row(video), "channel_ref": ref}
             if meta.get("published_at") and (
                 not after_videos or (str(meta["published_at"]), video_id) > after_videos
             ):
@@ -1387,7 +1747,8 @@ def _youtube_event(row: dict[str, Any], meta: dict[str, Any], video_id: str,
         "media": None,
         "shared": {"video": {"video_id": video_id, "title": meta.get("title"),
                              "url": f"https://youtu.be/{video_id}",
-                             "kind": meta.get("kind"), "channel": meta.get("channel")}},
+                             "kind": meta.get("kind"), "channel": meta.get("channel"),
+                             "channel_id": meta.get("channel_id"), "channel_ref": meta.get("channel_ref")}},
         "platform": "youtube",
         "video_id": video_id,
         "video_url": f"https://youtu.be/{video_id}",
@@ -1422,7 +1783,8 @@ def _youtube_video_event(meta: dict[str, Any]) -> dict[str, Any]:
         "media": None,
         "shared": {"video": {"video_id": video_id, "title": meta.get("title"),
                              "url": f"https://youtu.be/{video_id}",
-                             "kind": meta.get("kind"), "channel": meta.get("channel")}},
+                             "kind": meta.get("kind"), "channel": meta.get("channel"),
+                             "channel_id": meta.get("channel_id"), "channel_ref": meta.get("channel_ref")}},
         "platform": "youtube",
         "video_id": video_id,
         "video_url": f"https://youtu.be/{video_id}",
@@ -1450,6 +1812,8 @@ def autolike_youtube(
     videos: list[dict[str, Any]],
     initialise_only: bool = False,
     settings: Optional[dict[str, Any]] = None,
+    *,
+    like_existing_videos: bool = False,
 ) -> dict[str, Any]:
     """Like what the settings allow, and say exactly what could not be liked.
 
@@ -1458,12 +1822,19 @@ def autolike_youtube(
       comments+replies -> browser cookies (no official method exists).
 
     Nothing here can post. Liking is the only write.
+
+    ``like_existing_videos`` is the first-sweep rule for uploads. The operator
+    asked for *every* recent Short to be liked, so on a fresh state the sweep
+    likes the uploads it can see (that is the point of "get the list, then like
+    them") instead of baselining them away. Comments are still baselined, which
+    is what stops a first run dumping a year of replies into Remy. Set
+    ``REMY_YOUTUBE_SKIP_EXISTING=1`` to go back to "new uploads only".
     """
     settings = settings or youtube_settings()
     flags = settings.get("autoLike") or {}
     out: dict[str, Any] = {"video_likes": 0, "comment_likes": 0, "reply_likes": 0,
                            "failed": 0, "skipped": [], "reasons": []}
-    if initialise_only:
+    if initialise_only and not like_existing_videos:
         out["reasons"].append("baseline_run: nothing liked on the first sweep")
         return out
     if not settings.get("enabled", True):
@@ -1480,6 +1851,17 @@ def autolike_youtube(
     except Exception as exc:  # noqa: BLE001
         note(f"import_failed:{type(exc).__name__}")
         return out
+
+    # The pacer reads config.ACTION_GAP at call time, so the watcher can set its
+    # own cadence without changing the connector's 8 s for interactive calls.
+    # Default 20 s: one like at a time, jittered, which is what was asked for.
+    try:
+        _cfg.ACTION_GAP = float(os.environ.get("REMY_YOUTUBE_LIKE_GAP_SECONDS", "20"))
+    except (TypeError, ValueError):
+        note("bad_like_gap_env")
+    # A baseline sweep still likes the *uploads* it can see; it must not touch
+    # the comment backlog.
+    skip_comments = initialise_only
 
     # --- videos and Shorts (OAuth) ----------------------------------------
     for video in videos:
@@ -1504,6 +1886,9 @@ def autolike_youtube(
 
     # --- comments and replies (cookies) -----------------------------------
     comment_events = [e for e in events if e.get("kind") in {"comment", "reply"}]
+    if skip_comments and comment_events:
+        note("comment_likes_baselined: first sweep records, does not like")
+        comment_events = []
     if comment_events and (flags.get("comments") or flags.get("replies")):
         available, why = yt_innertube.available()
         if not available:
@@ -1545,20 +1930,43 @@ def run_youtube_once(
     raw = store.cursor("youtube")
     raw_videos = store.cursor("youtube:videos")
     replay = os.environ.get("REMY_REPLAY_EXISTING") == "1"
-    activity = read_youtube_activity(_cursor_pair(raw), _cursor_pair(raw_videos))
+    # The FIRST sweep is the catch-up: walk a deep window so every recent Short
+    # is in the list being liked, not just the newest handful. Steady state then
+    # walks the cheap window (REMY_YOUTUBE_SCAN_VIDEOS, default 10) every pass.
+    # Quota: ~2 units per video scanned, 10,000/day per project, so a deep window
+    # is affordable once and not every 10 minutes.
+    first_sweep = raw_videos is None
+    scan = int(
+        os.environ.get(
+            "REMY_YOUTUBE_FIRST_SCAN_VIDEOS" if first_sweep else "REMY_YOUTUBE_SCAN_VIDEOS",
+            "50" if first_sweep else "10",
+        )
+    )
+    activity = read_youtube_activity(
+        _cursor_pair(raw), _cursor_pair(raw_videos), scan_videos=max(1, scan)
+    )
     events = activity["events"]
     videos = activity["videos"]
 
     effective = settings or DEFAULT_WATCHER_SETTINGS
     baseline_comments = raw is None and not replay
     baseline_videos = raw_videos is None and not replay
+    # Likes on the first sweep: the operator wants her recent Shorts liked, not
+    # "everything after today". REMY_YOUTUBE_SKIP_EXISTING=1 restores the old
+    # new-uploads-only rule.
+    like_existing = os.environ.get("REMY_YOUTUBE_SKIP_EXISTING", "0").strip().lower() not in {
+        "1", "true", "yes", "on"
+    }
 
-    # A first sweep is a BASELINE: record where we are, push nothing. Otherwise
-    # enabling the watcher would dump a year of comments into Remy at once.
+    # A first sweep is a BASELINE for COMMENTS: record where we are, push
+    # nothing. Otherwise enabling the watcher would dump a year of comments into
+    # Remy at once. Videos are a much smaller set (the scan window), so they are
+    # pushed and liked.
     allowed = ([] if baseline_comments
                else [event for event in events if event_allowed(event, effective)])
     if not baseline_videos:
-        allowed += [_youtube_video_event(video) for video in videos]
+        allowed += [event for video in videos
+                    if event_allowed(event := _youtube_video_event(video), effective)]
 
     newest = max(((str(e["timestamp"]), str(e["event_id"])) for e in events), default=None)
     newest_video = max(
@@ -1566,10 +1974,15 @@ def run_youtube_once(
         default=None,
     )
 
-    count = process_events(store, "youtube", allowed, delivery, False)
+    count = process_events(store, "youtube", allowed, delivery, False, effective)
 
-    likes = autolike_youtube(events, videos, baseline_comments or baseline_videos,
-                             youtube_settings(effective))
+    likes = autolike_youtube(
+        events,
+        videos,
+        baseline_comments,
+        youtube_settings(effective),
+        like_existing_videos=like_existing and baseline_videos,
+    )
     LOG.info("source=youtube autolike videos=%s comments=%s replies=%s failed=%s reasons=%s",
              likes.get("video_likes"), likes.get("comment_likes"),
              likes.get("reply_likes"), likes.get("failed"),
@@ -1697,7 +2110,7 @@ def read_x_activity(
         for index, row in enumerate(rows):
             if not row.get("id"):
                 continue
-            event = _x_event(row, "quote" if row.get("kind") == "quote" else "post")
+            event = _x_event(row, "quote" if row.get("kind") == "quote" else "post", watched_account=handle)
             posts.append(row)
             if fresh(event):
                 events.append(event)
@@ -1714,7 +2127,7 @@ def read_x_activity(
                     continue
                 reply["mentions_me"] = x_formats.mentions_handle(
                     reply.get("text") or "", x_config.MENTION_HANDLES)
-                child = _x_event(reply, "reply", parent_id=row["id"])
+                child = _x_event(reply, "reply", parent_id=row["id"], watched_account=handle)
                 if fresh(child):
                     events.append(child)
 
@@ -1735,13 +2148,14 @@ def read_x_activity(
 
 
 def _x_event(row: dict[str, Any], kind: str,
-             parent_id: Optional[str] = None) -> dict[str, Any]:
+             parent_id: Optional[str] = None, watched_account: Optional[str] = None) -> dict[str, Any]:
     """One Remy-facing event. `kind` decides what Remy is being asked to draft."""
     post_id = str(row.get("id") or "")
     author = str(row.get("author") or "")
     conversation = str(row.get("conversation_id") or post_id)
     return {
         "source": "x",
+        "watched_account": watched_account,
         "event_id": f"x:{kind}:{post_id}",
         "kind": kind,
         "received_at": now_iso(),
@@ -1865,7 +2279,7 @@ def run_x_once(
 
     newest = max(((str(e["timestamp"]), str(e["event_id"])) for e in events), default=None)
 
-    count = process_events(store, "x", allowed, delivery, False)
+    count = process_events(store, "x", allowed, delivery, False, effective)
 
     likes = autolike_x(events, baseline, x_settings(effective), activity.get("posts"))
     LOG.info("source=x autolike likes=%s failed=%s reasons=%s",
@@ -2314,10 +2728,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             "youtube": "REMY_YOUTUBE_INTERVAL_SECONDS",
             "x": "REMY_X_INTERVAL_SECONDS",
         }[args.source]
-        interval_default = {"whatsapp": "15", "instagram": "1800", "youtube": "1800", "x": "1800"}[args.source]
+        # YouTube every 10 minutes: she publishes Shorts in bursts and the
+        # operator wants them liked promptly. Cost is ~1 quota unit per scanned
+        # video, so REMY_YOUTUBE_SCAN_VIDEOS (10) keeps a pass cheap.
+        interval_default = {"whatsapp": "15", "instagram": "1800", "youtube": "600", "x": "1800"}[args.source]
         interval = int(os.environ.get(interval_key, interval_default))
         settings_client = WatcherSettingsClient(args.source)
-        settings_cache: dict[str, Any] = dict(DEFAULT_WATCHER_SETTINGS)
+        settings_cache: Optional[dict[str, Any]] = None
         messages_db = os.environ.get(
             "WHATSAPP_MESSAGES_DB", "~/whatsapp-mcp/whatsapp-bridge/store/messages.db"
         )
@@ -2337,6 +2754,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 fetched = settings_client.fetch() if settings_client else None
                 if fetched is not None:
                     settings_cache = fetched
+                if settings_cache is None:
+                    # Do not read or advance cursors until the initial policy
+                    # is available. Once loaded, retain the last good policy.
+                    LOG.warning("source=%s waiting_for_watcher_settings", args.source)
+                    if args.once:
+                        return 0
+                    time.sleep(tick)
+                    continue
                 if time.time() - last_contact_sync > 300:
                     if args.source == "whatsapp":
                         catalog = build_contact_catalog(
@@ -2344,11 +2769,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                         )
                     elif args.source == "instagram":
                         catalog = build_instagram_contact_catalog(_instagram_server())
+                    elif args.source == "youtube":
+                        _, youtube_config, _ = _youtube_modules()
+                        catalog = build_channel_catalog("youtube", youtube_config.CHANNELS)
                     else:
-                        # No contact catalog for YouTube: the senders are
-                        # commenters, not a directory we can enumerate.
-                        catalog = []
-                    if catalog and settings_client:
+                        _, x_config, _, _ = _x_modules()
+                        catalog = build_channel_catalog("x", x_config.CHANNELS)
+                    if settings_client and (catalog or args.source in ("youtube", "x")):
                         settings_client.sync_contacts(catalog)
                     last_contact_sync = time.time()
 
