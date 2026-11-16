@@ -52,6 +52,12 @@ class UploadTests(unittest.TestCase):
         response = self.client.post('/knowledge/upload?filename=report.txt&category=homelab', headers={'content-type': 'application/octet-stream'}, content=b'x')
         self.assertEqual(response.status_code, 401)
 
+    def test_category_status_reports_read_only_stage(self):
+        with patch.dict(os.environ, {'BRAIN_READ_ONLY': '1'}):
+            response = self.client.get('/categories', headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['readOnly'])
+
     def test_read_only_stage_rejects_upload_even_with_valid_credentials(self):
         with patch.dict(os.environ, {'BRAIN_READ_ONLY': '1'}), patch.object(app.know, 'ingest') as ingest:
             response = self.client.post('/knowledge/upload?filename=report.txt&category=homelab', headers=self.headers, content=b'example')

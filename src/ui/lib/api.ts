@@ -735,7 +735,7 @@ export class ApiClient {
 
   // -- JSON-RPC ingress -----------------------------------------------------
 
-  async getManagedKnowledge(): Promise<{ configured: boolean; categories: Array<{ name: string; sensitive: boolean }>; maxUploadBytes?: number }> {
+  async getManagedKnowledge(): Promise<{ configured: boolean; categories: Array<{ name: string; sensitive: boolean }>; readOnly?: boolean; maxUploadBytes?: number }> {
     return this.request('/mcp/v1/admin/knowledge');
   }
 

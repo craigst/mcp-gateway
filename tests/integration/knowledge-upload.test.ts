@@ -12,10 +12,11 @@ describe('managed knowledge upload', () => {
   let uploads: Array<{ data: string; category: string | undefined; actor: string | undefined }> = [];
   let documentsHeader = '';
   let retryBody = '';
+  let readOnly = false;
 
   beforeAll(async () => {
     upstream = createServer(async (req, res) => {
-      if (req.url === '/categories') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ categories: [{ name: 'homelab', sensitive: false }, { name: 'financial', sensitive: true }] })); return; }
+      if (req.url === '/categories') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ readOnly, categories: [{ name: 'homelab', sensitive: false }, { name: 'financial', sensitive: true }] })); return; }
       if (req.url?.startsWith('/knowledge/documents')) { documentsHeader = String(req.headers['x-brain-allowed-categories']); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ documents: [{ id: 42, filename: 'notes.txt', category: 'homelab', index_state: 'ready' }], has_more: false })); return; }
       if (req.url === '/knowledge/retry') { const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk)); retryBody = Buffer.concat(chunks).toString(); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ repaired: true })); return; }
       const chunks: Buffer[] = [];
@@ -31,7 +32,7 @@ describe('managed knowledge upload', () => {
     gateway.listen(0, '127.0.0.1'); await once(gateway, 'listening');
     gatewayUrl = `http://127.0.0.1:${(gateway.address() as import('node:net').AddressInfo).port}`;
   });
-  beforeEach(() => { uploads = []; });
+  beforeEach(() => { uploads = []; readOnly = false; });
   afterAll(async () => { gateway.close(); upstream.close(); await Promise.all([once(gateway, 'close'), once(upstream, 'close')]); });
 
   it('streams a document with only the explicitly selected category', async () => {
@@ -59,6 +60,16 @@ describe('managed knowledge upload', () => {
     expect((await fetch(`${path}/42/retry`, { method: 'POST', headers: { 'x-test-agent': '1' } })).status).toBe(403);
     expect((await fetch(`${path}/42/retry`, { method: 'POST' })).status).toBe(200);
     expect(JSON.parse(retryBody)).toEqual({ document_id: 42 });
+  });
+
+  it('refuses uploads and index retries when the backend is staged read-only', async () => {
+    readOnly = true;
+    const status = await fetch(`${gatewayUrl}/mcp/v1/admin/knowledge`);
+    expect(await status.json()).toMatchObject({ configured: true, readOnly: true });
+    const upload = await fetch(`${gatewayUrl}/mcp/v1/admin/knowledge/upload?filename=notes.txt&category=homelab`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: 'sample' });
+    expect(upload.status).toBe(503);
+    expect((await fetch(`${gatewayUrl}/mcp/v1/admin/knowledge/documents/42/retry`, { method: 'POST' })).status).toBe(503);
+    expect(uploads).toEqual([]);
   });
 
 });

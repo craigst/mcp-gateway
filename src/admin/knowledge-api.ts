@@ -31,12 +31,12 @@ export class KnowledgeApi implements AdminSubRouter {
           this.send(res, 200, { configured: false, categories: [] });
           return true;
         }
-        const categories = await this.categories();
-        this.send(res, 200, { configured: true, categories, maxUploadBytes: MAX_UPLOAD_BYTES });
+        const { categories, readOnly } = await this.settings();
+        this.send(res, 200, { configured: true, categories, readOnly, maxUploadBytes: MAX_UPLOAD_BYTES });
         return true;
       }
       if (parts.length === 2 && parts[1] === 'documents' && req.method === 'GET') {
-        const categories = await this.categories();
+        const { categories } = await this.settings();
         const category = url.searchParams.get('category');
         const offset = url.searchParams.get('offset') ?? '0';
         if (!/^\d{1,7}$/u.test(offset) || Number(offset) > 1_000_000) throw invalidParams('Invalid document page.');
@@ -53,7 +53,8 @@ export class KnowledgeApi implements AdminSubRouter {
       if (parts.length === 4 && parts[1] === 'documents' && /^\d+$/u.test(parts[2] ?? '') && parts[3] === 'retry' && req.method === 'POST') {
         const id = Number(parts[2]);
         if (!Number.isSafeInteger(id) || id < 1) throw invalidParams('Invalid document ID.');
-        const categories = await this.categories();
+        const { categories, readOnly } = await this.settings();
+        if (readOnly) throw new GatewayError(ErrorCodes.NOT_IMPLEMENTED, 'The staged knowledge service is read-only.', { httpStatus: 503 });
         const response = await (this.deps.fetch ?? fetch)(this.target('/knowledge/retry'), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), headers: { authorization: `Bearer ${this.token()}`, 'content-type': 'application/json', 'x-brain-actor': principal.name, 'x-brain-allowed-categories': categories.map((item) => item.name).join(',') }, body: JSON.stringify({ document_id: id }) });
         if (!response.ok) throw new GatewayError(ErrorCodes.INTERNAL_ERROR, 'Could not repair this document index.', { httpStatus: 502 });
         this.send(res, 200, await response.json());
@@ -85,21 +86,28 @@ export class KnowledgeApi implements AdminSubRouter {
     return token;
   }
 
-  private async categories(): Promise<Category[]> {
+  private async settings(): Promise<{ categories: Category[]; readOnly: boolean }> {
     const response = await (this.deps.fetch ?? fetch)(this.target('/categories'), {
       headers: { authorization: `Bearer ${this.token()}` }, redirect: 'error', signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) throw new GatewayError(ErrorCodes.INTERNAL_ERROR, 'Could not load knowledge categories.', { httpStatus: 502 });
     const body: unknown = await response.json();
     if (!body || typeof body !== 'object' || !('categories' in body) || !Array.isArray(body.categories)) throw new Error('invalid categories');
-    return body.categories.filter((entry: unknown): entry is Category => Boolean(entry && typeof entry === 'object' && 'name' in entry && typeof entry.name === 'string' && /^[A-Za-z0-9._-]{1,80}$/u.test(entry.name) && 'sensitive' in entry && typeof entry.sensitive === 'boolean'));
+    return {
+      categories: body.categories.filter((entry: unknown): entry is Category => Boolean(entry && typeof entry === 'object' && 'name' in entry && typeof entry.name === 'string' && /^[A-Za-z0-9._-]{1,80}$/u.test(entry.name) && 'sensitive' in entry && typeof entry.sensitive === 'boolean')),
+      // Unknown backend state is treated as read-only, so a misconfigured or
+      // older service cannot accidentally accept writes during migration.
+      readOnly: !('readOnly' in body) || body.readOnly !== false,
+    };
   }
 
   private async upload(req: IncomingMessage, res: ServerResponse, url: URL, principal: AuthenticatedKey): Promise<void> {
     const filename = url.searchParams.get('filename') ?? '';
     const category = url.searchParams.get('category') ?? '';
     if (!filename || filename.length > 200 || filename === '.' || filename === '..' || /[/\\]/u.test(filename) || [...filename].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) throw invalidParams('Choose a valid filename.');
-    if (!(await this.categories()).some((item) => item.name === category)) throw invalidParams('Choose an available category.');
+    const { categories, readOnly } = await this.settings();
+    if (readOnly) throw new GatewayError(ErrorCodes.NOT_IMPLEMENTED, 'The staged knowledge service is read-only.', { httpStatus: 503 });
+    if (!categories.some((item) => item.name === category)) throw invalidParams('Choose an available category.');
     if ((req.headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase() !== 'application/octet-stream') throw invalidParams('Expected a file upload.');
     const length = req.headers['content-length'];
     if (length !== undefined && (!/^\d+$/u.test(length) || Number(length) > MAX_UPLOAD_BYTES)) throw new GatewayError(ErrorCodes.INVALID_REQUEST, 'File exceeds the upload limit.', { httpStatus: 413 });

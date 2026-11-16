@@ -57,4 +57,11 @@ describe('Knowledge', () => {
     expect(apiMock.listManagedDocuments).toHaveBeenCalledWith('', 0);
   });
 
+  it('shows that a staging copy is read-only and disables upload', async () => {
+    apiMock.getManagedKnowledge.mockResolvedValue({ configured: true, readOnly: true, categories: [{ name: 'homelab', sensitive: false }] });
+    render(<KnowledgePage />);
+    expect(await screen.findByText('Staging copy is read-only')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Upload document' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
 });

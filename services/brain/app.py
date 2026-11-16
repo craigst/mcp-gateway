@@ -326,6 +326,7 @@ def list_categories() -> dict[str, Any]:
     return {
         "ok": True,
         "categories": [{"name": name, "sensitive": bool(flag)} for name, flag in cats.items()],
+        "readOnly": os.environ.get("BRAIN_READ_ONLY", "").lower() in ("1", "true", "yes"),
         "public": [name for name, flag in cats.items() if not flag],
         "sensitive": [name for name, flag in cats.items() if flag],
     }
