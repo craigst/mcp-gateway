@@ -11,6 +11,7 @@ import http.client
 import os
 import ssl
 import stat
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -110,3 +111,4 @@ def install_from_file(path: str | None = None) -> None:
         file_path = path or os.environ.get('SOCIAL_PROXY_FILE', '')
         opener = make_opener(lambda: read_proxy_file(file_path))
     urllib.request.install_opener(opener)
+    sys.stderr.write("social proxy routing enabled\n")
