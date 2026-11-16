@@ -2710,6 +2710,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=os.environ.get("REMY_LOG_LEVEL", "INFO"), format="%(message)s")
+    if args.source in ("x", "youtube") and os.environ.get("SOCIAL_PROXY_REQUIRED", "").lower() in ("1", "true", "yes"):
+        try:
+            from social_proxy import install_from_file
+            install_from_file()
+        except Exception as exc:  # noqa: BLE001 - fail closed, without printing proxy credentials
+            LOG.error("source=%s proxy_setup_failed=%s", args.source, type(exc).__name__)
+            return 1
     state = os.environ.get(
         "REMY_STATE_DB", "~/.local/state/remy-watchers/state.sqlite3"
     )

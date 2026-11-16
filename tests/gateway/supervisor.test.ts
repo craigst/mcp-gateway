@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { openDatabase } from '../../src/core/db.js';
 import { SqliteCatalogRepository } from '../../src/catalog/repository.js';
-import { DefaultSupervisor } from '../../src/gateway/supervisor.js';
+import { applySocialProxyOverride, DefaultSupervisor } from '../../src/gateway/supervisor.js';
 import { createLogger } from '../../src/core/logger.js';
 import { newId, nowIso } from '../../src/core/ids.js';
 import type { GatewayConfig } from '../../src/core/config.js';
 import type { ServerRecord } from '../../src/core/types.js';
+import type { McpClient } from '../../src/core/ports.js';
 
 const ECHO_FIXTURE = resolve('tests/fixtures/mcp-echo-server.mjs');
 
@@ -81,6 +82,20 @@ describe('DefaultSupervisor', () => {
     rmSync(config.dataDir, { recursive: true, force: true });
   });
 
+  it('uses the latest Instagram proxy setting for its connector and watcher', () => {
+    const secrets = join(config.dataDir, 'secrets');
+    mkdirSync(secrets, { recursive: true });
+    const env = { IG_PROXY: 'socks5h://old.example:1080' };
+    writeFileSync(join(secrets, 'instagram.env'), 'IG_PROXY=socks5h://new.example:1080\n', { mode: 0o600 });
+    applySocialProxyOverride('instagram', config.dataDir, env);
+    expect(env.IG_PROXY).toBe('socks5h://new.example:1080');
+    writeFileSync(join(secrets, 'instagram.env'), 'IG_PROXY=socks5h://later.example:1080\n');
+    applySocialProxyOverride('social-watchers', config.dataDir, env);
+    expect(env.IG_PROXY).toBe('socks5h://later.example:1080');
+    applySocialProxyOverride('unrelated', config.dataDir, env);
+    expect(env.IG_PROXY).toBe('socks5h://later.example:1080');
+  });
+
   it('rejects unknown servers', async () => {
     await expect(supervisor.start('srv_missing')).rejects.toMatchObject({ code: -32602 });
   });
@@ -130,6 +145,69 @@ describe('DefaultSupervisor', () => {
     const before = received.length;
     await supervisor.client(record.id)!.callTool('echo', { text: 'after unsubscribe' });
     expect(received.length).toBe(before);
+  });
+
+  it('waits for a restart to finish before starting the same server again', async () => {
+    let releaseClose!: () => void;
+    let closing!: () => void;
+    const closeStarted = new Promise<void>((resolve) => { closing = resolve; });
+    const closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const clients: McpClient[] = [];
+    supervisor = new DefaultSupervisor({ repository, config, logger: createLogger('supervisor-test', 'silent'),
+      clientFactory: (record) => {
+        const index = clients.length;
+        const client: McpClient = {
+          serverId: record.id,
+          initialize: async () => ({ protocolVersion: '2025-06-18', serverInfo: { name: 'fake', version: '1' }, capabilities: {} }),
+          listTools: async () => [],
+          callTool: async () => ({ content: [] }),
+          notify: () => {},
+          close: async () => { if (index === 0) { closing(); await closeGate; } },
+        };
+        clients.push(client);
+        return client;
+      },
+    });
+    const record = serverRecord(); repository.upsertServer(record);
+    await supervisor.start(record.id);
+    const restarting = supervisor.restart(record.id);
+    await closeStarted;
+    const concurrentStart = supervisor.start(record.id);
+    await Promise.resolve();
+    expect(clients).toHaveLength(1);
+    releaseClose();
+    const [restarted, started] = await Promise.all([restarting, concurrentStart]);
+    expect(restarted.status).toBe('running');
+    expect(started.status).toBe('running');
+    expect(clients).toHaveLength(2);
+    expect(supervisor.client(record.id)).toBe(clients[1]);
+  });
+
+  it('finishes an in-flight start before stopping its client', async () => {
+    let releaseInitialize!: () => void;
+    let initializing!: () => void;
+    const initializeStarted = new Promise<void>((resolve) => { initializing = resolve; });
+    const initializeGate = new Promise<void>((resolve) => { releaseInitialize = resolve; });
+    let closes = 0;
+    supervisor = new DefaultSupervisor({ repository, config, logger: createLogger('supervisor-test', 'silent'),
+      clientFactory: (record) => ({
+        serverId: record.id,
+        initialize: async () => { initializing(); await initializeGate; return { protocolVersion: '2025-06-18', serverInfo: { name: 'fake', version: '1' }, capabilities: {} }; },
+        listTools: async () => [], callTool: async () => ({ content: [] }), notify: () => {},
+        close: async () => { closes += 1; },
+      }),
+    });
+    const record = serverRecord(); repository.upsertServer(record);
+    const starting = supervisor.start(record.id);
+    await initializeStarted;
+    const stopping = supervisor.stop(record.id);
+    await Promise.resolve();
+    expect(closes).toBe(0);
+    releaseInitialize();
+    await Promise.all([starting, stopping]);
+    expect(closes).toBe(1);
+    expect(supervisor.status(record.id)).toBe('stopped');
+    expect(supervisor.client(record.id)).toBeNull();
   });
 
   it('stops and restarts cleanly', async () => {

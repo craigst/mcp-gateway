@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { GatewayError, ErrorCodes } from '../core/errors.js';
 import { createLogger, type Logger } from '../core/logger.js';
 import type { GatewayConfig } from '../core/config.js';
@@ -53,6 +54,7 @@ export interface SupervisorOptions {
 export class DefaultSupervisor implements Supervisor {
   private readonly managed = new Map<string, ManagedServer>();
   private readonly starting = new Map<string, Promise<ServerRecord>>();
+  private readonly stopping = new Map<string, Promise<void>>();
   private readonly logListeners = new Set<(line: SubServerLogLine & { serverId: string }) => void>();
   private readonly logger: Logger;
 
@@ -61,6 +63,11 @@ export class DefaultSupervisor implements Supervisor {
   }
 
   async start(serverId: string): Promise<ServerRecord> {
+    const stopping = this.stopping.get(serverId);
+    if (stopping) {
+      await stopping;
+      return this.start(serverId);
+    }
     const inflight = this.starting.get(serverId);
     if (inflight) return inflight;
 
@@ -175,6 +182,7 @@ export class DefaultSupervisor implements Supervisor {
       if (requiredSecrets.length > 0 && this.options.vault) {
         Object.assign(env, this.options.vault.resolveSecrets(requiredSecrets));
       }
+      applySocialProxyOverride(record.name, this.options.config.dataDir, env);
       const client = new StdioMcpClient({
         serverId: record.id,
         command: record.command,
@@ -253,6 +261,21 @@ export class DefaultSupervisor implements Supervisor {
   }
 
   async stop(serverId: string): Promise<void> {
+    const inflight = this.stopping.get(serverId);
+    if (inflight) return inflight;
+    const promise = this.doStop(serverId).finally(() => this.stopping.delete(serverId));
+    this.stopping.set(serverId, promise);
+    return promise;
+  }
+
+  private async doStop(serverId: string): Promise<void> {
+    // A request may be starting this server while an operator stops it. Wait
+    // until that start settles before closing its client; starts arriving while
+    // this stop is in progress wait for it rather than spawning a second client.
+    const starting = this.starting.get(serverId);
+    if (starting) {
+      try { await starting; } catch { /* a failed start still needs cleanup */ }
+    }
     const managed = this.managed.get(serverId);
     const record = managed?.record ?? this.options.repository.getServer(serverId);
     if (!record) throw new GatewayError(ErrorCodes.INVALID_PARAMS, `Unknown server '${serverId}'`);
@@ -346,6 +369,15 @@ export class DefaultSupervisor implements Supervisor {
  * optional `export ` prefix and single/double quotes supported). Values are
  * returned only to the spawned child process and are never logged.
  */
+/** The Instagram settings page is authoritative for the two Instagram processes. */
+export function applySocialProxyOverride(name: string, dataDir: string, env: Record<string, string>): void {
+  if (name !== 'instagram' && name !== 'social-watchers') return;
+  const path = join(dataDir, 'secrets', 'instagram.env');
+  if (!existsSync(path)) return;
+  const settings = readEnvFile(path);
+  if (Object.prototype.hasOwnProperty.call(settings, 'IG_PROXY')) env.IG_PROXY = settings.IG_PROXY ?? '';
+}
+
 export function readEnvFile(path: string): Record<string, string> {
   let raw: string;
   try {

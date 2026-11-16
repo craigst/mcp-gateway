@@ -28,6 +28,12 @@ class SafetyTests(unittest.TestCase):
         self.store.close()
         self.directory.cleanup()
 
+    def test_social_worker_will_not_start_without_its_required_proxy(self):
+        with patch.dict(os.environ, {'SOCIAL_PROXY_REQUIRED': '1'}, clear=True),              patch.object(watchers, 'StateStore') as store:
+            self.assertEqual(watchers.main(['x', '--once']), 1)
+            self.assertEqual(watchers.main(['youtube', '--once']), 1)
+            store.assert_not_called()
+
     def test_startup_waits_without_fetching_messages_if_policy_unavailable(self):
         with patch.dict(os.environ, {'REMY_STATE_DB': str(Path(self.directory.name) / 'startup.sqlite3')}, clear=True), \
              patch.object(watchers.WatcherSettingsClient, 'fetch', return_value=None), \
