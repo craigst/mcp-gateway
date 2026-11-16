@@ -24,7 +24,7 @@ def validate_item(item: dict[str, Any], actor: str) -> None:
     text, scope = item['text'], item['scope']
     if not text.strip() or not item['external_id'].strip():
         raise ValueError('Memory text and external identifier must not be blank')
-    if not scope or (scope.startswith('agents/') and scope != f'agents/{actor}'):
+    if not scope or (scope.lower().startswith('agents/') and scope != f'agents/{actor}'):
         raise ValueError('The selected private memory scope does not belong to this agent')
     metadata = item.get('metadata') or {}
     if not isinstance(metadata, dict) or RESERVED.intersection(metadata):

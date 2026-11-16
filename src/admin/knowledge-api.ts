@@ -35,6 +35,30 @@ export class KnowledgeApi implements AdminSubRouter {
         this.send(res, 200, { configured: true, categories, maxUploadBytes: MAX_UPLOAD_BYTES });
         return true;
       }
+      if (parts.length === 2 && parts[1] === 'documents' && req.method === 'GET') {
+        const categories = await this.categories();
+        const category = url.searchParams.get('category');
+        const offset = url.searchParams.get('offset') ?? '0';
+        if (!/^\d{1,7}$/u.test(offset) || Number(offset) > 1_000_000) throw invalidParams('Invalid document page.');
+        if (category && !categories.some((item) => item.name === category)) throw invalidParams('Choose an available category.');
+        const target = this.target('/knowledge/documents');
+        target.searchParams.set('limit', '25');
+        target.searchParams.set('offset', offset);
+        if (category) target.searchParams.set('category', category);
+        const response = await (this.deps.fetch ?? fetch)(target, { headers: { authorization: `Bearer ${this.token()}`, 'x-brain-allowed-categories': categories.map((item) => item.name).join(',') }, redirect: 'error', signal: AbortSignal.timeout(15_000) });
+        if (!response.ok) throw new GatewayError(ErrorCodes.INTERNAL_ERROR, 'Could not load documents.', { httpStatus: 502 });
+        this.send(res, 200, await response.json());
+        return true;
+      }
+      if (parts.length === 4 && parts[1] === 'documents' && /^\d+$/u.test(parts[2] ?? '') && parts[3] === 'retry' && req.method === 'POST') {
+        const id = Number(parts[2]);
+        if (!Number.isSafeInteger(id) || id < 1) throw invalidParams('Invalid document ID.');
+        const categories = await this.categories();
+        const response = await (this.deps.fetch ?? fetch)(this.target('/knowledge/retry'), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), headers: { authorization: `Bearer ${this.token()}`, 'content-type': 'application/json', 'x-brain-actor': principal.name, 'x-brain-allowed-categories': categories.map((item) => item.name).join(',') }, body: JSON.stringify({ document_id: id }) });
+        if (!response.ok) throw new GatewayError(ErrorCodes.INTERNAL_ERROR, 'Could not repair this document index.', { httpStatus: 502 });
+        this.send(res, 200, await response.json());
+        return true;
+      }
       if (parts.length === 2 && parts[1] === 'upload' && req.method === 'POST') {
         await this.upload(req, res, url, principal);
         return true;

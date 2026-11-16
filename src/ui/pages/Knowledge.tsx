@@ -24,6 +24,16 @@ export function KnowledgePage({ onOpenServer }: { onOpenServer?: (id: string) =>
   const [uploading, setUploading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [documentCategory, setDocumentCategory] = useState('');
+  const [documentOffset, setDocumentOffset] = useState(0);
+  const [retrying, setRetrying] = useState<number | null>(null);
+  const [documentError, setDocumentError] = useState<string | null>(null);
+  const documents = useAsyncData(
+    () => managed.status === 'ready' && managed.data.configured
+      ? api.listManagedDocuments(documentCategory, documentOffset)
+      : Promise.resolve({ documents: [], has_more: false }),
+    [managed.status, managed.status === 'ready' && managed.data.configured, documentCategory, documentOffset],
+  );
   const textContent = typeof result === 'object' && result !== null && 'content' in result && Array.isArray(result.content)
     ? result.content.filter((item: unknown): item is { type: string; text: string } => typeof item === 'object' && item !== null && 'type' in item && item.type === 'text' && 'text' in item && typeof item.text === 'string').map((item) => item.text).join('\n\n')
     : '';
@@ -49,8 +59,18 @@ export function KnowledgePage({ onOpenServer }: { onOpenServer?: (id: string) =>
       setUploadMessage(outcome.repaired ? 'The interrupted document index was repaired.' : outcome.skipped ? 'This document is already indexed in that category.' : 'The document was uploaded and indexed.');
       setFile(null);
       setFileInputVersion((value) => value + 1);
+      setDocumentOffset(0);
+      documents.reload();
     } catch (cause) { setUploadError(formatApiError(cause)); }
     finally { setUploading(false); }
+  };
+
+  const retryDocument = async (id: number) => {
+    if (retrying !== null) return;
+    setRetrying(id); setDocumentError(null);
+    try { await api.retryManagedDocument(id); documents.reload(); }
+    catch (cause) { setDocumentError(formatApiError(cause)); }
+    finally { setRetrying(null); }
   };
 
   return <div className="space-y-5">
@@ -71,6 +91,16 @@ export function KnowledgePage({ onOpenServer }: { onOpenServer?: (id: string) =>
         <PrimaryButton onClick={() => void upload()} disabled={!file || !category || uploading}>{uploading ? 'Uploading and indexing…' : 'Upload document'}</PrimaryButton>
       </div>}
     </Card>
+    {managed.status === 'ready' && managed.data.configured && <Card title="Documents" subtitle="Browse the knowledge catalogue and repair an interrupted index.">
+      <div className="mb-3 max-w-xs"><Field label="Filter documents"><Select value={documentCategory} onChange={(event) => { setDocumentCategory(event.target.value); setDocumentOffset(0); }}><option value="">All categories</option>{managed.data.categories.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</Select></Field></div>
+      {documentError && <Notice tone="error" title="Could not repair the index">{documentError}</Notice>}
+      {documents.status === 'loading' && <p className="text-xs text-slate-400">Loading documents…</p>}
+      {documents.status === 'error' && <ErrorState message={documents.error} onRetry={documents.reload} />}
+      {documents.status === 'ready' && <>
+        {documents.data.documents.length === 0 ? <p className="text-xs text-slate-400">No documents in this category.</p> : <div className="divide-y divide-slate-800">{documents.data.documents.map((document) => <div key={document.id} className="flex flex-wrap items-center justify-between gap-3 py-3"><div><p className="text-sm font-medium text-slate-200">{document.filename}</p><p className="mt-1 text-xs text-slate-400">{document.category}{document.ingested_at ? ` · ${new Date(document.ingested_at).toLocaleDateString()}` : ''}</p></div><div className="flex items-center gap-2"><Badge tone={document.index_state === 'ready' ? 'success' : 'warning'}>{document.index_state === 'ready' ? 'Indexed' : 'Needs indexing'}</Badge>{document.index_state !== 'ready' && <button type="button" className="text-xs font-semibold text-sky-300 disabled:opacity-50" disabled={retrying !== null} onClick={() => void retryDocument(document.id)}>{retrying === document.id ? 'Repairing…' : 'Retry indexing'}</button>}</div></div>)}</div>}
+        <div className="mt-3 flex items-center gap-3"><button type="button" className="text-xs font-semibold text-sky-300 disabled:opacity-40" disabled={documentOffset === 0} onClick={() => setDocumentOffset(Math.max(0, documentOffset - 25))}>Previous</button><span className="text-xs text-slate-400">Page {Math.floor(documentOffset / 25) + 1}</span><button type="button" className="text-xs font-semibold text-sky-300 disabled:opacity-40" disabled={!documents.data.has_more} onClick={() => setDocumentOffset(documentOffset + 25)}>Next</button><button type="button" className="ml-auto text-xs font-semibold text-sky-300" onClick={documents.reload}>Refresh</button></div>
+      </>}
+    </Card>}
     {servers.status === 'error' && <ErrorState message={servers.error} onRetry={servers.reload} />}
     {servers.status === 'loading' && <p className="text-xs text-slate-400">Loading knowledge servers…</p>}
     {servers.status === 'ready' && brains.length === 0 && <Notice tone="info" title="No brain server found">Add a brain server to search its memories and documents here.</Notice>}

@@ -10,10 +10,14 @@ describe('managed knowledge upload', () => {
   let upstreamUrl: string;
   let gatewayUrl: string;
   let uploads: Array<{ data: string; category: string | undefined; actor: string | undefined }> = [];
+  let documentsHeader = '';
+  let retryBody = '';
 
   beforeAll(async () => {
     upstream = createServer(async (req, res) => {
       if (req.url === '/categories') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ categories: [{ name: 'homelab', sensitive: false }, { name: 'financial', sensitive: true }] })); return; }
+      if (req.url?.startsWith('/knowledge/documents')) { documentsHeader = String(req.headers['x-brain-allowed-categories']); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ documents: [{ id: 42, filename: 'notes.txt', category: 'homelab', index_state: 'ready' }], has_more: false })); return; }
+      if (req.url === '/knowledge/retry') { const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk)); retryBody = Buffer.concat(chunks).toString(); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ repaired: true })); return; }
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       uploads.push({ data: Buffer.concat(chunks).toString(), category: req.headers['x-brain-allowed-categories'] as string, actor: req.headers['x-brain-actor'] as string });
@@ -44,4 +48,17 @@ describe('managed knowledge upload', () => {
     expect((await fetch(`${gatewayUrl}/mcp/v1/admin/knowledge/upload?filename=..%2Fsecret&category=homelab`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: 'sample' })).status).toBe(400);
     expect(uploads).toEqual([]);
   });
+  it('lists documents and retries an index only for an administrator', async () => {
+    const path = `${gatewayUrl}/mcp/v1/admin/knowledge/documents`;
+    const list = await fetch(`${path}?category=homelab&offset=0`);
+    expect(list.status).toBe(200);
+    expect(await list.json()).toMatchObject({ documents: [{ filename: 'notes.txt' }] });
+    expect(documentsHeader).toBe('homelab,financial');
+    expect((await fetch(`${path}?category=unknown`)).status).toBe(400);
+    expect((await fetch(path, { headers: { 'x-test-agent': '1' } })).status).toBe(403);
+    expect((await fetch(`${path}/42/retry`, { method: 'POST', headers: { 'x-test-agent': '1' } })).status).toBe(403);
+    expect((await fetch(`${path}/42/retry`, { method: 'POST' })).status).toBe(200);
+    expect(JSON.parse(retryBody)).toEqual({ document_id: 42 });
+  });
+
 });

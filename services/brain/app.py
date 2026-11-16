@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
@@ -557,6 +557,28 @@ def knowledge_ingest(
         raise HTTPException(status_code=502, detail=f"knowledge backend: {exc}") from exc
     db.record_event(actor, "knowledge.ingest", {"path": body.path, "outcome": outcome})
     return {"ok": True, **outcome}
+
+
+@app.get("/knowledge/documents", dependencies=[Depends(require_key)])
+def knowledge_documents(
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=1000000),
+    category: str | None = None,
+    x_brain_allowed_categories: str | None = Header(default=None),
+) -> dict[str, Any]:
+    permitted = allowed_categories(x_brain_allowed_categories)
+    if category is not None and category not in permitted:
+        raise HTTPException(status_code=403, detail="category is not permitted for this caller")
+    allowed = [category] if category else permitted
+    with db.conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id, filename, category, index_state, ingested_at, page_count
+                       FROM documents WHERE category = ANY(%s)
+                       ORDER BY ingested_at DESC, id DESC LIMIT %s OFFSET %s""",
+                    (allowed, limit + 1, offset))
+        rows = cur.fetchall()
+    documents = [{**row, "ingested_at": row["ingested_at"].isoformat() if row["ingested_at"] else None}
+                 for row in rows[:limit]]
+    return {"documents": documents, "has_more": len(rows) > limit}
 
 
 @app.post("/knowledge/upload", dependencies=[Depends(require_key)])

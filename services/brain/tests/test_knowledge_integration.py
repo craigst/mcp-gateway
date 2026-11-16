@@ -54,9 +54,10 @@ class KnowledgeIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'offline'):
                 knowledge.ingest(str(file), category='homelab')
         with db.conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT index_state FROM documents WHERE filename = %s", ('report.txt',))
-            self.assertEqual(cur.fetchone()['index_state'], 'pending')
-        self.assertEqual(knowledge.search('sample', ['homelab'])['count'], 0)
+            cur.execute("SELECT id, index_state FROM documents WHERE filename = %s", ('report.txt',))
+            pending = cur.fetchone()
+            self.assertEqual(pending['index_state'], 'pending')
+        self.assertFalse(any(hit['document_id'] == pending['id'] for hit in knowledge.search('sample', ['homelab'])['results']))
         result = knowledge.ingest(str(file), category='homelab')
         self.assertTrue(result['repaired'])
         self.assertTrue(any(hit['document_id'] == result['document_id'] for hit in knowledge.search('sample', ['homelab'])['results']))
@@ -71,6 +72,26 @@ class KnowledgeIntegrationTests(unittest.TestCase):
         hits = knowledge.search('private', ['homelab'])['results']
         self.assertFalse(any(hit['text'] == 'private text for category testing' for hit in hits))
         self.assertTrue(any(hit['text'] == 'private text for category testing' for hit in knowledge.search('private', ['financial'])['results']))
+
+    def test_document_catalogue_respects_categories_and_paginates(self):
+        from fastapi.testclient import TestClient
+        import app
+        knowledge._store_batch([{'path': '/archive/a', 'text': 'catalogue public content', 'category': 'homelab'},
+                                {'path': '/archive/b', 'text': 'catalogue restricted content', 'category': 'financial'},
+                                {'path': '/archive/c', 'text': 'catalogue second public document', 'category': 'homelab'}],
+                               actor='test', default_category='personal')
+        client = TestClient(app.app)
+        headers = {'authorization': 'Bearer synthetic-brain-key', 'x-brain-allowed-categories': 'homelab'}
+        response = client.get('/knowledge/documents?limit=1', headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()['documents']), 1)
+        self.assertEqual(response.json()['documents'][0]['category'], 'homelab')
+        self.assertTrue(response.json()['has_more'])
+        next_page = client.get('/knowledge/documents?limit=1&offset=1', headers=headers).json()
+        self.assertNotEqual(response.json()['documents'][0]['id'], next_page['documents'][0]['id'])
+        self.assertEqual(client.get('/knowledge/documents?category=financial', headers=headers).status_code, 403)
+        self.assertEqual(client.get('/knowledge/documents', headers={'authorization': 'Bearer synthetic-brain-key'}).status_code, 403)
+        client.close()
 
     def test_search_rejects_stale_vectors_and_uses_catalogue_text(self):
         file = self.root / 'trusted.txt'

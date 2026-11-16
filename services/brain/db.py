@@ -89,6 +89,7 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'p
 -- every corresponding vector has been confirmed by Qdrant.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS index_state text NOT NULL DEFAULT 'ready';
 CREATE INDEX IF NOT EXISTS documents_category_idx ON documents (category);
+CREATE INDEX IF NOT EXISTS documents_browse_idx ON documents (category, ingested_at DESC, id DESC);
 
 -- Page numbers, added after ~44k chunks existed. 0 means "not a paginated
 -- document" (a note, an email), which is deliberately distinct from page 1.

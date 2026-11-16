@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-const { apiMock } = vi.hoisted(() => ({ apiMock: { listServers: vi.fn(), rpc: vi.fn(), getManagedKnowledge: vi.fn(), uploadKnowledgeDocument: vi.fn() } }));
+const { apiMock } = vi.hoisted(() => ({ apiMock: { listServers: vi.fn(), rpc: vi.fn(), getManagedKnowledge: vi.fn(), uploadKnowledgeDocument: vi.fn(), listManagedDocuments: vi.fn(), retryManagedDocument: vi.fn() } }));
 vi.mock('../../src/ui/lib/api.js', async (original) => ({ ...(await original<typeof import('../../src/ui/lib/api.js')>()), api: apiMock }));
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { KnowledgePage } from '../../src/ui/pages/Knowledge.js';
@@ -9,6 +9,7 @@ beforeEach(() => {
   apiMock.listServers.mockResolvedValue([{ id: 'brain1', name: 'brain', status: 'running' }, { id: 'brain2', name: 'brain-full', status: 'running' }, { id: 'other', name: 'email', status: 'running' }]);
   apiMock.rpc.mockResolvedValue({ content: [{ type: 'text', text: 'A saved memory' }] });
   apiMock.getManagedKnowledge.mockResolvedValue({ configured: false, categories: [] });
+  apiMock.listManagedDocuments.mockResolvedValue({ documents: [], has_more: false });
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -37,7 +38,7 @@ describe('Knowledge', () => {
     apiMock.getManagedKnowledge.mockResolvedValue({ configured: true, categories: [{ name: 'homelab', sensitive: false }] });
     apiMock.uploadKnowledgeDocument.mockResolvedValue({ document_id: 12 });
     render(<KnowledgePage />);
-    await screen.findByRole('option', { name: 'homelab' });
+    await screen.findAllByRole('option', { name: 'homelab' });
     const file = new File(['document'], 'notes.txt', { type: 'text/plain' });
     fireEvent.change(screen.getByLabelText('Document'), { target: { files: [file] } });
     fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'homelab' } });
@@ -45,4 +46,15 @@ describe('Knowledge', () => {
     await waitFor(() => expect(apiMock.uploadKnowledgeDocument).toHaveBeenCalledWith(file, 'homelab'));
     expect(await screen.findByText('The document was uploaded and indexed.')).toBeTruthy();
   });
+  it('lists catalogue documents and retries an interrupted index', async () => {
+    apiMock.getManagedKnowledge.mockResolvedValue({ configured: true, categories: [{ name: 'homelab', sensitive: false }] });
+    apiMock.listManagedDocuments.mockResolvedValue({ documents: [{ id: 21, filename: 'notes.txt', category: 'homelab', index_state: 'pending', ingested_at: null, page_count: null }], has_more: false });
+    apiMock.retryManagedDocument.mockResolvedValue({ repaired: true });
+    render(<KnowledgePage />);
+    expect(await screen.findByText('notes.txt')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry indexing' }));
+    await waitFor(() => expect(apiMock.retryManagedDocument).toHaveBeenCalledWith(21));
+    expect(apiMock.listManagedDocuments).toHaveBeenCalledWith('', 0);
+  });
+
 });

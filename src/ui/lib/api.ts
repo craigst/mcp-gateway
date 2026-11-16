@@ -739,6 +739,16 @@ export class ApiClient {
     return this.request('/mcp/v1/admin/knowledge');
   }
 
+  async listManagedDocuments(category: string, offset: number): Promise<{ documents: Array<{ id: number; filename: string; category: string; index_state: string; ingested_at: string | null; page_count: number | null }>; has_more: boolean }> {
+    const params = new URLSearchParams({ offset: String(offset) });
+    if (category) params.set('category', category);
+    return this.request(`/mcp/v1/admin/knowledge/documents?${params}`);
+  }
+
+  async retryManagedDocument(id: number): Promise<{ repaired?: boolean; skipped?: boolean }> {
+    return this.request(`/mcp/v1/admin/knowledge/documents/${id}/retry`, { method: 'POST' }, 10 * 60_000);
+  }
+
   async uploadKnowledgeDocument(file: File, category: string): Promise<{ document_id?: number; category?: string; repaired?: boolean; skipped?: boolean }> {
     const params = new URLSearchParams({ filename: file.name, category });
     return this.request(`/mcp/v1/admin/knowledge/upload?${params}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file }, 10 * 60_000);
