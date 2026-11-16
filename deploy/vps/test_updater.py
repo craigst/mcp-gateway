@@ -9,7 +9,12 @@ SCRIPT = pathlib.Path(__file__).with_name('mcp-gateway-update.sh')
 DOCKER = r'''#!/usr/bin/env bash
 set -eu
 printf '%s\n' "$* MCP_IMAGE_TAG=${MCP_IMAGE_TAG:-}" >> "$CASE_DIR/calls"
-if [[ "$1" == inspect ]]; then echo old-image; exit 0; fi
+if [[ "$1" == inspect ]]; then
+  if [[ "$*" == *State.Running* ]]; then
+    if [[ "$(cat "$CASE_DIR/state")" == stopped ]]; then echo false; else echo true; fi
+  else echo old-image; fi
+  exit 0
+fi
 if [[ "$1 $2" == 'image inspect' ]]; then
   if [[ "$*" == *org.opencontainers* ]]; then echo 0.16.0; else echo new-image; fi
   exit 0
@@ -20,7 +25,10 @@ if [[ "$1" == compose ]]; then
   case "$4" in
     config) echo ghcr.io/craigst/mcp-gateway:0.16.0 ;;
     pull) : ;;
-    stop) echo stopped > "$CASE_DIR/state" ;;
+    stop)
+      if [[ "${CASE_FAIL_ROLLBACK_STOP:-0}" == 1 && "$(cat "$CASE_DIR/state")" == new ]]; then exit 1; fi
+      if [[ "${CASE_FALSE_STOP:-0}" == 1 && "$(cat "$CASE_DIR/state")" == new ]]; then exit 0; fi
+      echo stopped > "$CASE_DIR/state" ;;
     up)
       if [[ "${MCP_IMAGE_TAG:-}" == rollback ]]; then
         echo rollback > "$CASE_DIR/state"
@@ -100,6 +108,33 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual((root / 'state').read_text().strip(), 'rollback')
         self.assertEqual((root / 'data/gateway.db').read_text(), 'original database\n')
         self.assertEqual((root / 'data/gateway.db-wal').read_text(), 'original wal\n')
+
+    def test_failed_rollback_stop_never_overwrites_running_database(self):
+        root, result = self.run_case(CASE_FAIL_ROLLBACK_STOP='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((root / 'state').read_text().strip(), 'new')
+        self.assertEqual((root / 'data/gateway.db').read_text(), 'changed\n')
+        self.assertEqual((root / 'data/gateway.db-wal').read_text(), 'changed-wal\n')
+        self.assertEqual((root / 'backups/failed-image-id').read_text().strip(), 'new-image')
+
+    def test_running_state_must_be_verified_before_restore(self):
+        root, result = self.run_case(CASE_FALSE_STOP='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((root / 'state').read_text().strip(), 'new')
+        self.assertEqual((root / 'data/gateway.db').read_text(), 'changed\n')
+
+    def test_failed_image_is_not_retried_by_the_timer(self):
+        root, first = self.run_case()
+        self.assertNotEqual(first.returncode, 0)
+        env = dict(os.environ, PATH=str(root / 'bin') + ':' + os.environ['PATH'],
+                   CASE_DIR=str(root), COMPOSE_DIR=str(root), LOCK_FILE=str(root / 'lock'),
+                   HEALTH_TRIES='1', HEALTH_SLEEP='0')
+        before = (root / 'calls').read_text()
+        second = subprocess.run(['bash', str(SCRIPT)], env=env, text=True,
+                                capture_output=True, timeout=10)
+        self.assertNotEqual(second.returncode, 0)
+        self.assertIn('previously failed', second.stdout)
+        self.assertNotIn(' stop gateway ', (root / 'calls').read_text()[len(before):])
 
 
 if __name__ == '__main__':

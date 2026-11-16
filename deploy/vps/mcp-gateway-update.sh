@@ -18,6 +18,7 @@ COMPOSE_DIR="${COMPOSE_DIR:-/opt/mcp-gateway}"
 CONTAINER="${CONTAINER:-mcp-gateway}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8484/mcp/v1/health}"
 BACKUP_DIR="${BACKUP_DIR:-$COMPOSE_DIR/backups}"
+FAILED_IMAGE_FILE="${FAILED_IMAGE_FILE:-$BACKUP_DIR/failed-image-id}"
 HEALTH_TRIES="${HEALTH_TRIES:-30}"
 HEALTH_SLEEP="${HEALTH_SLEEP:-2}"
 COMPOSE=(docker compose -f "$COMPOSE_DIR/docker-compose.yml")
@@ -57,6 +58,10 @@ if [ "$current_id" = "$new_id" ]; then
   exit 0
 fi
 
+if [ -f "$FAILED_IMAGE_FILE" ] && [ "$(cat "$FAILED_IMAGE_FILE")" = "$new_id" ]; then
+  die "image $new_id previously failed; investigate and remove $FAILED_IMAGE_FILE to retry"
+fi
+
 # Guard the mislabelled-tag failure recorded in docs/VPS-DEPLOY.md.
 label_version="$(docker image inspect \
   -f '{{index .Config.Labels "org.opencontainers.image.version"}}' \
@@ -85,7 +90,19 @@ recover_on_exit() {
   [ "$rollback_needed" -eq 1 ] || return "$status"
   set +e
   log "ERROR: update interrupted (status $status); attempting rollback"
-  "${COMPOSE[@]}" stop gateway >/dev/null 2>&1
+  printf '%s\n' "$new_id" > "$FAILED_IMAGE_FILE" || log "WARNING: could not record failed image"
+  if ! "${COMPOSE[@]}" stop gateway >/dev/null 2>&1; then
+    log "ERROR: unable to stop gateway; database left untouched; manual intervention required"
+    exit 1
+  fi
+  running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" || {
+    log "ERROR: unable to verify gateway is stopped; database left untouched"
+    exit 1
+  }
+  if [ "$running" != false ]; then
+    log "ERROR: gateway is still running; database left untouched; manual intervention required"
+    exit 1
+  fi
   if [ "$snapshot_ready" -eq 1 ]; then
     cp -a "$backup" "$COMPOSE_DIR/data/gateway.db" || {
       log "ERROR: database restore failed; gateway left stopped"
@@ -148,6 +165,7 @@ if [ "$healthy" -eq 1 ]; then
   reported="$(curl -fsS --max-time 3 "$HEALTH_URL" 2>/dev/null | tr -d '\n' || true)"
   log "healthy after ${i} checks; update to $IMAGE complete"
   log "health: $reported"
+  rm -f "$FAILED_IMAGE_FILE" || log "WARNING: could not clear failed-image marker"
   rollback_needed=0
   exit 0
 fi
