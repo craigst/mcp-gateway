@@ -38,6 +38,9 @@ jobs:
       - name: Test (unit + integration + e2e)
         run: npm test
 
+      - name: Test social watcher and supervisor
+        run: npm run test:social
+
       - name: Build server + UI bundle
         run: npm run build
 

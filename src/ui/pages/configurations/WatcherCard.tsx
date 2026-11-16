@@ -231,7 +231,7 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
         autoReply: false,
         autoLike: form.autoLike,
       });
-      toast('success', `${copy.title.split(' →')[0]} watcher settings saved. The watcher picks them up within 30 seconds.`);
+      toast('success', `${copy.title.split(' →')[0]} settings saved. A running watcher must pick them up.`);
       watcher.reload();
     } catch (caught) {
       setError(formatApiError(caught));
@@ -254,12 +254,12 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
           {watcher.status === 'ready' && (
             <>
               <Badge tone={watcher.data.settings.enabled ? 'success' : 'warning'}>
-                {watcher.data.settings.enabled ? 'Watcher on' : 'Watcher paused'}
+                {watcher.data.settings.enabled ? 'Push configured on' : 'Push configured off'}
               </Badge>
               <Badge tone="info">Draft only</Badge>
             </>
           )}
-          <GhostButton onClick={watcher.reload}>Refresh</GhostButton>
+          <GhostButton onClick={watcher.reload} disabled={dirty || saving} title={dirty ? 'Save or discard changes before refreshing' : 'Refresh settings'}>Refresh</GhostButton>
         </div>
       }
     >
@@ -267,6 +267,8 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
       {watcher.status === 'error' && <ErrorState message={watcher.error} onRetry={watcher.reload} />}
       {watcher.status === 'ready' && (
         <div className="space-y-4">
+          <Notice tone="info" title="Saved settings">A separate watcher process must be running and connected for these settings to take effect. A saved setting does not confirm the account is connected.</Notice>
+          {source === 'youtube' && <Notice tone="warning" title="YouTube filtering requires verification">Some watcher versions can queue new-video alerts even when push is off or selected contacts are configured. Check the running worker before relying on these controls.</Notice>}
           {error !== null && (
             <Notice tone="error" title="Could not save the watcher settings" onDismiss={() => setError(null)}>
               {error}
@@ -280,9 +282,7 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
                   label={
                     <span>
                       <span className="font-medium text-slate-200">Push incoming messages to Remy</span>
-                      <span className="mt-0.5 block text-[11px] text-slate-500">
-                        When off, the watcher keeps its cursor and sends nothing.
-                      </span>
+                      <span className="mt-0.5 block text-[11px] text-slate-500">A compatible running watcher must apply this setting.</span>
                     </span>
                   }
                   checked={form.enabled}
@@ -326,7 +326,7 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
                       {form.mode === 'selected' && <Badge tone="success">Selected</Badge>}
                     </span>
                     <span className="mt-1 block text-[11px] leading-relaxed text-slate-400">
-                      Only the {copy.contactKinds} you choose below can trigger Remy.
+                      Request that the watcher allow only the {copy.contactKinds} you choose below.
                     </span>
                   </button>
                 </div>
@@ -381,10 +381,18 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
                       placeholder={copy.searchPlaceholder}
                       disabled={form.mode !== 'selected'}
                     />
-                    <SecondaryButton onClick={watcher.reload} className="shrink-0 px-2 py-1 text-[11px]">
+                    <SecondaryButton onClick={watcher.reload} disabled={dirty || saving} title={dirty ? 'Save or discard changes before refreshing' : 'Refresh contacts'} className="shrink-0 px-2 py-1 text-[11px]">
                       Refresh
                     </SecondaryButton>
                   </div>
+                  {dirty && <p className="mt-1 text-[10px] text-slate-400">Save or discard your changes before refreshing the contact list.</p>}
+                  <label className="mt-3 block text-xs text-slate-300">
+                    Choose a synced contact or group
+                    <select aria-label="Choose a synced contact or group" value="" disabled={contacts.length === 0} onChange={(event) => { if (event.target.value) setSelected([...form.selected, event.target.value]); }} className="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100">
+                      <option value="">{contacts.length ? 'Select a contact or group…' : 'No synced contacts available'}</option>
+                      {contacts.map((contact) => <option key={contact.key} value={contact.key} disabled={selectedSet.has(contact.key)}>{contactLabel(contact, contact.key)}{contact.kind === 'group' ? ' (group)' : ''}</option>)}
+                    </select>
+                  </label>
 
                   {form.selected.length > 0 && (
                     <div className="mt-3 flex flex-wrap gap-1.5">
@@ -407,7 +415,7 @@ export function WatcherCard({ source }: { source: WatcherSource }) {
                     {filtered.length === 0 ? (
                       <div className="px-2 py-6 text-center text-[11px] text-slate-500">
                         {contacts.length === 0
-                          ? 'No contacts synced yet. The watcher publishes them every few minutes.'
+                          ? 'No contact catalog is available for this channel yet.'
                           : 'No contacts match that search.'}
                       </div>
                     ) : (

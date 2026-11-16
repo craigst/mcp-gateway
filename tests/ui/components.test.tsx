@@ -102,6 +102,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
+  localStorage.removeItem('gateway-theme');
 });
 
 describe('DashboardPage', () => {
@@ -171,6 +173,18 @@ describe('PlaygroundPage', () => {
 });
 
 describe('Layout', () => {
+  it('uses the system theme until the operator chooses a theme, and remembers that choice', () => {
+    localStorage.removeItem('gateway-theme');
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }));
+    const shell = <Layout current="dashboard" onNavigate={() => {}} user="operator" onSignOut={() => {}}><div>page content</div></Layout>;
+    const view = render(shell);
+    expect(document.documentElement.classList.contains('light')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to dark mode' }));
+    expect(localStorage.getItem('gateway-theme')).toBe('dark');
+    view.unmount();
+    render(shell);
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+  });
   it('renders the navigation shell, children and gateway connection state', async () => {
     render(
       <Layout current="dashboard" onNavigate={() => {}} user="operator" onSignOut={() => {}}>

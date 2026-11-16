@@ -10,6 +10,10 @@ vi.mock('../../src/ui/pages/configurations/WatcherCard.js', () => ({
 vi.mock('../../src/ui/pages/configurations/InstagramSessionCard.js', () => ({
   InstagramSessionCard: () => <div>Instagram session controls</div>,
 }));
+vi.mock('../../src/ui/lib/api.js', () => ({ api: {
+  listServers: vi.fn().mockResolvedValue([{ id: 'watchers', name: 'social-watchers' }]),
+  rpc: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: JSON.stringify({ sources: [{ source: 'whatsapp', pid: 123 }, { source: 'instagram', pid: null }] }) }] }),
+} }));
 import { WatchersPage } from '../../src/ui/pages/Watchers.js';
 
 afterEach(() => { cleanup(); window.location.hash = ''; });
@@ -38,5 +42,14 @@ describe('consolidated navigation', () => {
     expect(screen.getByText('Instagram session controls').closest('[role=tabpanel]')?.hasAttribute('hidden')).toBe(true);
     expect(window.location.hash).toBe('#/watchers?source=whatsapp');
     expect(parseHash(window.location.hash).page).toBe('watchers');
+  });
+
+  it('distinguishes a reported process, a stopped process and an unreported source', async () => {
+    render(<WatchersPage />);
+    expect(await screen.findByText(/manager reports a running process/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: 'Instagram' }));
+    expect(screen.getByText(/manager reports this worker is stopped/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: 'X' }));
+    expect(screen.getByText(/manager does not report a worker/)).toBeTruthy();
   });
 });

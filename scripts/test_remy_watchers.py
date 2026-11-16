@@ -3,11 +3,13 @@ import contextlib
 import io
 import json
 import logging
+import os
 import sqlite3
 import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from remy_watchers import (
@@ -253,6 +255,7 @@ class WatcherTests(unittest.TestCase):
             {"ig:mattfrost", "thread:thread-2"},
         )
 
+    @patch.dict(os.environ, {"REMY_INSTAGRAM_MAX_LIKES_PER_PASS": "2", "REMY_INSTAGRAM_LIKE_MIN_GAP_SECONDS": "0"})
     def test_instagram_auto_like_baselines_then_likes_new_items(self):
         class FakeServer:
             def __init__(self):
